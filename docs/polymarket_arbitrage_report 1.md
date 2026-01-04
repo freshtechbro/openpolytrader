@@ -1,0 +1,62 @@
+# Integrating Market‑Level Arbitrage Research with Multi‑Agent Arbitrage Systems
+
+## Background: How Polymarket Prices Its Markets
+
+Polymarket’s markets are organised as binary outcome tokens (YES/NO).  When a new market is created there are no pre‑defined prices; traders place limit orders for the price they are willing to pay for a YES or NO share.  When a YES order and a complementary NO order sum to exactly one dollar, the orders are matched and the protocol mints one YES and one NO share (or splits existing tokens), giving the buyers one share each【578029666214381†L90-L103】.  Subsequent displayed prices are the mid‑point of the bid–ask spread in the central limit order book (CLOB); if the spread widens beyond ten cents, the last traded price is shown【578029666214381†L85-L119】.  Hence share prices reflect market‑implied probabilities, with the sum of all mutually exclusive outcomes expected to equal 1.
+
+Polymarket’s CLOB is hybrid‑decentralised.  Orders are EIP‑712 signed messages that are matched off‑chain by an operator before being settled on‑chain via a smart contract【139240547529586†L171-L183】.  The contract performs atomic swaps between USDC collateral and binary outcome tokens【139240547529586†L171-L183】.  Matching occurs when complementary orders cross; price improvements benefit the taker, encouraging liquidity provision.  There are no trading fees – Polymarket charges zero maker or taker fees【660195226688008†L75-L82】 – so traders only incur implicit costs via the bid‑ask spread and blockchain gas fees associated with deposits and withdrawals【945757879287195†L672-L684】.  Depositing or withdrawing USDC requires paying network gas to Polygon and a relayer fee; the relayer fee is either $3 plus the network fee or 0.3% of the transaction amount, whichever is greater【335959036821810†L82-L132】.  These costs, combined with slippage from limited liquidity, determine the threshold at which arbitrage becomes profitable.
+
+## Market Rebalancing vs. Combinatorial Arbitrage
+
+Recent work by Saguillo _et al._ (2025) analysed Polymarket’s on‑chain data to study arbitrage opportunities.  Their taxonomy distinguishes two types of arbitrage:
+
+| Arbitrage type | Definition (short form) | When it occurs | Profit mechanism |
+|---|---|---|---|
+| **Market rebalancing arbitrage** | The sum of YES prices in a single market deviates from $1【802341661240617†L570-L641】. | If \(\sum_i 	ext{val}(Y_i,t) < 1\) a long arbitrage exists; if \(\sum_i 	ext{val}(Y_i,t) > 1\) a short arbitrage exists【802341661240617†L593-L641】. | Buy all YES tokens when the sum is <1; sell/short when the sum is >1.  Guaranteed profit equals the deviation from 1【802341661240617†L606-L635】. |
+| **Combinatorial arbitrage** | A portfolio across two dependent markets ensures at least one bet wins【802341661240617†L653-L724】. | When dependent subsets S\subset M_1 and S'\subset M_2 satisfy \(\sum_{c\in S} 	ext{val}(T_c,t) < \sum_{c'\in S'} 	ext{val}(T_{c'},t)\) or the reverse【802341661240617†L693-L706】. | Hold YES positions in S and the complement of S' (or vice versa); profit equals the difference between the subsets’ valuations【802341661240617†L693-L724】. |
+
+Market rebalancing arbitrage corresponds to the classic “YES+NO ≠ $1” mispricing.  Because Polymarket’s contract only enforces price unity at the moment of minting/splitting, asynchronous order flow or limited liquidity can result in the sum deviating from $1.  Arbitrageurs restore balance by buying undervalued outcomes or shorting overvalued ones, earning the difference【802341661240617†L606-L635】.  Combinatorial arbitrage exploits relationships across markets: for example, one market might ask who wins a state election and another asks whether the winner’s margin exceeds a threshold【802341661240617†L653-L724】.  A bet that covers all logical states across both markets (e.g., YES on “Democrat wins” and YES on “Republican margin” where these are mutually exclusive) can secure risk‑free profits if their combined price deviates from a threshold【802341661240617†L693-L724】.
+
+## Detecting Dependencies via Large Language Models
+
+A key contribution of Saguillo _et al._ is their method for detecting when two markets are semantically dependent.  They use a large language model (LLM) to infer the logical relationship between markets by analysing the textual descriptions of their conditions.  In the **single‑market inference** step, the LLM is given all conditions of a market and asked to return the set of all possible resolutions in a JSON format; out of 128 markets tested during the 2024 U.S. election, the LLM successfully returned valid JSON in 81.45% of cases【802341661240617†L945-L990】.  The authors note that LLMs struggle with markets containing many conditions, so they pre‑process markets with more than four conditions by keeping the four most liquid outcomes and merging the rest into a single “other” condition【802341661240617†L1003-L1011】.
+
+They then perform **multiple‑market inference** by concatenating conditions from pairs of markets and asking the LLM to produce valid assignments that satisfy the requirement that exactly one condition in each market is true【802341661240617†L1013-L1031】.  Pairs that produce consistent assignments are considered semantically dependent.  In the U.S. election data, 1 576 pairs of markets were classified as dependent【802341661240617†L1046-L1055】.  A post‑processing checker ensures that the relationship satisfies the combinatorial arbitrage definition (i.e., there exist subsets meeting the valuation inequalities).  Of the 374 candidate pairs manually inspected, 13 were confirmed to permit combinatorial arbitrage【802341661240617†L1054-L1064】.
+
+## Empirical Findings on Arbitrage
+
+Using historical order‑book data from 1 April 2024 to 1 April 2025, the authors searched for rebalancing and combinatorial arbitrage opportunities and then traced whether they were executed.  They found that mispricings were common: of the markets analysed, thousands of instances existed where the sum of YES prices deviated from $1 beyond typical transaction costs.  Crucially, they estimate that arbitrageurs extracted approximately **$40 million** in profit across both rebalancing and combinatorial strategies during the one‑year period【802341661240617†L44-L52】.  This demonstrates that, even with a hybrid CLOB and sophisticated traders, prediction markets can exhibit persistent inefficiencies – a conclusion that aligns with anecdotal reports of “smart money” profiting from algorithmic trading.
+
+## Implications for Multi‑Agent Arbitrage Systems
+
+### Unified detection and execution
+
+The research confirms that arbitrage in prediction markets arises both within single markets and across logically linked markets.  A multi‑agent arbitrage system can incorporate these insights by including a **dependency‑detection agent** that uses semantic analysis (or simpler heuristics) to map markets into clusters of related outcomes.  Our earlier design for a cross‑platform arbitrage bot emphasised a modular architecture with agents for data collection, arbitrage detection and an RL decision maker.  Integrating an LLM‑based inference module allows the arbitrage finder to recognise combinatorial relationships beyond simple probability sums.  This module can pre‑filter market pairs to those likely to share an end date and topic and then call an LLM to test logical consistency【802341661240617†L1013-L1031】.  By focusing on the most liquid conditions (top four by volume) as Saguillo _et al._ did【802341661240617†L1003-L1011】, the system avoids the explosion of state space that would overwhelm an LLM.
+
+### Strategy optimisation
+
+The paper’s formal definitions provide thresholds for when arbitrage is worthwhile.  For rebalancing arbitrage, profit is simply |1 − ∑_i val(Y_i,t)|【802341661240617†L606-L635】.  Our RL agent can use this as a reward signal: the larger the deviation, the greater the incentive to trade.  However, because trades are non‑atomic and subject to execution risk, the RL agent must learn to account for slippage and gas fees.  Empirical guidance suggests that spreads must exceed around 2–3% to cover transaction costs on Polymarket due to gas and spread costs.  For combinatorial arbitrage, the agent must calculate the valuations of dependent subsets and only act when the difference exceeds a threshold【802341661240617†L693-L724】.
+
+### Costs and constraints
+
+Although Polymarket charges no trading fees【660195226688008†L75-L82】, transaction costs still matter.  Deposits and withdrawals incur Polygon network gas and relayer fees, which can range from a few dollars to a fixed percentage【335959036821810†L82-L132】.  Traders also pay implicit costs via the bid‑ask spread and slippage【945757879287195†L672-L684】.  A profitable arbitrage bot must therefore incorporate gas‑fee estimation and adjust order sizes to minimise slippage, possibly splitting trades across multiple price levels.  Liquidity depth varies dramatically across markets; near‑resolution markets may have wide spreads, whereas popular events have deep order books.  The system must adjust thresholds accordingly.
+
+### Regulatory considerations
+
+The geographic restrictions page makes clear that Polymarket is unavailable in many countries, including the United States, the United Kingdom and the Canadian province of Ontario【400100507656399†L109-L159】.  Users in restricted jurisdictions are blocked from opening new positions, though some “close‑only” countries may allow closing existing positions【400100507656399†L174-L180】.  Our earlier report emphasised compliance with U.S., Canadian and UK law; this research reinforces that an arbitrage system must implement geo‑fencing and avoid facilitating trades for prohibited users.  Additionally, deposit and withdrawal procedures involve KYC/AML considerations: although the platform itself does not require KYC, deposit partners and regulators may【335959036821810†L82-L132】.
+
+## Synthesis and Recommendations
+
+1. **Expand detection scope:**  The multi‑agent arbitrage bot should not only monitor single‑market sums but also search for combinatorial mispricings across pairs of markets.  Incorporating LLM‑based inference (or pre‑defined dependency templates) can help find cross‑market relationships similar to those documented by Saguillo _et al._【802341661240617†L653-L724】.
+
+2. **Refine RL strategies:**  Use the profit formulas for rebalancing and combinatorial arbitrage as reward functions.  Allow the RL agent to weigh expected profit against gas costs and execution risk, and to learn when to ignore small opportunities.  Historical order‑book data from Polymarket can be used to simulate training episodes.
+
+3. **Manage costs:**  Track network gas fees and relayer costs; trade primarily when spreads are large enough to cover these costs.  When possible, batch transactions or use deposit credits to reduce per‑trade gas overhead【335959036821810†L82-L132】.
+
+4. **Ensure compliance:**  Geo‑fence users in blocked jurisdictions (United States, United Kingdom, Ontario, etc.) and provide warnings for “close‑only” regions【400100507656399†L109-L180】.  Incorporate settings to disable certain market categories if local law prohibits them.
+
+5. **Plan for non‑atomic execution:**  Recognise that Polymarket trades are not atomic; one leg of an arbitrage may fill while the other does not.  Execution agents must handle partial fills gracefully—e.g., by cancelling unfilled orders or hedging via alternative platforms.  This risk management layer complements the theoretical arbitrage definitions.
+
+## Conclusion
+
+The 2025 study “Unravelling the Probabilistic Forest: Arbitrage in Prediction Markets” provides a rigorous framework for understanding arbitrage on Polymarket.  By distinguishing market‑rebalancing and combinatorial arbitrage and demonstrating that over $40 million in profits were extracted by arbitrageurs【802341661240617†L44-L52】, the authors show that prediction markets remain susceptible to inefficiencies.  For developers of arbitrage bots, these findings offer a roadmap: incorporate semantic analysis to detect dependent markets, calculate valuations to identify mispricings, and adjust strategies for transaction costs and non‑atomic execution.  Combined with a modular multi‑agent architecture and reinforcement learning, such systems can systematically exploit arbitrage while adhering to legal constraints and managing risk.

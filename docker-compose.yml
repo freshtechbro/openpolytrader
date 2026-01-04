@@ -1,0 +1,14 @@
+services:
+  openpolytrader:
+    build:
+      context: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      OPS_API_ENABLED: "true"
+      OPS_API_HOST: 0.0.0.0
+      PORT: "3000"
+      TRADING_ENABLED: "false"
+    volumes:
+      - ./data:/app/data
