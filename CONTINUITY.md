@@ -15,13 +15,14 @@
 
 ## State:
   - Done:
-    - Committed the outstanding changes in 3 new commits:
+    - Committed the outstanding changes in 4 new commits:
       - `7658032` feat(core): implement P0 config and ops SLOs
       - `43c6455` feat(dashboard): refresh ops UI and risk gates
       - `1f854e1` docs: update near-zero-risk plans and runbooks
-    - Repo is now clean; `main` is ahead of `origin/main` by 4 commits (`caea9e7`, `7658032`, `43c6455`, `1f854e1`).
+      - `e8e94ea` chore: update continuity ledger
+    - Repo is clean; `main` is ahead of `origin/main` by 5 commits (`caea9e7`, `7658032`, `43c6455`, `1f854e1`, `e8e94ea`).
   - Now:
-    - Awaiting next instruction (push, PR prep, or run checks).
+    - Push `main` to `origin`.
   - Next:
     - Task 1: Verify build/test after commits (action: run `npm run lint`, `npm run typecheck`, `npm test`; outcome: confidence that commits are green; files: none)
     - Task 2: Push branch if desired (action: `git push`; outcome: remote updated; files: none)
