@@ -12,3 +12,9 @@ test-results/
 .env
 .env.*
 !.env.example
+
+# Generated market catalogs (local allowlist overrides)
+data/market-catalog.json
+
+# Auto Claude data directory
+.auto-claude/

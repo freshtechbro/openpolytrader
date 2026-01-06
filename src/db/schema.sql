@@ -8,6 +8,16 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts);
 
+CREATE TABLE IF NOT EXISTS metrics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  data TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_metrics_ts ON metrics (ts);
+CREATE INDEX IF NOT EXISTS idx_metrics_type_ts ON metrics (type, ts);
+
 CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY,
   ts INTEGER NOT NULL,
@@ -39,3 +49,14 @@ CREATE TABLE IF NOT EXISTS decisions (
   decision_json TEXT NOT NULL,
   reasoning_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS idempotency (
+  key TEXT PRIMARY KEY,
+  nonce TEXT NOT NULL,
+  status TEXT NOT NULL,
+  order_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_idempotency_updated_at ON idempotency (updated_at);

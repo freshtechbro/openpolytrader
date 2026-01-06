@@ -2,12 +2,47 @@ import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 
 export interface PolymarketRealtimeConfig {
-  url?: string;
+  url: string;
   reconnectBackoffMs?: number[];
+  reconnectBaseDelayMs: number;
+  reconnectMaxDelayMs: number;
+  reconnectJitterPct: number;
+  heartbeatIntervalMs: number;
   authMessage?: Record<string, unknown>;
 }
 
 export type RealtimeEvent = Record<string, unknown>;
+
+export interface UserOrderUpdate {
+  eventType: 'order';
+  orderId: string;
+  marketId?: string;
+  assetId?: string;
+  side?: string;
+  orderEventType?: string;
+  status?: string;
+  price?: number;
+  originalSize?: number;
+  sizeMatched?: number;
+  timestampMs?: number;
+  raw: RealtimeEvent;
+}
+
+export interface UserTradeUpdate {
+  eventType: 'trade';
+  tradeId: string;
+  marketId?: string;
+  assetId?: string;
+  side?: string;
+  status?: string;
+  price?: number;
+  size?: number;
+  takerOrderId?: string;
+  makerOrderIds: string[];
+  makerMatches: Array<{ orderId: string; matchedAmount?: number }>;
+  timestampMs?: number;
+  raw: RealtimeEvent;
+}
 
 export class PolymarketRealtime extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -18,8 +53,9 @@ export class PolymarketRealtime extends EventEmitter {
   private heartbeat: NodeJS.Timeout | null = null;
   private subscribedAssetIds = new Set<string>();
   private subscribedUser = false;
+  private userSubscriptionMessage: Record<string, unknown> | null = null;
 
-  constructor(private config: PolymarketRealtimeConfig = {}) {
+  constructor(private config: PolymarketRealtimeConfig) {
     super();
   }
 
@@ -30,8 +66,7 @@ export class PolymarketRealtime extends EventEmitter {
 
     this.shouldReconnect = true;
     this.connecting = true;
-    const url =
-      this.config.url ?? 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
+    const url = this.config.url;
 
     await new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(url);
@@ -41,9 +76,7 @@ export class PolymarketRealtime extends EventEmitter {
         this.connecting = false;
         this.reconnectAttempts = 0;
         this.connected = true;
-        if (this.config.authMessage) {
-          this.send(this.config.authMessage);
-        }
+        if (this.config.authMessage) this.captureSubscription(this.config.authMessage);
         this.resubscribeAfterReconnect();
         this.startHeartbeat();
         this.emit('open');
@@ -55,6 +88,7 @@ export class PolymarketRealtime extends EventEmitter {
         try {
           const payload = JSON.parse(text) as RealtimeEvent;
           this.emit('message', payload);
+          this.handleParsedMessage(payload);
         } catch (error) {
           if (text.trim().toUpperCase() === 'PONG') {
             return;
@@ -100,7 +134,9 @@ export class PolymarketRealtime extends EventEmitter {
 
   subscribeUser(): void {
     this.subscribedUser = true;
-    this.send({ type: 'user' });
+    const payload = this.userSubscriptionMessage ?? { type: 'user' };
+    this.captureSubscription(payload);
+    this.send(payload);
   }
 
   unsubscribeMarkets(assetIds: string[]): void {
@@ -134,11 +170,12 @@ export class PolymarketRealtime extends EventEmitter {
       this.heartbeat = null;
     }
 
+    const interval = this.config.heartbeatIntervalMs;
     this.heartbeat = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send('PING');
       }
-    }, 10000);
+    }, interval);
   }
 
   private stopHeartbeat(): void {
@@ -155,10 +192,11 @@ export class PolymarketRealtime extends EventEmitter {
     if (backoff && backoff.length > 0) {
       delay = backoff[Math.min(this.reconnectAttempts, backoff.length - 1)];
     } else {
-      const baseDelay = 250;
-      const maxDelay = 30000;
+      const baseDelay = this.config.reconnectBaseDelayMs;
+      const maxDelay = this.config.reconnectMaxDelayMs;
+      const jitterPct = this.config.reconnectJitterPct;
       delay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), maxDelay);
-      const jitter = delay * 0.2 * (Math.random() * 2 - 1);
+      const jitter = delay * jitterPct * (Math.random() * 2 - 1);
       delay = Math.max(0, Math.round(delay + jitter));
     }
 
@@ -179,7 +217,130 @@ export class PolymarketRealtime extends EventEmitter {
       });
     }
     if (this.subscribedUser) {
-      this.send({ type: 'user' });
+      this.send(this.userSubscriptionMessage ?? { type: 'user' });
     }
   }
+
+  private captureSubscription(message: Record<string, unknown>): void {
+    if (message.type === 'user') {
+      this.subscribedUser = true;
+      this.userSubscriptionMessage = message;
+      return;
+    }
+
+    if (message.type === 'market') {
+      const assets = message.assets_ids;
+      if (Array.isArray(assets)) {
+        for (const id of assets) {
+          if (typeof id === 'string' && id.length > 0) {
+            this.subscribedAssetIds.add(id);
+          }
+        }
+      }
+    }
+  }
+
+  private handleParsedMessage(payload: unknown): void {
+    if (Array.isArray(payload)) {
+      for (const item of payload) {
+        this.handleParsedMessage(item);
+      }
+      return;
+    }
+
+    if (!payload || typeof payload !== 'object') return;
+    const message = payload as RealtimeEvent;
+    const eventTypeRaw = message.event_type;
+    const eventType = typeof eventTypeRaw === 'string' ? eventTypeRaw.toLowerCase() : undefined;
+
+    if (eventType === 'order') {
+      const update = parseUserOrderUpdate(message);
+      if (update) this.emit('user:order', update);
+      return;
+    }
+
+    if (eventType === 'trade') {
+      const update = parseUserTradeUpdate(message);
+      if (update) this.emit('user:trade', update);
+      return;
+    }
+  }
+}
+
+function parseUserOrderUpdate(message: RealtimeEvent): UserOrderUpdate | null {
+  const orderId = coerceString(message.order_id) ?? coerceString(message.id);
+  if (!orderId) return null;
+
+  return {
+    eventType: 'order',
+    orderId,
+    marketId: coerceString(message.market),
+    assetId: coerceString(message.asset_id),
+    side: coerceString(message.side),
+    orderEventType: coerceString(message.type),
+    status: coerceString(message.status),
+    price: coerceNumber(message.price),
+    originalSize: coerceNumber(message.original_size),
+    sizeMatched: coerceNumber(message.size_matched),
+    timestampMs: coerceTimestampMs(message.timestamp ?? message.last_update),
+    raw: message
+  };
+}
+
+function parseUserTradeUpdate(message: RealtimeEvent): UserTradeUpdate | null {
+  const tradeId = coerceString(message.id);
+  if (!tradeId) return null;
+
+  const makerOrderIds: string[] = [];
+  const makerMatches: Array<{ orderId: string; matchedAmount?: number }> = [];
+  const makerOrders = message.maker_orders;
+  if (Array.isArray(makerOrders)) {
+    for (const order of makerOrders) {
+      if (order && typeof order === 'object') {
+        const record = order as Record<string, unknown>;
+        const id = coerceString(record.order_id);
+        if (id) {
+          makerOrderIds.push(id);
+          makerMatches.push({ orderId: id, matchedAmount: coerceNumber(record.matched_amount) });
+        }
+      }
+    }
+  }
+
+  return {
+    eventType: 'trade',
+    tradeId,
+    marketId: coerceString(message.market),
+    assetId: coerceString(message.asset_id),
+    side: coerceString(message.side),
+    status: coerceString(message.status),
+    price: coerceNumber(message.price),
+    size: coerceNumber(message.size),
+    takerOrderId: coerceString(message.taker_order_id),
+    makerOrderIds,
+    makerMatches,
+    timestampMs: coerceTimestampMs(message.timestamp ?? message.matchtime),
+    raw: message
+  };
+}
+
+function coerceString(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.length > 0) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+function coerceNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  return parsed;
+}
+
+function coerceTimestampMs(value: unknown): number | undefined {
+  const secondsOrMs = coerceNumber(value);
+  if (secondsOrMs === undefined) return undefined;
+  // Heuristic: 13-digit timestamps are already in ms; 10-digit are seconds.
+  return secondsOrMs >= 1e12 ? Math.round(secondsOrMs) : Math.round(secondsOrMs * 1000);
 }

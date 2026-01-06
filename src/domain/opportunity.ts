@@ -9,6 +9,7 @@ export interface ArbitrageOpportunity {
   noPrice: number;
   costPerSet: number;
   edge: number;
+  tickSize: number;
   maxSizeByDepth: number;
   minOrderSize: number;
   detectedAt: number;

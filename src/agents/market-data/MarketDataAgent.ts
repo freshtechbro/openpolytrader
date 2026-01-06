@@ -2,12 +2,14 @@ import { messageBus } from '../../core/MessageBus.js';
 import type { TradePolicy } from '../../config/policy.js';
 import { PolymarketClob, type OrderBookResponse } from '../../services/PolymarketClob.js';
 import { PolymarketRealtime } from '../../services/PolymarketRealtime.js';
-import { normalizeOrderBook, type OrderBookState } from '../../domain/orderbook.js';
+import { coercePositiveNumber, normalizeOrderBook, type OrderBookState } from '../../domain/orderbook.js';
 import { isOutOfSequence } from '../../domain/sequence.js';
+import type { MetricsStore } from '../../telemetry/metrics.js';
 
 export interface MarketDataAgentConfig {
   tokenIds: string[];
   policy: TradePolicy;
+  metrics?: MetricsStore;
 }
 
 export interface MarketUpdateEvent {
@@ -17,12 +19,15 @@ export interface MarketUpdateEvent {
 
 export class MarketDataAgent {
   private orderbooks = new Map<string, OrderBookState>();
+  private metrics?: MetricsStore;
 
   constructor(
     private config: MarketDataAgentConfig,
     private clob: PolymarketClob,
     private realtime: PolymarketRealtime
-  ) {}
+  ) {
+    this.metrics = config.metrics;
+  }
 
   async start(): Promise<void> {
     await this.realtime.connect();
@@ -89,7 +94,33 @@ export class MarketDataAgent {
       }
     }
 
-    const next = normalizeOrderBook(tokenId, raw, receivedAtMs, previous);
+    const rawTickSize = coercePositiveNumber(raw.tick_size);
+    const rawMinOrderSize = coercePositiveNumber(raw.min_order_size);
+    const usedTickFallback =
+      rawTickSize === null &&
+      (!previous || !Number.isFinite(previous.tickSize) || previous.tickSize <= 0);
+    const usedMinOrderFallback =
+      rawMinOrderSize === null &&
+      (!previous || !Number.isFinite(previous.minOrderSize) || previous.minOrderSize <= 0);
+
+    const next = normalizeOrderBook(tokenId, raw, receivedAtMs, {
+      tickSize: this.config.policy.fallbackTickSize,
+      minOrderSize: this.config.policy.fallbackMinOrderSize
+    }, previous);
+
+    if (this.metrics && (usedTickFallback || usedMinOrderFallback)) {
+      this.metrics.record({
+        type: 'book_fallback',
+        timestamp: receivedAtMs,
+        data: {
+          tokenId,
+          usedTickFallback,
+          usedMinOrderFallback,
+          fallbackTickSize: this.config.policy.fallbackTickSize,
+          fallbackMinOrderSize: this.config.policy.fallbackMinOrderSize
+        }
+      });
+    }
     this.orderbooks.set(tokenId, next);
     messageBus.emit('market:updated', { tokenId, book: next } satisfies MarketUpdateEvent);
   }

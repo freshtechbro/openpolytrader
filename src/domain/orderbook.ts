@@ -10,6 +10,11 @@ export interface OrderBookSnapshot {
   hash?: string;
 }
 
+export interface OrderBookDefaults {
+  tickSize: number;
+  minOrderSize: number;
+}
+
 export interface OrderBookState extends OrderBookSnapshot {
   tokenId: string;
   lastUpdateMs: number;
@@ -18,10 +23,24 @@ export interface OrderBookState extends OrderBookSnapshot {
   bestAsk?: OrderBookLevel;
 }
 
+export function coercePositiveNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
 export function normalizeOrderBook(
   tokenId: string,
   raw: OrderBookResponse,
   receivedAtMs: number,
+  defaults: OrderBookDefaults,
   previous?: OrderBookState
 ): OrderBookState {
   const bids = normalizeLevels(raw.bids ?? [], 'bid');
@@ -29,8 +48,18 @@ export function normalizeOrderBook(
   const bestBid = bids[0];
   const bestAsk = asks[0];
 
-  const tickSize = Number(raw.tick_size ?? previous?.tickSize ?? 0.01);
-  const minOrderSize = Number(raw.min_order_size ?? previous?.minOrderSize ?? 0.001);
+  const rawTickSize = coercePositiveNumber(raw.tick_size);
+  const rawMinOrderSize = coercePositiveNumber(raw.min_order_size);
+  const fallbackTickSize = defaults.tickSize;
+  const fallbackMinOrderSize = defaults.minOrderSize;
+  const tickSize =
+    rawTickSize ??
+    (previous?.tickSize && previous.tickSize > 0 ? previous.tickSize : fallbackTickSize);
+  const minOrderSize =
+    rawMinOrderSize ??
+    (previous?.minOrderSize && previous.minOrderSize > 0
+      ? previous.minOrderSize
+      : fallbackMinOrderSize);
 
   const previousBestBid = previous?.bestBid;
   const previousBestAsk = previous?.bestAsk;

@@ -6,8 +6,14 @@ export interface MarketStatusEntry {
   reason?: string;
 }
 
+export interface MarketAllowlistConfig {
+  autoResume: boolean;
+}
+
 export class MarketAllowlist {
   private entries = new Map<string, MarketStatusEntry>();
+
+  constructor(private config: MarketAllowlistConfig) {}
 
   allow(key: string): void {
     this.entries.set(key, { status: 'allowed' });
@@ -37,7 +43,7 @@ export class MarketAllowlist {
     if (entry.status === 'allowed') return true;
     if (entry.status === 'blocked') return false;
     if (entry.status === 'quarantined') {
-      if (entry.until && now >= entry.until) {
+      if (this.config.autoResume && entry.until && now >= entry.until) {
         this.allow(key);
         return true;
       }
@@ -49,7 +55,12 @@ export class MarketAllowlist {
   getStatus(key: string, now = Date.now()): MarketStatusEntry | null {
     const entry = this.entries.get(key);
     if (!entry) return null;
-    if (entry.status === 'quarantined' && entry.until && now >= entry.until) {
+    if (
+      this.config.autoResume &&
+      entry.status === 'quarantined' &&
+      entry.until &&
+      now >= entry.until
+    ) {
       this.allow(key);
       return this.entries.get(key) ?? null;
     }

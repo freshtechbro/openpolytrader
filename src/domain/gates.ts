@@ -1,6 +1,6 @@
 import type { TradePolicy } from '../config/policy.js';
 import type { OrderBookState } from './orderbook.js';
-import { depthAtTopLevels, isAlignedToTick, spread } from './orderbook.js';
+import { depthAtTopLevels, isAlignedToTick, spread, sweepCost } from './orderbook.js';
 import type { VenueId } from '../config/venues.js';
 import type { FeeModel } from './feeModel.js';
 
@@ -9,7 +9,12 @@ export interface GateDecision {
   reasons: string[];
   costPerSet: number;
   edge: number;
+  edgeInTicks?: number;
   maxSizeByDepth: number;
+  yesStalenessMs?: number;
+  noStalenessMs?: number;
+  legSkewMs?: number;
+  depthAtLevels?: { yes: number; no: number };
 }
 
 export interface GateInputs {
@@ -18,6 +23,7 @@ export interface GateInputs {
   policy: TradePolicy;
   nowMs: number;
   desiredSize?: number;
+  tickSize?: number;
 }
 
 export function evaluateGates(inputs: GateInputs): GateDecision {
@@ -50,10 +56,17 @@ export function evaluateGates(inputs: GateInputs): GateDecision {
     reasons.push('edge_above_max');
   }
 
-  const yesFresh = nowMs - yesBook.lastUpdateMs <= policy.orderbookFreshnessMs;
-  const noFresh = nowMs - noBook.lastUpdateMs <= policy.orderbookFreshnessMs;
-  if (!yesFresh || !noFresh) {
-    reasons.push('stale_orderbook');
+  const yesStalenessMs = Math.max(0, nowMs - yesBook.lastUpdateMs);
+  const noStalenessMs = Math.max(0, nowMs - noBook.lastUpdateMs);
+  const maxStaleness = policy.maxBookStalenessMs ?? policy.orderbookFreshnessMs;
+  if (policy.requireFreshBook !== false) {
+    if (yesStalenessMs > maxStaleness) reasons.push('yes_book_stale');
+    if (noStalenessMs > maxStaleness) reasons.push('no_book_stale');
+  }
+
+  const legSkewMs = Math.abs(yesBook.lastUpdateMs - noBook.lastUpdateMs);
+  if (policy.maxLegSkewMs > 0 && legSkewMs > policy.maxLegSkewMs) {
+    reasons.push('leg_sync_skew');
   }
 
   const yesStable = nowMs - yesBook.stableSinceMs >= policy.topOfBookStabilityMs;
@@ -69,8 +82,10 @@ export function evaluateGates(inputs: GateInputs): GateDecision {
     reasons.push('no_tick_misaligned');
   }
 
-  const yesDepth = depthAtTopLevels(yesBook.asks, 3);
-  const noDepth = depthAtTopLevels(noBook.asks, 3);
+  const depthLevels = Math.max(1, Math.floor(policy.minDepthLevels));
+  const yesDepth = depthAtTopLevels(yesBook.asks, depthLevels);
+  const noDepth = depthAtTopLevels(noBook.asks, depthLevels);
+  const depthAtLevels = { yes: yesDepth, no: noDepth };
   const maxSizeByDepth = Math.min(yesDepth, noDepth) * policy.depthHeadroomFraction;
 
   if (maxSizeByDepth <= 0) {
@@ -86,12 +101,54 @@ export function evaluateGates(inputs: GateInputs): GateDecision {
     reasons.push('desired_size_exceeds_depth');
   }
 
+  if (desiredSize !== undefined && desiredSize > 0 && policy.depthBufferMultiplier > 0) {
+    const requiredDepth = desiredSize * policy.depthBufferMultiplier;
+    if (maxSizeByDepth < requiredDepth) {
+      reasons.push('insufficient_depth_buffer');
+    }
+  }
+
+  const tickSize = resolveTickSize(
+    inputs.tickSize,
+    Math.max(yesBook.tickSize, noBook.tickSize),
+    policy.fallbackTickSize
+  );
+  const edgeInTicks = tickSize > 0 ? edge / tickSize : undefined;
+  if (policy.minEdgeTicks > 0 && edgeInTicks !== undefined && edgeInTicks < policy.minEdgeTicks) {
+    reasons.push('edge_below_min_ticks');
+  }
+
+  if (desiredSize !== undefined && desiredSize > 0) {
+    const maxSlippage = policy.entrySlippageToleranceBps / 10000;
+    const yesSweep = sweepCost(yesBook.asks, desiredSize);
+    const noSweep = sweepCost(noBook.asks, desiredSize);
+    if (yesSweep.exhausted) reasons.push('yes_depth_exhausted');
+    if (noSweep.exhausted) reasons.push('no_depth_exhausted');
+
+    const yesSlippage =
+      yesBook.bestAsk.price > 0
+        ? (yesSweep.averagePrice - yesBook.bestAsk.price) / yesBook.bestAsk.price
+        : 0;
+    const noSlippage =
+      noBook.bestAsk.price > 0
+        ? (noSweep.averagePrice - noBook.bestAsk.price) / noBook.bestAsk.price
+        : 0;
+
+    if (yesSlippage > maxSlippage) reasons.push('yes_slippage_exceeded');
+    if (noSlippage > maxSlippage) reasons.push('no_slippage_exceeded');
+  }
+
   return {
     passed: reasons.length === 0,
     reasons,
     costPerSet,
     edge,
-    maxSizeByDepth
+    edgeInTicks,
+    maxSizeByDepth,
+    yesStalenessMs,
+    noStalenessMs,
+    legSkewMs,
+    depthAtLevels
   };
 }
 
@@ -101,6 +158,12 @@ export function evaluateGatesWithFees(input: GateInputs & { venue: VenueId; feeM
 
   const netEdge = input.feeModel.netEdge(input.venue, base.edge);
   const reasons = [...base.reasons];
+  const tickSize = resolveTickSize(
+    input.tickSize,
+    Math.max(input.yesBook.tickSize, input.noBook.tickSize),
+    input.policy.fallbackTickSize
+  );
+  const edgeInTicks = tickSize > 0 ? netEdge / tickSize : base.edgeInTicks;
 
   if (netEdge < input.policy.edgeRequired) {
     reasons.push('edge_below_threshold_after_fees');
@@ -113,6 +176,7 @@ export function evaluateGatesWithFees(input: GateInputs & { venue: VenueId; feeM
   return {
     ...base,
     edge: netEdge,
+    edgeInTicks,
     reasons,
     passed: reasons.length === 0
   };
@@ -126,4 +190,13 @@ function fail(reasons: string[]): GateDecision {
     edge: 0,
     maxSizeByDepth: 0
   };
+}
+
+function resolveTickSize(...candidates: Array<number | undefined>): number {
+  const valid = candidates.filter(
+    (candidate): candidate is number =>
+      typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0
+  );
+  if (valid.length === 0) return 0;
+  return Math.max(...valid);
 }

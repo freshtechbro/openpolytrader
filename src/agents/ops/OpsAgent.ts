@@ -23,11 +23,13 @@ export interface OpsHealthReport {
 export interface OpsAgentConfig {
   intervalMs: number;
   checks: HealthCheck[];
+  alertWebhookUrl?: string;
 }
 
 export class OpsAgent {
   private timer: NodeJS.Timeout | null = null;
   private startedAt = 0;
+  private alertWebhookUrl: string | null;
   private lastReport: OpsHealthReport = {
     status: 'healthy',
     checks: {},
@@ -38,7 +40,14 @@ export class OpsAgent {
   constructor(
     private config: OpsAgentConfig,
     private metrics?: MetricsStore
-  ) {}
+  ) {
+    const webhook = config.alertWebhookUrl?.trim();
+    this.alertWebhookUrl = webhook && webhook.length > 0 ? webhook : null;
+  }
+
+  setChecks(checks: HealthCheck[]): void {
+    this.config.checks = checks;
+  }
 
   start(): void {
     if (this.timer) {
@@ -46,8 +55,8 @@ export class OpsAgent {
     }
 
     this.startedAt = Date.now();
-    this.runChecks();
-    this.timer = setInterval(() => this.runChecks(), this.config.intervalMs);
+    void this.runChecks();
+    this.timer = setInterval(() => void this.runChecks(), this.config.intervalMs);
   }
 
   stop(): void {
@@ -62,6 +71,11 @@ export class OpsAgent {
       ...this.lastReport,
       uptimeMs: this.startedAt ? Date.now() - this.startedAt : 0
     };
+  }
+
+  async runOnce(): Promise<OpsHealthReport> {
+    await this.runChecks();
+    return this.getReport();
   }
 
   private async runChecks(): Promise<void> {
@@ -113,8 +127,34 @@ export class OpsAgent {
             timestamp: now,
             data: alert
           });
+          void this.sendAlert(alert);
         }
       }
+    }
+  }
+
+  private async sendAlert(payload: unknown): Promise<void> {
+    if (!this.alertWebhookUrl) return;
+    try {
+      const response = await fetch(this.alertWebhookUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        this.metrics?.record({
+          type: 'error',
+          timestamp: Date.now(),
+          data: { message: 'ops_alert_send_failed', status: response.status }
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.metrics?.record({
+        type: 'error',
+        timestamp: Date.now(),
+        data: { message: 'ops_alert_send_failed', error: message }
+      });
     }
   }
 }

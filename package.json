@@ -7,9 +7,14 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "build": "tsc -p tsconfig.json",
+    "prestart": "node dist/tools/marketCatalogPrestartCli.js",
     "start": "node dist/main.js",
+    "lint": "eslint . --ext .ts --max-warnings=0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "catalog:refresh:dev": "tsx src/tools/marketCatalogGeneratorCli.ts --mode near-zero --verify-books --require-metadata --yesno-only --merge",
+    "catalog:refresh": "node dist/tools/marketCatalogGeneratorCli.js --mode near-zero --verify-books --require-metadata --yesno-only --merge"
   },
   "dependencies": {
     "@fastify/cors": "^8.5.0",
@@ -24,8 +29,12 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.7.5",
     "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vitest/coverage-v8": "^4.0.16",
+    "eslint": "^8.57.0",
     "tsx": "^4.19.1",
-    "typescript": "^5.6.3",
+    "typescript": "5.5.4",
     "vitest": "^4.0.16"
   }
 }

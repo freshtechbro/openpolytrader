@@ -14,6 +14,7 @@
  */
 
 import { ethers, JsonRpcProvider, WebSocketProvider } from 'ethers';
+import { loadEnv, type Env } from './env.js';
 
 /**
  * RPC Provider Configuration
@@ -25,6 +26,7 @@ export interface RpcProviderConfig {
   rps: number;           // Rate limit per second
   priority: number;       // Lower = higher priority
   wsUrl?: string;         // WebSocket URL (optional)
+  rateLimitWindowMs: number;
 }
 
 /**
@@ -42,132 +44,188 @@ export interface RpcConfig {
   };
 }
 
-/**
- * Phase 1 Configuration - $1000 Capital
- * Cost: $39/month (Alchemy Growth Plan)
- */
-export const RPC_CONFIG_PHASE_1: RpcConfig = {
-  phase: 1,
-  primary: {
-    name: 'Alchemy',
-    url: 'https://polygon-mainnet.g.alchemy.com/v2',
-    apiKey: process.env.ALCHEMY_API_KEY,
-    rps: 125,
-    priority: 1,
-    wsUrl: 'wss://polygon-mainnet.g.alchemy.com/v2'
-  },
-  fallbacks: [
-    {
+function normalizeUrl(value?: string): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function joinUrlPath(base: string, suffix: string): string {
+  const left = base.endsWith('/') ? base.slice(0, -1) : base;
+  const right = suffix.startsWith('/') ? suffix.slice(1) : suffix;
+  return `${left}/${right}`;
+}
+
+function buildCircuitBreaker(env: Env, phase: 1 | 2 | 3): RpcConfig['circuitBreaker'] {
+  if (phase === 1) {
+    return {
+      failureThreshold: env.RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE1,
+      timeout: env.RPC_CIRCUIT_TIMEOUT_MS_PHASE1,
+      halfOpenRequests: env.RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE1
+    };
+  }
+  if (phase === 2) {
+    return {
+      failureThreshold: env.RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE2,
+      timeout: env.RPC_CIRCUIT_TIMEOUT_MS_PHASE2,
+      halfOpenRequests: env.RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE2
+    };
+  }
+  return {
+    failureThreshold: env.RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE3,
+    timeout: env.RPC_CIRCUIT_TIMEOUT_MS_PHASE3,
+    halfOpenRequests: env.RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE3
+  };
+}
+
+function buildPhase1Config(env: Env): RpcConfig {
+  const rateLimitWindowMs = env.RPC_RATE_LIMIT_WINDOW_MS;
+  const fallbacks: RpcProviderConfig[] = [];
+  let priority = 2;
+
+  const quicknodeUrl = normalizeUrl(env.QUICKNODE_RPC_URL);
+  if (quicknodeUrl) {
+    fallbacks.push({
       name: 'QuickNode',
-      url: 'https://polygon-mainnet.g.alchemy.com/v2/demo',
-      rps: 10,
-      priority: 2
-    },
-    {
-      name: 'Ankr',
-      url: 'https://rpc.ankr.com/polygon',
-      rps: 30,
-      priority: 3
-    }
-  ],
-  websocket: {
-    name: 'Alchemy WebSocket',
-    url: 'wss://polygon-mainnet.g.alchemy.com/v2',
-    apiKey: process.env.ALCHEMY_API_KEY,
-    rps: 125,
-    priority: 1
-  },
-  circuitBreaker: {
-    failureThreshold: 5,
-    timeout: 60000,  // 60 seconds
-    halfOpenRequests: 3
+      url: quicknodeUrl,
+      rps: env.QUICKNODE_RPC_RPS,
+      priority: priority++,
+      rateLimitWindowMs
+    });
   }
-};
 
-/**
- * Phase 2 Configuration - $2000+ Capital
- * Cost: ~$229/month (Chainstack Pro + Ankr PAYG)
- */
-export const RPC_CONFIG_PHASE_2: RpcConfig = {
-  phase: 2,
-  primary: {
-    name: 'Chainstack Pro',
-    url: process.env.CHAINSTACK_RPC_URL || 'https://polygon-mainnet.chainstacklabs.com',
-    rps: 600,
-    priority: 1
-  },
-  fallbacks: [
-    {
+  const ankrUrl = normalizeUrl(env.ANKR_RPC_URL);
+  if (ankrUrl) {
+    fallbacks.push({
+      name: 'Ankr',
+      url: ankrUrl,
+      rps: env.ANKR_RPC_RPS_PHASE1,
+      priority: priority++,
+      rateLimitWindowMs
+    });
+  }
+
+  return {
+    phase: 1,
+    primary: {
+      name: 'Alchemy',
+      url: env.ALCHEMY_RPC_URL,
+      apiKey: env.ALCHEMY_API_KEY,
+      rps: env.ALCHEMY_RPC_RPS,
+      priority: 1,
+      wsUrl: env.ALCHEMY_WS_URL,
+      rateLimitWindowMs
+    },
+    fallbacks,
+    websocket: {
+      name: 'Alchemy WebSocket',
+      url: env.ALCHEMY_WS_URL,
+      apiKey: env.ALCHEMY_API_KEY,
+      rps: env.ALCHEMY_RPC_RPS,
+      priority: 1,
+      rateLimitWindowMs
+    },
+    circuitBreaker: buildCircuitBreaker(env, 1)
+  };
+}
+
+function buildPhase2Config(env: Env): RpcConfig {
+  const rateLimitWindowMs = env.RPC_RATE_LIMIT_WINDOW_MS;
+  const fallbacks: RpcProviderConfig[] = [];
+  let priority = 2;
+
+  const alchemyUrl = normalizeUrl(env.ALCHEMY_RPC_URL);
+  if (alchemyUrl) {
+    fallbacks.push({
       name: 'Alchemy Growth',
-      url: 'https://polygon-mainnet.g.alchemy.com/v2',
-      apiKey: process.env.ALCHEMY_API_KEY,
-      rps: 125,
-      priority: 2
-    },
-    {
-      name: 'Ankr',
-      url: process.env.ANKR_RPC_URL || 'https://rpc.ankr.com/polygon',
-      rps: 1500,
-      priority: 3
-    }
-  ],
-  websocket: {
-    name: 'Chainstack WebSocket',
-    url: process.env.CHAINSTACK_WS_URL || 'wss://polygon-mainnet.chainstacklabs.com',
-    rps: 600,
-    priority: 1
-  },
-  circuitBreaker: {
-    failureThreshold: 3,
-    timeout: 30000,  // 30 seconds
-    halfOpenRequests: 5
+      url: alchemyUrl,
+      apiKey: env.ALCHEMY_API_KEY,
+      rps: env.ALCHEMY_RPC_RPS,
+      priority: priority++,
+      rateLimitWindowMs
+    });
   }
-};
 
-/**
- * Phase 3 Configuration - $5000+ Capital
- * Cost: $500+/month (Private node + Flashbots)
- */
-export const RPC_CONFIG_PHASE_3: RpcConfig = {
-  phase: 3,
-  primary: {
-    name: 'Private Node',
-    url: process.env.PRIVATE_RPC_URL || 'http://localhost:8545',
-    rps: 10000,
-    priority: 1
-  },
-  fallbacks: [
-    {
-      name: 'Chainstack Pro',
-      url: process.env.CHAINSTACK_RPC_URL || 'https://polygon-mainnet.chainstacklabs.com',
-      rps: 600,
-      priority: 2
-    }
-  ],
-  websocket: {
-    name: 'Private Node WebSocket',
-    url: process.env.PRIVATE_WS_URL || 'ws://localhost:8545',
-    rps: 10000,
-    priority: 1
-  },
-  circuitBreaker: {
-    failureThreshold: 2,
-    timeout: 15000,  // 15 seconds
-    halfOpenRequests: 10
+  const ankrUrl = normalizeUrl(env.ANKR_RPC_URL);
+  if (ankrUrl) {
+    fallbacks.push({
+      name: 'Ankr',
+      url: ankrUrl,
+      rps: env.ANKR_RPC_RPS_PHASE2,
+      priority: priority++,
+      rateLimitWindowMs
+    });
   }
-};
+
+  return {
+    phase: 2,
+    primary: {
+      name: 'Chainstack Pro',
+      url: env.CHAINSTACK_RPC_URL,
+      rps: env.CHAINSTACK_RPC_RPS,
+      priority: 1,
+      rateLimitWindowMs
+    },
+    fallbacks,
+    websocket: {
+      name: 'Chainstack WebSocket',
+      url: env.CHAINSTACK_WS_URL,
+      rps: env.CHAINSTACK_RPC_RPS,
+      priority: 1,
+      rateLimitWindowMs
+    },
+    circuitBreaker: buildCircuitBreaker(env, 2)
+  };
+}
+
+function buildPhase3Config(env: Env): RpcConfig {
+  const rateLimitWindowMs = env.RPC_RATE_LIMIT_WINDOW_MS;
+  const fallbacks: RpcProviderConfig[] = [];
+  let priority = 2;
+
+  const chainstackUrl = normalizeUrl(env.CHAINSTACK_RPC_URL);
+  if (chainstackUrl) {
+    fallbacks.push({
+      name: 'Chainstack Pro',
+      url: chainstackUrl,
+      rps: env.CHAINSTACK_RPC_RPS,
+      priority: priority++,
+      rateLimitWindowMs
+    });
+  }
+
+  return {
+    phase: 3,
+    primary: {
+      name: 'Private Node',
+      url: env.PRIVATE_RPC_URL,
+      rps: env.PRIVATE_RPC_RPS,
+      priority: 1,
+      rateLimitWindowMs
+    },
+    fallbacks,
+    websocket: {
+      name: 'Private Node WebSocket',
+      url: env.PRIVATE_WS_URL,
+      rps: env.PRIVATE_RPC_RPS,
+      priority: 1,
+      rateLimitWindowMs
+    },
+    circuitBreaker: buildCircuitBreaker(env, 3)
+  };
+}
 
 /**
  * Auto-select configuration based on capital
  */
-export function getRpcConfig(capital: number): RpcConfig {
+export function getRpcConfig(env: Env, capital: number): RpcConfig {
   if (capital >= 5000) {
-    return RPC_CONFIG_PHASE_3;
-  } else if (capital >= 2000) {
-    return RPC_CONFIG_PHASE_2;
-  } else {
-    return RPC_CONFIG_PHASE_1;
+    return buildPhase3Config(env);
   }
+  if (capital >= 2000) {
+    return buildPhase2Config(env);
+  }
+  return buildPhase1Config(env);
 }
 
 /**
@@ -233,6 +291,10 @@ class CircuitBreaker {
     return this.state;
   }
 
+  getFailureCount(): number {
+    return this.failures;
+  }
+
   reset(): void {
     this.state = 'closed';
     this.failures = 0;
@@ -262,10 +324,10 @@ export class RpcProvider {
   }
 
   private initializeProvider(config: RpcProviderConfig): void {
-    const url = config.apiKey ? `${config.url}/${config.apiKey}` : config.url;
+    const url = config.apiKey ? joinUrlPath(config.url, config.apiKey) : config.url;
     const provider = new ethers.JsonRpcProvider(url);
     const circuitBreaker = new CircuitBreaker(this.config.circuitBreaker, config.name);
-    const rateLimiter = new RateLimiter(config.rps);
+    const rateLimiter = new RateLimiter(config.rps, config.rateLimitWindowMs);
 
     this.providers.set(config.name, { provider, circuitBreaker });
     this.rateLimiters.set(config.name, rateLimiter);
@@ -276,7 +338,7 @@ export class RpcProvider {
   /**
    * Execute RPC call with automatic fallback
    */
-  async execute<T>(method: string, params?: any[]): Promise<T> {
+  async execute<T>(method: string, params?: unknown[]): Promise<T> {
     const providerEntry = this.getProviderEntry();
 
     try {
@@ -337,8 +399,8 @@ export class RpcProvider {
       return null;
     }
 
-    const url = this.config.websocket.apiKey 
-      ? `${this.config.websocket.url}/${this.config.websocket.apiKey}`
+    const url = this.config.websocket.apiKey
+      ? joinUrlPath(this.config.websocket.url, this.config.websocket.apiKey)
       : this.config.websocket.url;
 
     return new ethers.WebSocketProvider(url);
@@ -366,13 +428,13 @@ export class RpcProvider {
   /**
    * Get provider health status
    */
-  getHealthStatus() {
-    const status: any = {};
+  getHealthStatus(): Record<string, { state: string; failures: number; isCurrent: boolean }> {
+    const status: Record<string, { state: string; failures: number; isCurrent: boolean }> = {};
 
     for (const [name, entry] of this.providers.entries()) {
       status[name] = {
         state: entry.circuitBreaker.getState(),
-        failures: entry.circuitBreaker['failures'] || 0,
+        failures: entry.circuitBreaker.getFailureCount(),
         isCurrent: name === this.currentProviderName
       };
     }
@@ -385,23 +447,22 @@ export class RpcProvider {
  * Simple Rate Limiter
  */
 class RateLimiter {
-  private lastRequestTime = 0;
   private requestTimes: number[] = [];
 
-  constructor(private rps: number) {}
+  constructor(private rps: number, private windowMs: number) {}
 
   async acquire(): Promise<void> {
     const now = Date.now();
     
-    // Remove requests older than 1 second
-    this.requestTimes = this.requestTimes.filter(t => now - t < 1000);
+    // Remove requests outside the configured window
+    this.requestTimes = this.requestTimes.filter((t) => now - t < this.windowMs);
 
     if (this.requestTimes.length >= this.rps) {
       const oldestRequest = this.requestTimes[0];
-      const waitTime = 1000 - (now - oldestRequest);
+      const waitTime = this.windowMs - (now - oldestRequest);
       
       if (waitTime > 0) {
-        await new Promise(resolve => setTimeout(resolve, waitTime));
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
 
@@ -412,8 +473,9 @@ class RateLimiter {
 /**
  * Create RPC provider for given capital
  */
-export function createRpcProvider(capital: number = 1000): RpcProvider {
-  const config = getRpcConfig(capital);
+export function createRpcProvider(env: Env, capital?: number): RpcProvider {
+  const resolvedCapital = capital ?? env.TOTAL_CAPITAL;
+  const config = getRpcConfig(env, resolvedCapital);
   return new RpcProvider(config);
 }
 
@@ -422,10 +484,9 @@ export function createRpcProvider(capital: number = 1000): RpcProvider {
  */
 let rpcProviderInstance: RpcProvider | null = null;
 
-export function getRpcProvider(): RpcProvider {
+export function getRpcProvider(env: Env = loadEnv()): RpcProvider {
   if (!rpcProviderInstance) {
-    const capital = parseInt(process.env.TOTAL_CAPITAL || '1000');
-    rpcProviderInstance = createRpcProvider(capital);
+    rpcProviderInstance = createRpcProvider(env);
   }
   return rpcProviderInstance;
 }

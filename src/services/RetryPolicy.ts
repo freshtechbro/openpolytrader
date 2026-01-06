@@ -11,7 +11,7 @@ export class RetryPolicy {
   async execute<T>(fn: () => Promise<T>): Promise<T> {
     let attempt = 0;
 
-    while (true) {
+    for (;;) {
       try {
         return await fn();
       } catch (error) {

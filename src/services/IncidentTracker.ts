@@ -1,9 +1,14 @@
 import type { MarketAllowlist } from '../domain/allowlist.js';
-import type { IncidentRecord } from '../domain/incident.js';
+import {
+  type IncidentRecord,
+  getDefaultRecoveryAction,
+  getDefaultSeverity
+} from '../domain/incident.js';
 import type { MetricsStore } from '../telemetry/metrics.js';
 
 export interface IncidentTrackerConfig {
   cooldownMs: number;
+  maxIncidents: number;
 }
 
 export class IncidentTracker {
@@ -16,25 +21,34 @@ export class IncidentTracker {
   ) {}
 
   record(incident: IncidentRecord): void {
-    this.incidents.unshift(incident);
-    if (this.incidents.length > 1000) {
+    const normalized: IncidentRecord = {
+      ...incident,
+      severity: incident.severity ?? getDefaultSeverity(incident.reason),
+      recoveryAction: incident.recoveryAction ?? getDefaultRecoveryAction(incident.reason)
+    };
+
+    this.incidents.unshift(normalized);
+    const maxIncidents = this.config.maxIncidents;
+    if (this.incidents.length > maxIncidents) {
       this.incidents.pop();
     }
 
-    this.allowlist.quarantine(
-      incident.marketId,
-      this.config.cooldownMs,
-      incident.reason
-    );
+    if (normalized.recoveryAction !== 'alert_only') {
+      this.allowlist.quarantine(
+        normalized.marketId,
+        this.config.cooldownMs,
+        normalized.reason
+      );
+    }
 
     this.metrics.record({
       type: 'incident',
-      timestamp: incident.timestamp,
-      data: incident
+      timestamp: normalized.timestamp,
+      data: normalized
     });
   }
 
-  recent(limit = 50): IncidentRecord[] {
+  recent(limit: number): IncidentRecord[] {
     return this.incidents.slice(0, limit);
   }
 }

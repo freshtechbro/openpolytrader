@@ -1,6 +1,8 @@
 export { loadEnv } from './env.js';
 export { DEFAULT_TRADE_POLICY, type TradePolicy } from './policy.js';
 export { DEFAULT_RISK_CONFIG, effectiveTradeFraction, type RiskConfig } from './risk.js';
+export { validateP0Config } from './validate.js';
+export { ConfigStore } from './store.js';
 export {
   getRpcConfig,
   createRpcProvider,
