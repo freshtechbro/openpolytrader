@@ -24,6 +24,12 @@ export function useEventStream(url: string, onEvent?: (event: StreamEvent) => vo
     source.addEventListener('risk', handle);
     source.addEventListener('info', handle);
     source.addEventListener('error', handle);
+    source.addEventListener('latency', handle);
+    source.addEventListener('execution_lifecycle', handle);
+    source.addEventListener('book_staleness', handle);
+    source.addEventListener('slo_violation', handle);
+    source.addEventListener('gate_rejection', handle);
+    source.addEventListener('shadow_decision', handle);
 
     function handle(event: MessageEvent) {
       const parsed = JSON.parse(event.data) as StreamEvent;

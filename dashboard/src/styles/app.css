@@ -92,6 +92,62 @@ body {
   color: var(--alert);
 }
 
+.trading-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.trading-mode__label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+}
+
+.trading-mode__value {
+  font-weight: 700;
+}
+
+.trading-mode__enabled {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.trading-mode--off {
+  background: rgba(120, 120, 120, 0.12);
+  color: var(--ink-muted);
+}
+
+.trading-mode--shadow {
+  background: rgba(100, 100, 180, 0.12);
+  color: #5a5a9e;
+}
+
+.trading-mode--paper {
+  background: rgba(180, 140, 60, 0.12);
+  color: #9a7030;
+}
+
+.trading-mode--live {
+  background: var(--signal-soft);
+  color: var(--signal);
+}
+
+.trading-mode--disabled {
+  background: var(--alert-soft);
+  color: var(--alert);
+}
+
 main {
   padding: 32px 48px 72px;
   display: flex;

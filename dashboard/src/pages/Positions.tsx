@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { MetricsTable } from '../components/MetricsTable';
 import { Panel } from '../components/Panel';
 import { Section } from '../components/Section';
+import { opsFetchJson } from '../lib/opsClient';
+import { PORTFOLIO_REFRESH_MS } from '../lib/dashboardConfig';
 
 interface PortfolioSnapshot {
   totalCapital: number;
@@ -18,16 +20,9 @@ export function Positions() {
   useEffect(() => {
     const fetchPortfolio = async () => {
       try {
-        const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-        const token = import.meta.env.VITE_OPS_TOKEN || '';
-        const headers: Record<string, string> = {};
-        if (token) headers['x-ops-token'] = token;
-
-        const res = await fetch(`${baseUrl}/portfolio`, { headers });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        setPortfolio(data);
+        const data = await opsFetchJson<PortfolioSnapshot | { error?: string }>('/portfolio');
+        if ('error' in data && data.error) throw new Error(data.error);
+        setPortfolio(data as PortfolioSnapshot);
         setError(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to fetch portfolio');
@@ -37,7 +32,7 @@ export function Positions() {
     };
 
     fetchPortfolio();
-    const interval = setInterval(fetchPortfolio, 5000);
+    const interval = setInterval(fetchPortfolio, PORTFOLIO_REFRESH_MS);
     return () => clearInterval(interval);
   }, []);
 

@@ -2,41 +2,36 @@ import { useEffect, useState } from 'react';
 
 import { TopNav } from './components/TopNav';
 import { useEventStream } from './hooks/useEventStream';
+import { OPS_STREAM_URL, opsFetch } from './lib/opsClient';
+import { INCIDENTS_LIMIT, SLO_REFRESH_MS } from './lib/dashboardConfig';
 
-import { Overview, type AllowlistEntry, type HealthReport, type MetricsSnapshot } from './pages/Overview';
+import { Overview, type AllowlistEntry, type HealthReport, type MetricsSnapshot, type SloAggregates } from './pages/Overview';
 import { Markets } from './pages/Markets';
 import { Incidents } from './pages/Incidents';
 import { Positions } from './pages/Positions';
 import { RiskGates } from './pages/RiskGates';
 
 type Page = 'overview' | 'markets' | 'incidents' | 'positions' | 'risk-gates';
-
-const OPS_BASE = import.meta.env.VITE_OPS_BASE_URL ?? 'http://localhost:3000';
-const OPS_TOKEN = (import.meta.env.VITE_OPS_API_TOKEN as string | undefined)?.trim();
-const OPS_HEADERS = OPS_TOKEN ? { Authorization: `Bearer ${OPS_TOKEN}` } : undefined;
-const OPS_STREAM_URL = OPS_TOKEN
-  ? `${OPS_BASE}/stream?token=${encodeURIComponent(OPS_TOKEN)}`
-  : `${OPS_BASE}/stream`;
-
-function opsFetch(path: string) {
-  return fetch(`${OPS_BASE}${path}`, OPS_HEADERS ? { headers: OPS_HEADERS } : undefined);
-}
+type TradingMode = 'off' | 'shadow' | 'paper' | 'live';
 
 export function App() {
   const [page, setPage] = useState<Page>('overview');
 
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [metrics, setMetrics] = useState<MetricsSnapshot | null>(null);
+  const [slo, setSlo] = useState<SloAggregates | null>(null);
   const [allowlist, setAllowlist] = useState<AllowlistEntry[]>([]);
   const [incidents, setIncidents] = useState<any[]>([]);
   const [expanded, setExpanded] = useState(false);
+  const [tradingMode, setTradingMode] = useState<TradingMode | null>(null);
+  const [tradingEnabled, setTradingEnabled] = useState<boolean | null>(null);
 
   const [streamEvents] = useEventStream(OPS_STREAM_URL, (event) => {
     if (event.type === 'health') {
       setHealth(event.data);
     }
     if (event.type === 'incident') {
-      setIncidents((prev) => [event.data, ...prev].slice(0, 20));
+      setIncidents((prev) => [event.data, ...prev].slice(0, INCIDENTS_LIMIT));
     }
     if (event.type === 'info' || event.type === 'risk' || event.type === 'order' || event.type === 'fill') {
       void opsFetch('/metrics')
@@ -52,12 +47,41 @@ export function App() {
     void opsFetch('/metrics')
       .then(async (res) => setMetrics(await res.json()))
       .catch(() => {});
+    void opsFetch('/slo')
+      .then(async (res) => setSlo(await res.json()))
+      .catch(() => {});
     void opsFetch('/allowlist')
       .then(async (res) => setAllowlist(await res.json()))
       .catch(() => {});
     void opsFetch('/incidents')
-      .then(async (res) => setIncidents(await res.json()))
+      .then(async (res) => {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setIncidents(data.slice(0, INCIDENTS_LIMIT));
+          return;
+        }
+        setIncidents([]);
+      })
       .catch(() => {});
+    void opsFetch('/config')
+      .then(async (res) => {
+        const data = await res.json();
+        if (data && !data.error) {
+          setTradingMode(data.tradingMode ?? null);
+          setTradingEnabled(data.tradingEnabled ?? null);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void opsFetch('/slo')
+        .then(async (res) => setSlo(await res.json()))
+        .catch(() => {});
+    }, SLO_REFRESH_MS);
+
+    return () => clearInterval(timer);
   }, []);
 
   return (
@@ -67,6 +91,8 @@ export function App() {
         subtitle="Near-risk-free monitoring console"
         status={health?.status ?? 'degraded'}
         streamConnected={streamEvents.connected}
+        tradingMode={tradingMode}
+        tradingEnabled={tradingEnabled}
       />
 
       <main>
@@ -92,6 +118,7 @@ export function App() {
           <Overview
             health={health}
             metrics={metrics}
+            slo={slo}
             allowlist={allowlist}
             incidents={incidents}
             expanded={expanded}
