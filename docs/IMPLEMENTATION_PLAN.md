@@ -417,6 +417,7 @@ Introduce venue abstraction, fee models, and contract mapping stubs.
 2. Add `ContractMapper` allowlist and equivalence checks.
 3. Implement `FeeModel` for per-venue fees and EV gating.
 4. Stub Kalshi adapter with no live trading enabled.
+5. Model Kalshi settlement expectations as market-specific (timeline/payout + contract terms), with a configurable settlement lag buffer (do not assume immediate settlement).
 
 ### Files impacted
 - `src/venues/VenueAdapter.ts` (new file)
@@ -433,6 +434,7 @@ Phase 1 remains stable while Phase 2 interfaces are ready.
 - [ ] Phase 1 execution path remains unchanged behind a feature flag.
 - [ ] Contract mapping enforces strict allowlist checks.
 - [ ] Fee model integrates into EV checks without breaking Phase 1.
+- [ ] Settlement timing expectations are per-market and configurable (no hardcoded settlement SLA).
 
 ---
 

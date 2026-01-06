@@ -9,11 +9,14 @@
 
 The runtime reads secrets from environment variables (see `.env.example`).
 
-Required for live trading:
+Required for live trading (`TRADING_ENABLED=true` and `TRADING_MODE=live`):
 - `ALCHEMY_API_KEY`
 - `POLYMARKET_API_KEY`
 - `POLYMARKET_API_SECRET`
 - `POLYMARKET_PASSPHRASE`
+
+Optional alerts:
+- `OPS_ALERT_WEBHOOK_URL` (treat as secret if it embeds tokens)
 
 ## Ops API authentication
 
@@ -36,7 +39,7 @@ Supported token locations:
 ## Incident response
 
 If you suspect credential leakage:
-1. Disable trading (`TRADING_ENABLED=false`) and stop the process.
+1. Disable trading (`TRADING_ENABLED=false` or `TRADING_MODE=off`) and stop the process.
 2. Rotate keys immediately.
 3. Review recent incidents and event logs for suspicious activity.
 4. Re-deploy with new credentials and verify ops API auth.

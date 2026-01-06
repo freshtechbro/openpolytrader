@@ -681,32 +681,24 @@ Circuit breakers are per-market; failure isolation is achieved.
 ## Task 13 — Add Portfolio Reconciliation
 
 ### Reasoning
-Local portfolio state can drift from on-chain reality. Periodic reconciliation ensures accuracy.
+Local portfolio state can drift from venue truth. Periodic reconciliation ensures accuracy without requiring onchain indexing in Phase 1.
 
 ### What to do
-Implement portfolio reconciliation against on-chain balances.
+Implement portfolio reconciliation against CLOB open orders + trades. Defer onchain reconciliation to Phase 2.
 
 ### How
 1. Add reconciliation method to PortfolioAgent:
    ```typescript
    async reconcile(): Promise<ReconciliationResult> {
      const localPositions = this.getPositions();
-     const onChainBalances = await this.polygonRpc.getBalances(this.address);
+     const openOrders = await this.clob.getOpenOrders();
+     const trades = await this.clob.getTrades();
      
      const discrepancies: Discrepancy[] = [];
-     for (const [tokenId, localQty] of localPositions) {
-       const onChainQty = onChainBalances.get(tokenId) ?? 0;
-       if (Math.abs(localQty - onChainQty) > DUST_THRESHOLD) {
-         discrepancies.push({ tokenId, local: localQty, onChain: onChainQty });
-       }
-     }
+     // compare local state to venue truth derived from orders/trades
      
      if (discrepancies.length > 0) {
        this.incidentTracker.report('portfolio_drift', discrepancies);
-       // Auto-correct local state to match on-chain
-       for (const d of discrepancies) {
-         this.updatePosition(d.tokenId, d.onChain);
-       }
      }
      
      return { discrepancies, corrected: discrepancies.length };
@@ -717,18 +709,18 @@ Implement portfolio reconciliation against on-chain balances.
 
 ### Files impacted
 - `src/agents/portfolio/PortfolioAgent.ts`
-- `src/services/PolygonRpc.ts`
+- `src/services/PolymarketClob.ts`
 - `src/api/server.ts`
 
 ### End goal
-Portfolio state is periodically verified against on-chain truth.
+Portfolio state is periodically verified against venue truth.
 
 ### Acceptance criteria
 - [ ] Reconciliation logic implemented
 - [ ] Discrepancies logged as incidents
-- [ ] Auto-correction works
 - [ ] Scheduled reconciliation runs
 - [ ] API endpoint for manual trigger
+- [ ] Onchain reconciliation deferred to Phase 2
 
 ---
 

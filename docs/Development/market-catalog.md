@@ -30,6 +30,68 @@ Example:
 ]
 ```
 
+## Auto-generating the catalog (Polymarket)
+
+You can generate a catalog automatically from the Polymarket CLOB `GET /markets` endpoint.
+
+The generator filters to **active**, **accepting orders**, **not closed/archived**, **binary (2-token)** markets where `enable_order_book=true`.
+
+In `near-zero` mode it also verifies **both** orderbooks exist and have non-empty asks, and requires `tick_size` + `min_order_size` from `/book` (to avoid runtime fallback metadata for near-zero policy).
+
+Generate a catalog file:
+```bash
+# Dev (no build needed)
+npx tsx src/tools/marketCatalogGeneratorCli.ts --out data/market-catalog.json --mode near-zero --verify-books --require-metadata --overwrite
+
+# Prod / Docker (after build)
+npm run build
+node dist/tools/marketCatalogGeneratorCli.js --out data/market-catalog.json --mode near-zero --verify-books --require-metadata --overwrite
+```
+
+Optional filters:
+```bash
+# Stop after N pairs
+node dist/tools/marketCatalogGeneratorCli.js --out data/market-catalog.json --max 200
+
+# Only include markets with tags matching a substring
+node dist/tools/marketCatalogGeneratorCli.js --out data/market-catalog.json --tag politics
+
+# Conservative mode: only outcomes exactly Yes/No
+node dist/tools/marketCatalogGeneratorCli.js --out data/market-catalog.json --yesno-only
+```
+
+Then point the runtime at the generated file:
+```bash
+MARKET_CATALOG_PATH=data/market-catalog.json
+```
+
+## Automated refresh (deploy prestart)
+
+When starting via `npm start` (including the Docker image), a prestart hook runs a conservative catalog refresh:
+- Uses `MARKET_CATALOG_PATH` as the output path
+- Uses `near-zero` mode
+- Uses `--yesno-only` (only outcomes exactly Yes/No)
+- Uses merge semantics (never removes existing pairs)
+- Preserves existing pair count by default in merge mode
+
+If the file does not exist yet, it bootstraps up to `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS` near-zero-compatible pairs (default: 50).
+
+Manual refresh that never removes existing pairs:
+```bash
+npm run build
+npm run catalog:refresh -- --out data/market-catalog.json
+```
+
+Manual refresh that can *add* new near-zero-compatible pairs while preserving existing ones:
+```bash
+npm run build
+npm run catalog:refresh -- --out data/market-catalog.json --max 300
+```
+
+Notes:
+- `data/market-catalog.json` is gitignored by default (generated artifact).
+- This is an allowlist seed mechanism; for production, prefer reviewing the generated catalog and trimming it to the markets you actually want to trade.
+
 ## Identifier Guidance
 - `marketId` is the market or condition identifier used for allowlisting and incident tracking.
 - `yesTokenId` and `noTokenId` are the token identifiers used for `/book?token_id=...` and order placement.

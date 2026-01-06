@@ -125,16 +125,18 @@ Extend `TradePolicy` in `src/config/policy.ts` with strategy mode, SLO knobs, an
    minEdgeTicks: number;
    /** Depth buffer multiplier - require depth > size * multiplier */
    depthBufferMultiplier: number;
-   /** Maximum loss in ticks if unwind is required */
-   maxUnwindLossTicks: number;
-   /** Slippage tolerance in basis points for pre-trade check */
-   slippageToleranceBps: number;
+   /** Slippage tolerance in basis points for entry */
+   entrySlippageToleranceBps: number;
    /** Minimum depth levels to check (top N levels) */
    minDepthLevels: number;
    /** Max orders per minute (velocity throttle) */
    maxOrdersPerMinute: number;
    /** Max order-to-trade ratio before throttling */
    maxOrderToTradeRatio: number;
+   /** Order velocity window in milliseconds */
+   orderVelocityWindowMs: number;
+   /** Order-to-trade window in milliseconds */
+   orderToTradeWindowMs: number;
    /** Price band tolerance in basis points */
    priceBandBps: number;
    ```
@@ -144,15 +146,16 @@ Extend `TradePolicy` in `src/config/policy.ts` with strategy mode, SLO knobs, an
    strategyMode: 'near_zero_risk',
    requireFreshBook: true,
    maxBookStalenessMs: 500,
-   maxDecisionLatencyMs: 100,
+   maxDecisionLatencyMs: 250,
    maxDelayedAckRate: 0.001,
    minEdgeTicks: 3,
    depthBufferMultiplier: 1.5,
-   maxUnwindLossTicks: 2,
-   slippageToleranceBps: 200,
+   entrySlippageToleranceBps: 50,
    minDepthLevels: 3,
    maxOrdersPerMinute: 60,
    maxOrderToTradeRatio: 10,
+   orderVelocityWindowMs: 60000,
+   orderToTradeWindowMs: 600000,
    priceBandBps: 500
    ```
 
@@ -201,6 +204,8 @@ Add unwind loss budget constraints to `src/config/risk.ts`.
    maxUnwindLossFraction: number;
    /** Max loss in price ticks per set on unwind */
    maxUnwindLossTicks: number;
+   /** Slippage tolerance in basis points for unwind pricing */
+   unwindSlippageToleranceBps: number;
    /** Hard per-trade worst-case loss bound in dollars */
    maxPerTradeLossDollars: number;
    /** Daily loss limit as fraction of capital */
@@ -209,8 +214,9 @@ Add unwind loss budget constraints to `src/config/risk.ts`.
 
 2. Update `DEFAULT_RISK_CONFIG`:
    ```typescript
-   maxUnwindLossFraction: 0.02,  // 2% max loss on unwind
+   maxUnwindLossFraction: 0.025, // 2.5% max loss on unwind
    maxUnwindLossTicks: 2,        // 2 ticks max loss
+   unwindSlippageToleranceBps: 500,
    maxPerTradeLossDollars: 25,   // $25 max loss per trade
    dailyLossLimitFraction: 0.03  // 3% daily loss limit
    ```
@@ -228,7 +234,7 @@ Add unwind loss budget constraints to `src/config/risk.ts`.
        config.maxPerTradeLossDollars
      );
      const lossPerSet = tickSize * config.maxUnwindLossTicks;
-     if (lossPerSet <= 0) return Infinity;
+     if (lossPerSet <= 0) return availableCapital / Math.max(tickSize, 0.01);
      return maxLossNotional / lossPerSet;
    }
    ```
@@ -300,8 +306,8 @@ System is incapable of placing orders unless `TRADING_MODE=live` and `TRADING_EN
 
 - [ ] In `off` mode, no network order calls are reachable
 - [ ] In `shadow` mode, decisions are logged but no orders placed
-- [ ] In `paper` mode, simulated fills are processed
-- [ ] Mode is visible in ops dashboard
+- [ ] In `paper` mode, order placement remains blocked until a simulator is implemented
+- [ ] Mode is visible in ops dashboard (UI work delegated to frontend-ui-ux-engineer)
 - [ ] Kill-switch (`TRADING_ENABLED=false`) blocks all order paths
 
 ---
@@ -318,33 +324,24 @@ Add config validation at startup that fails closed on missing/invalid values.
 
 ### How
 
-1. Create `src/config/validate.ts`:
-   ```typescript
-   export function validateP0Config(policy: TradePolicy, risk: RiskConfig): void {
-     const required = [
-       ['maxBookStalenessMs', policy.maxBookStalenessMs, 100, 5000],
-       ['maxDecisionLatencyMs', policy.maxDecisionLatencyMs, 50, 500],
-       ['minEdgeTicks', policy.minEdgeTicks, 1, 10],
-       ['maxUnwindLossTicks', risk.maxUnwindLossTicks, 1, 5],
-       ['maxPerTradeLossDollars', risk.maxPerTradeLossDollars, 1, 100],
-     ];
-     for (const [name, value, min, max] of required) {
-       if (value === undefined || value < min || value > max) {
-         throw new Error(`Invalid config: ${name}=${value} (expected ${min}-${max})`);
-       }
-     }
-   }
-   ```
-
-2. Call validation in `src/main.ts` before starting supervisor
-
-3. Log validated config values at startup
+1. Create `src/config/schema.ts` with a config schema registry (field metadata + min/max).
+2. Update `src/config/validate.ts` to validate policy/risk using the schema registry and cross-field checks.
+3. Call validation in `src/main.ts` before starting supervisor.
+4. Log validated config values at startup.
+5. Expose settings API endpoints for config reads/updates (UI delegated):
+   - `GET /config`
+   - `GET /config/schema`
+   - `PATCH /config/policy`
+   - `PATCH /config/risk`
 
 ### Files impacted
 
+- `src/config/schema.ts` (new file)
 - `src/config/validate.ts` (new file)
 - `src/config/index.ts`
 - `src/main.ts`
+- `src/config/store.ts` (new file)
+- `src/api/server.ts`
 
 ### End goal
 
@@ -579,18 +576,21 @@ Add order velocity throttling, order-to-trade ratio limits, and price-band check
 
 1. Add rolling counters to `MetricsStore`:
    ```typescript
-   private orderCounts = new Map<string, { orders: number; fills: number; windowStart: number }>();
+   private orderCounts = new Map<string, { orders: number[]; fills: number[] }>();
    
-   recordOrderAttempt(marketId: string): void;
-   recordFill(marketId: string): void;
+   recordOrderAttempt(marketId: string, nowMs?: number): void;
+   recordFill(marketId: string, nowMs?: number): void;
+   getOrderStats(marketId: string, windowMs: number): { orders: number; fills: number };
    getOTR(marketId: string, windowMs: number): number;
    getOrderVelocity(windowMs: number): number;
    ```
 
 2. Add velocity/OTR checks in `ExecutionAgent.executeArbitrage`:
    ```typescript
-   const velocity = this.metrics.getOrderVelocity(60_000);
-   if (velocity > policy.maxOrdersPerMinute) {
+   const windowMs = policy.orderVelocityWindowMs;
+   const velocity = this.metrics.getOrderVelocity(windowMs);
+   const limit = policy.maxOrdersPerMinute * (windowMs / 60_000);
+   if (velocity > limit) {
      return { success: false, reason: 'velocity_throttle' };
    }
    ```
@@ -1014,6 +1014,8 @@ Risk sizing bounded by worst-case loss and fully observable.
 
 ## Task 17 — Add user channel order/trade integration
 
+**Status**: ✅ Implemented (requires `POLYMARKET_USER_WS_URL` for near-zero-risk live mode).
+
 ### Reasoning
 
 **CRITICAL GAP**: `ExecutionAgent` only reads REST responses; order updates, partial fills, and trade confirmations require user channel.
@@ -1064,6 +1066,8 @@ Partial fills and delayed updates detected within SLA via user channel.
 
 ## Task 18 — Add expected vs observed basket reconciliation to PortfolioAgent
 
+**Status**: ✅ Implemented.
+
 ### Reasoning
 
 After execution, `PortfolioAgent` should verify that actual fills match expected positions.
@@ -1103,14 +1107,16 @@ Portfolio reconciles expected vs actual fills; mismatches trigger incidents.
 
 ### Acceptance criteria
 
-- [ ] Size mismatches detected with tolerance
-- [ ] Price mismatches detected with tolerance
-- [ ] Unexpected fills flagged
-- [ ] Missing legs detected via `checkStalePending`
+- [x] Size mismatches detected with tolerance
+- [x] Price mismatches detected with tolerance
+- [x] Unexpected fills flagged
+- [x] Missing legs detected via `checkStalePending`
 
 ---
 
 ## Task 19 — Add per-market CircuitBreaker registry
+
+**Status**: ✅ Implemented.
 
 ### Reasoning
 
@@ -1152,14 +1158,16 @@ Problem markets isolated without halting all trading.
 
 ### Acceptance criteria
 
-- [ ] Per-market breakers managed lazily
-- [ ] Open circuit blocks execution
-- [ ] Failures record to correct market
-- [ ] `getOpenMarkets()` returns tripped markets
+- [x] Per-market breakers managed lazily
+- [x] Open circuit blocks execution
+- [x] Failures record to correct market
+- [x] `getOpenMarkets()` returns tripped markets
 
 ---
 
 ## Task 20 — Add exposure cleanup after unwind/quarantine
+
+**Status**: ✅ Implemented.
 
 ### Reasoning
 
@@ -1191,13 +1199,15 @@ Exposure tracking accurate after safety actions.
 
 ### Acceptance criteria
 
-- [ ] Exposure cleanups work correctly
-- [ ] Zero positions removed from tracking
-- [ ] PnL impact recorded on unwind
+- [x] Exposure cleanups work correctly
+- [x] Zero positions removed from tracking
+- [x] PnL impact recorded on unwind
 
 ---
 
 ## Task 21 — Add portfolio reconciliation loop with venue truth
+
+**Status**: ✅ Implemented (CLOB open orders + Data API positions; positions require `POLYMARKET_POSITIONS_USER` in live mode).
 
 ### Reasoning
 
@@ -1234,6 +1244,11 @@ Add periodic reconciliation that detects drift and triggers incidents.
    - Every 5 minutes during operation
    - After any incident
 
+3. Optional onchain reconciliation (PolygonRpc, Phase 2 only — deferred in Phase 1):
+   - Fetch onchain balances and settlement events for conditional tokens (ERC-1155) and USDC.
+   - Map asset IDs to token IDs, handle confirmations/reorgs, and reconcile against CLOB fills.
+   - Expect higher complexity due to chain indexing, rate limits, and latency tradeoffs.
+
 ### Files impacted
 
 - `src/agents/portfolio/PortfolioAgent.ts`
@@ -1246,14 +1261,16 @@ Drift is detectable, explained, and triggers deterministic response.
 
 ### Acceptance criteria
 
-- [ ] Reconciliation fetches venue state
-- [ ] Drift detection with tolerance
-- [ ] Incidents created on discrepancy
-- [ ] Periodic and event-triggered runs
+- [x] Reconciliation fetches venue state
+- [x] Drift detection with tolerance
+- [x] Incidents created on discrepancy
+- [x] Periodic and event-triggered runs
 
 ---
 
 ## Task 22 — Add trading SLO health checks to OpsAgent
+
+**Status**: ✅ Implemented (in-memory windows via `MetricsStore` until Task 23 persistence).
 
 ### Reasoning
 
@@ -1290,10 +1307,10 @@ OpsAgent monitors trading SLOs and alerts on violations.
 
 ### Acceptance criteria
 
-- [ ] All SLO checks implemented
-- [ ] Checks return `ok: false` when thresholds violated
-- [ ] Checks configurable via policy
-- [ ] SLO metrics available for dashboard
+- [x] All SLO checks implemented
+- [x] Checks return `ok: false` when thresholds violated
+- [x] Checks configurable via policy
+- [x] SLO metrics available for dashboard
 
 ---
 
@@ -1340,10 +1357,10 @@ SLO metrics are stable, audit-ready, and not truncated.
 
 ### Acceptance criteria
 
-- [ ] Metrics persisted to SQLite
-- [ ] Rolling window queries work correctly
-- [ ] Retention policy enforced
-- [ ] Dashboard shows 1h/24h SLOs
+- [x] Metrics persisted to SQLite
+- [x] Rolling window queries work correctly
+- [x] Retention policy enforced
+- [x] Dashboard shows 1h/24h SLOs
 
 ---
 
@@ -1386,6 +1403,10 @@ Add webhook/Slack alerting and proper health endpoints.
 
 3. Add healthcheck to `Dockerfile` and `docker-compose.yml`
 
+4. Add manual resume endpoint for quarantined markets (ops API):
+   - `POST /allowlist/:marketId/resume`
+   - Records an info event for auditability
+
 ### Files impacted
 
 - `src/agents/ops/OpsAgent.ts`
@@ -1399,10 +1420,11 @@ Ops can get alerts; health checks reflect dependency status.
 
 ### Acceptance criteria
 
-- [ ] Webhook alerts sent on incidents
-- [ ] `/health/ready` checks all dependencies
-- [ ] `/health/live` returns uptime
-- [ ] Container healthcheck configured
+- [x] Webhook alerts sent on incidents
+- [x] `/health/ready` checks all dependencies
+- [x] `/health/live` returns uptime
+- [x] Container healthcheck configured
+- [x] Manual resume endpoint unquarantines a market
 
 ---
 
@@ -1462,11 +1484,11 @@ Shutdown cancels all open orders, closes WS, emits final telemetry, exits cleanl
 
 ### Acceptance criteria
 
-- [ ] SIGTERM/SIGINT handled gracefully
-- [ ] Open orders cancelled
-- [ ] Metrics flushed
-- [ ] Connections closed
-- [ ] Timeout prevents hanging
+- [x] SIGTERM/SIGINT handled gracefully
+- [x] Open orders cancelled
+- [x] Metrics flushed
+- [x] Connections closed
+- [x] Timeout prevents hanging
 
 ---
 
@@ -1520,10 +1542,10 @@ No orphaned orders or unknown exposure post-boot.
 
 ### Acceptance criteria
 
-- [ ] Events replayed from EventStore
-- [ ] Open orders fetched and compared
-- [ ] Orphaned orders cancelled
-- [ ] Portfolio reconciled before trading
+- [x] Events replayed from EventStore
+- [x] Open orders fetched and compared
+- [x] Orphaned orders cancelled
+- [x] Portfolio reconciled before trading
 
 ---
 
@@ -1572,13 +1594,13 @@ All near-zero-risk functionality verified via automated tests.
 
 ### Acceptance criteria
 
-- [ ] All new gates have unit tests
-- [ ] State machine transitions fully tested
-- [ ] Timeout handling tested with fake timers
-- [ ] Unwind logic tested for all paths
-- [ ] Integration test validates end-to-end flow
-- [ ] All tests pass: `npm run test`
-- [ ] Coverage ≥90% on new code
+- [x] All new gates have unit tests
+- [x] State machine transitions fully tested
+- [x] Timeout handling tested with fake timers
+- [x] Unwind logic tested for all paths
+- [x] Integration test validates end-to-end flow
+- [x] All tests pass: `npm run test`
+- [x] Coverage ≥90% on new code
 
 ---
 
@@ -1644,12 +1666,12 @@ All near-zero-risk functionality verified via automated tests.
 
 ---
 
-## Open Questions (Require User Input)
+## Resolved Defaults (P0)
 
-1. **Per-trade worst-case loss bound**: What is the hard limit in $ and % of capital? (Current default: $25 / 2.5%)
-2. **Operator intervention model**: Fully hands-off auto-quarantine, or require manual ack to resume?
-3. **Reconciliation data sources**: CLOB fills/open orders only, or also onchain settlement via PolygonRpc?
-4. **Alert delivery method**: Webhook, Slack, or dashboard/SSE only for P0?
+1. **Per-trade worst-case loss bound**: Default $25 / 2.5% until overridden.
+2. **Operator intervention model**: Hands-off auto-quarantine with manual resume option via ops API.
+3. **Reconciliation data sources**: CLOB fills/open orders as baseline; optional onchain settlement via PolygonRpc (added complexity).
+4. **Alert delivery method**: Optional webhook via env.
 
 ---
 
