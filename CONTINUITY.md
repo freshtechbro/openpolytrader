@@ -1,27 +1,28 @@
 Goal (incl. success criteria):
-- Squash the last three continuity ledger commits into a single commit.
-- Success: one conventional commit replaces the three prior ledger commits and the working tree is clean.
+- Commit and push current repo changes.
+- Success: all intended changes are committed with a clear message and pushed to the correct remote/branch, or confirmed no changes to commit.
 - Constraints/Assumptions:
   - Follow AGENTS.md: use skills, RepoPrompt tools, update ledger each turn.
-  - Use Git Commit Helper skill for message generation.
-  - Avoid destructive git commands (no hard reset).
+  - Run git status/diff before any edits.
+  - Before committing: run lint, build, test per repo guidance.
+  - Avoid touching unrelated changes; do not revert other agent work.
 - Key decisions:
-  - Move HEAD back with `git update-ref` (soft-reset equivalent) and recommit.
+  - Use Git Commit Helper skill to craft commit message from diff.
 - State:
   - Done:
-    - Loaded repo context and Git Commit Helper skill.
-    - Verified working tree was clean before squashing.
-    - Moved HEAD back three commits with `git update-ref` to stage combined changes.
-    - Pre-commit checks already passed earlier in this session.
+    - Gathered repo context via RepoPrompt workspace.
+    - Ran `git status -sb` and `git diff` (changes: `CONTINUITY.md`, `settings/risk-gates/active.json`).
+    - Completed pre-commit checks: `npm run lint`, `npm run build`, `npm run test` (all passed).
   - Now:
-    - Commit the staged changes into a single conventional commit.
+    - Stage changes and create commit message(s).
   - Next:
-    - Review `git diff --staged` and finalize the commit message; expected outcome: accurate summary.
-    - Run `git commit` to create the squashed commit; expected outcome: one ledger commit.
-    - Verify clean status with `git status -sb`; expected outcome: no pending changes.
-    - Push to origin if requested; expected outcome: remote updated.
+    - Stage intended files (`git add ...`); expected outcome: staged diff reflects only intended changes; files impacted: `CONTINUITY.md`, `settings/risk-gates/active.json`.
+    - Review `git diff --staged` for accuracy; expected outcome: confirm commit contents.
+    - Commit with conventional message using Git Commit Helper; expected outcome: new commit(s) on `main`.
+    - Push to correct remote/branch; expected outcome: `origin/main` updated.
 - Open questions (UNCONFIRMED if needed):
-  - Push the squashed commit to origin after creation? UNCONFIRMED.
+  - None yet.
 - Working set (files/ids/commands):
   - `CONTINUITY.md`
-  - Commands: `git diff --staged`, `git commit`, `git status`, `git push`
+  - `settings/risk-gates/active.json`
+  - Commands: `git status -sb`, `git diff`, `npm run lint`, `npm run build`, `npm run test`, `git add`, `git diff --staged`, `git commit`, `git push`
