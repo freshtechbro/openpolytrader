@@ -13,13 +13,15 @@ Goal (incl. success criteria):
     - Gathered repo context via RepoPrompt workspace.
     - Ran `git status -sb` and `git diff` (changes: `CONTINUITY.md`, `settings/risk-gates/active.json`).
     - Completed pre-commit checks: `npm run lint`, `npm run build`, `npm run test` (all passed).
+    - Committed changes as `chore(risk): refresh active profile metadata`.
+    - Pushed to `origin/main`.
   - Now:
-    - Stage changes and create commit message(s).
+    - Awaiting further requests or additional changes.
   - Next:
-    - Stage intended files (`git add ...`); expected outcome: staged diff reflects only intended changes; files impacted: `CONTINUITY.md`, `settings/risk-gates/active.json`.
-    - Review `git diff --staged` for accuracy; expected outcome: confirm commit contents.
-    - Commit with conventional message using Git Commit Helper; expected outcome: new commit(s) on `main`.
-    - Push to correct remote/branch; expected outcome: `origin/main` updated.
+    - Verify clean working tree with `git status -sb`; expected outcome: no pending changes; files impacted: none.
+    - If new changes are requested, stage intended files with `git add`; expected outcome: staged diff matches intended scope; files impacted: user-specified files.
+    - Re-run pre-commit checks before any new commit (`npm run lint/build/test`); expected outcome: green checks; files impacted: none unless fixes needed.
+    - Commit and push any new changes; expected outcome: updated `origin/main`; files impacted: user-specified files.
 - Open questions (UNCONFIRMED if needed):
   - None yet.
 - Working set (files/ids/commands):
