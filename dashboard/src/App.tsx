@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { TopNav } from './components/TopNav';
 import { useEventStream } from './hooks/useEventStream';
-import { OPS_STREAM_URL, opsFetch } from './lib/opsClient';
+import { OPS_STREAM_URL, opsFetch, opsFetchJson } from './lib/opsClient';
 import { INCIDENTS_LIMIT, SLO_REFRESH_MS } from './lib/dashboardConfig';
 
 import { Overview, type AllowlistEntry, type HealthReport, type MetricsSnapshot, type SloAggregates } from './pages/Overview';
@@ -10,8 +10,9 @@ import { Markets } from './pages/Markets';
 import { Incidents } from './pages/Incidents';
 import { Positions } from './pages/Positions';
 import { RiskGates } from './pages/RiskGates';
+import { Decisions } from './pages/Decisions';
 
-type Page = 'overview' | 'markets' | 'incidents' | 'positions' | 'risk-gates';
+type Page = 'overview' | 'markets' | 'incidents' | 'positions' | 'risk-gates' | 'decisions';
 type TradingMode = 'off' | 'shadow' | 'paper' | 'live';
 
 export function App() {
@@ -26,6 +27,19 @@ export function App() {
   const [tradingMode, setTradingMode] = useState<TradingMode | null>(null);
   const [tradingEnabled, setTradingEnabled] = useState<boolean | null>(null);
 
+  const fetchAllowlist = useCallback(async () => {
+    try {
+      const data = await opsFetchJson<unknown>('/markets');
+      if (Array.isArray(data)) {
+        setAllowlist(data as AllowlistEntry[]);
+        return;
+      }
+      setAllowlist([]);
+    } catch {
+      setAllowlist([]);
+    }
+  }, []);
+
   const [streamEvents] = useEventStream(OPS_STREAM_URL, (event) => {
     if (event.type === 'health') {
       setHealth(event.data);
@@ -33,42 +47,36 @@ export function App() {
     if (event.type === 'incident') {
       setIncidents((prev) => [event.data, ...prev].slice(0, INCIDENTS_LIMIT));
     }
+    if (event.type === 'allowlist_updated') {
+      void fetchAllowlist();
+    }
     if (event.type === 'info' || event.type === 'risk' || event.type === 'order' || event.type === 'fill') {
-      void opsFetch('/metrics')
-        .then(async (res) => setMetrics(await res.json()))
+      void opsFetchJson<MetricsSnapshot>('/metrics')
+        .then((data) => setMetrics(data))
         .catch(() => {});
     }
   });
 
   useEffect(() => {
-    void opsFetch('/health')
-      .then(async (res) => setHealth(await res.json()))
+    void opsFetchJson<HealthReport>('/health')
+      .then((data) => setHealth(data))
       .catch(() => {});
-    void opsFetch('/metrics')
-      .then(async (res) => setMetrics(await res.json()))
+    void opsFetchJson<MetricsSnapshot>('/metrics')
+      .then((data) => setMetrics(data))
       .catch(() => {});
-    void opsFetch('/slo')
-      .then(async (res) => setSlo(await res.json()))
+    void opsFetchJson<SloAggregates>('/slo')
+      .then((data) => setSlo(data))
       .catch(() => {});
-    void opsFetch('/allowlist')
-      .then(async (res) => setAllowlist(await res.json()))
+    void fetchAllowlist();
+    void opsFetchJson<unknown>('/incidents')
+      .then((data) => setIncidents(Array.isArray(data) ? data.slice(0, INCIDENTS_LIMIT) : []))
       .catch(() => {});
-    void opsFetch('/incidents')
-      .then(async (res) => {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          setIncidents(data.slice(0, INCIDENTS_LIMIT));
-          return;
-        }
-        setIncidents([]);
-      })
-      .catch(() => {});
-    void opsFetch('/config')
-      .then(async (res) => {
-        const data = await res.json();
-        if (data && !data.error) {
-          setTradingMode(data.tradingMode ?? null);
-          setTradingEnabled(data.tradingEnabled ?? null);
+    void opsFetchJson<unknown>('/config')
+      .then((data) => {
+        if (data && typeof data === 'object' && !('error' in data)) {
+          const record = data as Record<string, unknown>;
+          setTradingMode(typeof record.tradingMode === 'string' ? (record.tradingMode as TradingMode) : null);
+          setTradingEnabled(typeof record.tradingEnabled === 'boolean' ? record.tradingEnabled : null);
         }
       })
       .catch(() => {});
@@ -76,8 +84,8 @@ export function App() {
 
   useEffect(() => {
     const timer = setInterval(() => {
-      void opsFetch('/slo')
-        .then(async (res) => setSlo(await res.json()))
+      void opsFetchJson<SloAggregates>('/slo')
+        .then((data) => setSlo(data))
         .catch(() => {});
     }, SLO_REFRESH_MS);
 
@@ -93,6 +101,27 @@ export function App() {
         streamConnected={streamEvents.connected}
         tradingMode={tradingMode}
         tradingEnabled={tradingEnabled}
+        onModeChange={async (mode) => {
+          const confirm = mode === 'live' ? '?confirm=true' : '';
+          const res = await opsFetch(`/config/trading-mode${confirm}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode })
+          });
+          if (res.ok) {
+            setTradingMode(mode);
+          }
+        }}
+        onEnabledChange={async (enabled) => {
+          const res = await opsFetch('/config/trading-mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled })
+          });
+          if (res.ok) {
+            setTradingEnabled(enabled);
+          }
+        }}
       />
 
       <main>
@@ -112,6 +141,9 @@ export function App() {
           <button type="button" onClick={() => setPage('risk-gates')} aria-current={page === 'risk-gates'}>
             Risk Gates
           </button>
+          <button type="button" onClick={() => setPage('decisions')} aria-current={page === 'decisions'}>
+            Decisions
+          </button>
         </nav>
 
         {page === 'overview' ? (
@@ -130,6 +162,7 @@ export function App() {
         {page === 'incidents' ? <Incidents incidents={incidents} /> : null}
         {page === 'positions' ? <Positions /> : null}
         {page === 'risk-gates' ? <RiskGates /> : null}
+        {page === 'decisions' ? <Decisions /> : null}
       </main>
     </div>
   );

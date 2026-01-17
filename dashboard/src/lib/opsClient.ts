@@ -15,5 +15,27 @@ export function opsFetch(path: string, init?: RequestInit): Promise<Response> {
 
 export async function opsFetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await opsFetch(path, init);
-  return (await response.json()) as T;
+  const text = await response.text();
+  const parsed = text.trim().length > 0 ? safeParseJSON(text) : null;
+
+  if (!response.ok) {
+    const message =
+      parsed &&
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as Record<string, unknown>).error === 'string'
+        ? String((parsed as Record<string, unknown>).error)
+        : `http_${response.status}`;
+    throw new Error(`${path}:${message}`);
+  }
+
+  return parsed as T;
+}
+
+function safeParseJSON(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }

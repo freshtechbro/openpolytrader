@@ -22,12 +22,15 @@ export type MetricsSnapshot = {
 export type AllowlistEntry = {
   key: string;
   entry: { status: string; until?: number; reason?: string };
+  question?: string | null;
+  description?: string | null;
 };
 
 export type SloAggregate = {
   window: '1h' | '24h';
   pairedFillRate: number;
   p95LatencyMs: number;
+  p95AckLatencyMs: number;
   delayedAckRate: number;
   bookFreshnessViolations: number;
   samples?: Record<string, number>;
@@ -58,6 +61,7 @@ export function Overview({ health, metrics, slo, allowlist, incidents, expanded,
       agg.window,
       formatPercent(agg.pairedFillRate),
       formatMs(agg.p95LatencyMs),
+      formatMs(agg.p95AckLatencyMs),
       formatPercent(agg.delayedAckRate),
       String(agg.bookFreshnessViolations ?? 0)
     ]);
@@ -111,14 +115,21 @@ export function Overview({ health, metrics, slo, allowlist, incidents, expanded,
         <Panel
           title="1h / 24h"
           body={
-            <MetricsTable
-              columns={['Window', 'Paired Fill Rate', 'Decision Latency p95', 'Delayed Ack Rate', 'Book Freshness Violations']}
+              <MetricsTable
+              columns={[
+                'Window',
+                'Paired Fill Rate',
+                'Decision Latency p95',
+                'Ack Latency p95',
+                'Delayed Ack Rate',
+                'Book Freshness Violations'
+              ]}
               rows={
                 slo?.error
-                  ? [[slo.error, '-', '-', '-', '-']]
+                  ? [[slo.error, '-', '-', '-', '-', '-']]
                   : sloRows.length > 0
                     ? sloRows
-                    : [['n/a', 'n/a', 'n/a', 'n/a', '0']]
+                    : [['n/a', 'n/a', 'n/a', 'n/a', 'n/a', '0']]
               }
             />
           }
@@ -130,9 +141,10 @@ export function Overview({ health, metrics, slo, allowlist, incidents, expanded,
           title="Allowlist"
           body={
             <MetricsTable
-              columns={['Market', 'Status', 'Until', 'Reason']}
+              columns={['Market', 'Question', 'Status', 'Until', 'Reason']}
               rows={allowlist.map((entry) => [
-                entry.key,
+                entry.key.slice(0, 12) + '…',
+                entry.question ?? '(loading...)',
                 entry.entry.status,
                 entry.entry.until ? new Date(entry.entry.until).toLocaleString() : '-',
                 entry.entry.reason ?? '-'

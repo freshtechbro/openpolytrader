@@ -1,6 +1,18 @@
+import type { CSSProperties, ReactNode } from 'react';
+
+export interface TableRow {
+  key?: string;
+  style?: CSSProperties;
+  cells: Array<ReactNode>;
+}
+
 interface MetricsTableProps {
   columns: string[];
-  rows: Array<Array<string | number>>;
+  rows: Array<Array<ReactNode> | TableRow>;
+}
+
+function isTableRow(row: Array<ReactNode> | TableRow): row is TableRow {
+  return typeof row === 'object' && !Array.isArray(row) && 'cells' in row;
 }
 
 export function MetricsTable({ columns, rows }: MetricsTableProps) {
@@ -24,13 +36,18 @@ export function MetricsTable({ columns, rows }: MetricsTableProps) {
               </td>
             </tr>
           ) : (
-            rows.map((row, rowIndex) => (
-              <tr key={`row-${rowIndex}`}>
-                {row.map((cell, cellIndex) => (
-                  <td key={`cell-${rowIndex}-${cellIndex}`}>{cell}</td>
-                ))}
-              </tr>
-            ))
+            rows.map((row, rowIndex) => {
+              const rowData = isTableRow(row) ? row : { cells: row };
+              const rowKey = isTableRow(row) && row.key ? row.key : `row-${rowIndex}`;
+              const rowStyle = isTableRow(row) ? row.style : undefined;
+              return (
+                <tr key={rowKey} style={rowStyle}>
+                  {rowData.cells.map((cell, cellIndex) => (
+                    <td key={`cell-${rowIndex}-${cellIndex}`}>{cell}</td>
+                  ))}
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>

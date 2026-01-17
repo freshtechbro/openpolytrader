@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 
 interface PanelProps {
-  title: string;
+  title: ReactNode;
   body: ReactNode;
   accent?: 'signal' | 'alert' | 'neutral';
 }

@@ -11,6 +11,36 @@ body {
   color: var(--ink);
 }
 
+/* Dashboard navigation buttons */
+main nav button {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 8px 14px;
+  min-height: 44px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  color: var(--ink-light);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+main nav button:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--ink);
+}
+
+main nav button[aria-current="true"] {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+main nav button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .app {
   min-height: 100vh;
   display: flex;
@@ -115,12 +145,51 @@ body {
 }
 
 .trading-mode__enabled {
-  font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 2px 6px;
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+.trading-mode__select {
+  background: transparent;
+  border: 1px solid currentColor;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.08);
+  color: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  cursor: pointer;
+  outline: none;
+}
+
+.trading-mode__select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.trading-mode__toggle {
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: inherit;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.trading-mode__toggle:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.trading-mode__toggle--on {
+  background: rgba(0, 128, 0, 0.2);
+}
+
+.trading-mode__toggle--off {
+  background: rgba(128, 128, 128, 0.2);
 }
 
 .trading-mode--off {
@@ -354,7 +423,7 @@ main {
 
 .table td {
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-size: 0.875rem;
 }
 
 .table th {

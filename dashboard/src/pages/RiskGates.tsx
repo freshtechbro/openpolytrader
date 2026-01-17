@@ -6,6 +6,17 @@ import { opsFetchJson } from '../lib/opsClient';
 
 type ConfigSectionKey = 'policy' | 'risk';
 type ConfigValue = number | boolean | string;
+type RiskProfileId = 'near_zero' | 'moderate' | 'high' | 'extra_high';
+
+const RISK_PROFILES: Array<{ id: RiskProfileId; label: string }> = [
+  { id: 'near_zero', label: 'Near Zero Risk (default)' },
+  { id: 'moderate', label: 'Moderate Risk' },
+  { id: 'high', label: 'High Risk' },
+  { id: 'extra_high', label: 'Extra High Risk' }
+];
+
+const riskProfileLabel = (id: RiskProfileId) =>
+  RISK_PROFILES.find((profile) => profile.id === id)?.label ?? id;
 
 interface ConfigFieldBase {
   key: string;
@@ -48,8 +59,16 @@ interface ConfigSchema {
 interface ConfigSnapshot {
   policy: Record<string, ConfigValue>;
   risk: Record<string, ConfigValue>;
+  riskProfile?: RiskProfileId;
+  riskProfileSource?: string;
   tradingMode?: string;
   tradingEnabled?: boolean;
+}
+
+interface RiskProfilesSnapshot {
+  activeProfile: RiskProfileId;
+  activeProfileSource: string;
+  availableProfiles: RiskProfileId[];
 }
 
 interface InfraConfigSnapshot {
@@ -98,7 +117,17 @@ export function RiskGates() {
   const [config, setConfig] = useState<ConfigSnapshot | null>(null);
   const [draft, setDraft] = useState<ConfigSnapshot | null>(null);
   const [infra, setInfra] = useState<InfraConfigSnapshot | null>(null);
+  const [riskProfiles, setRiskProfiles] = useState<RiskProfilesSnapshot | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [profileDraft, setProfileDraft] = useState<RiskProfileId>('near_zero');
+  const [profileState, setProfileState] = useState<{
+    saving: boolean;
+    error?: string;
+    warning?: string;
+    savedAt?: number;
+  }>({
+    saving: false
+  });
   const [saveState, setSaveState] = useState<Record<ConfigSectionKey, { saving: boolean; error?: string; savedAt?: number }>>({
     policy: { saving: false },
     risk: { saving: false }
@@ -108,10 +137,11 @@ export function RiskGates() {
     let mounted = true;
     const load = async () => {
       try {
-        const [schemaResponse, configResponse, infraResponse] = await Promise.all([
+        const [schemaResponse, configResponse, infraResponse, profilesResponse] = await Promise.all([
           opsFetchJson<ConfigSchema>('/config/schema'),
           opsFetchJson<ConfigSnapshot | { error?: string }>('/config'),
-          opsFetchJson<InfraConfigSnapshot | { error?: string }>('/config/infra')
+          opsFetchJson<InfraConfigSnapshot | { error?: string }>('/config/infra'),
+          opsFetchJson<RiskProfilesSnapshot | { error?: string }>('/config/risk-profiles')
         ]);
 
         if (!mounted) return;
@@ -121,10 +151,20 @@ export function RiskGates() {
         if ('error' in infraResponse && infraResponse.error) {
           throw new Error(infraResponse.error);
         }
+        if ('error' in profilesResponse && profilesResponse.error) {
+          throw new Error(profilesResponse.error);
+        }
+
+        const profileSnapshot = profilesResponse as RiskProfilesSnapshot;
 
         setSchema(schemaResponse);
         setConfig(configResponse as ConfigSnapshot);
         setDraft(configResponse as ConfigSnapshot);
+        setRiskProfiles(profileSnapshot);
+        const profile = profileSnapshot.activeProfile ?? (configResponse as ConfigSnapshot).riskProfile;
+        if (profile) {
+          setProfileDraft(profile);
+        }
         setInfra(infraResponse as InfraConfigSnapshot);
         setLoadError(null);
       } catch (error) {
@@ -141,6 +181,11 @@ export function RiskGates() {
   }, []);
 
   const sections = useMemo(() => schema?.sections ?? [], [schema]);
+  const activeProfile = riskProfiles?.activeProfile ?? config?.riskProfile ?? 'near_zero';
+  const activeProfileSource =
+    riskProfiles?.activeProfileSource ?? config?.riskProfileSource ?? 'defaults';
+  const availableProfiles =
+    riskProfiles?.availableProfiles ?? RISK_PROFILES.map((profile) => profile.id);
 
   const handleFieldChange = (sectionKey: ConfigSectionKey, field: ConfigField, value: ConfigValue) => {
     setDraft((prev) => {
@@ -215,9 +260,116 @@ export function RiskGates() {
     }
   };
 
+  const handleProfileApply = async () => {
+    if (!config) return;
+    setProfileState({ saving: true });
+
+    try {
+      const response = await opsFetchJson<{
+        ok?: boolean;
+        profile?: { id: RiskProfileId; source: string };
+        policy?: Record<string, ConfigValue>;
+        risk?: Record<string, ConfigValue>;
+        persisted?: boolean;
+        error?: string;
+        message?: string;
+      }>('/config/risk-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile: profileDraft })
+      });
+
+      if (response.error) {
+        throw new Error(response.message ?? response.error);
+      }
+
+      const nextConfig: ConfigSnapshot = {
+        ...config,
+        policy: response.policy ?? config.policy,
+        risk: response.risk ?? config.risk,
+        riskProfile: response.profile?.id ?? config.riskProfile,
+        riskProfileSource: response.profile?.source ?? config.riskProfileSource
+      };
+
+      setConfig(nextConfig);
+      setDraft(nextConfig);
+      if (response.profile?.id) {
+        setProfileDraft(response.profile.id);
+      }
+      setRiskProfiles((prev) => {
+        if (!prev || !response.profile) return prev;
+        return {
+          ...prev,
+          activeProfile: response.profile.id,
+          activeProfileSource: response.profile.source
+        };
+      });
+
+      const warning =
+        response.persisted === false
+          ? 'Profile applied but could not be persisted (will reset on restart).'
+          : undefined;
+
+      setProfileState({ saving: false, savedAt: Date.now(), warning });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to apply profile';
+      setProfileState({ saving: false, error: message });
+    }
+  };
+
   return (
     <>
       <Section title="Risk Gates" subtitle="Phase 1 settings, trading mode, and gate controls.">
+        <Panel
+          title="Risk Profile"
+          body={
+            loadError ? (
+              <p style={{ color: 'var(--alert)' }}>{loadError}</p>
+            ) : (
+              <div style={{ display: 'grid', gap: 12 }}>
+                <div>
+                  <p className="label">Active Profile</p>
+                  <p className="value">
+                    {activeProfile} {activeProfileSource ? `(${activeProfileSource})` : ''}
+                  </p>
+                </div>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  <label className="label" htmlFor="risk-profile-select">
+                    Select Profile
+                  </label>
+                  <select
+                    id="risk-profile-select"
+                    value={profileDraft}
+                    onChange={(event) => setProfileDraft(event.target.value as RiskProfileId)}
+                  >
+                    {availableProfiles.map((profileId) => (
+                      <option key={profileId} value={profileId}>
+                        {riskProfileLabel(profileId)}
+                      </option>
+                    ))}
+                  </select>
+                  <p style={{ margin: 0, color: 'var(--ink-muted)', fontSize: '0.85rem' }}>
+                    Applying a profile overwrites only the settings included in the preset; other values stay as-is.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <button type="button" className="link-button" onClick={handleProfileApply} disabled={profileState.saving}>
+                    {profileState.saving ? 'Applying...' : 'Apply profile'}
+                  </button>
+                  {profileState.error ? <span style={{ color: 'var(--alert)' }}>{profileState.error}</span> : null}
+                  {profileState.warning ? (
+                    <span style={{ color: 'var(--ink-muted)', fontSize: '0.8rem' }}>{profileState.warning}</span>
+                  ) : null}
+                  {profileState.savedAt ? (
+                    <span style={{ color: 'var(--ink-muted)', fontSize: '0.8rem' }}>
+                      Applied {new Date(profileState.savedAt).toLocaleTimeString()}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+            )
+          }
+        />
         <Panel
           title="Trading Mode"
           body={
@@ -417,15 +569,22 @@ export function RiskGates() {
                   <div style={{ display: 'grid', gap: 12 }}>
                     {section.fields.map((field) => {
                       const value = draft[section.key]?.[field.key];
+                      const fieldId = `${section.key}-${field.key}`;
+                      const descId = field.description ? `${fieldId}-desc` : undefined;
                       return (
                         <div
                           key={field.key}
                           style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) minmax(220px, 1.4fr)', gap: 16, alignItems: 'center' }}
                         >
                           <div>
-                            <p className="label">{field.label}</p>
+                            <label className="label" htmlFor={fieldId}>
+                              {field.label}
+                            </label>
                             {field.description ? (
-                              <p style={{ margin: '4px 0 0', color: 'var(--ink-muted)', fontSize: '0.85rem' }}>
+                              <p
+                                id={descId}
+                                style={{ margin: '4px 0 0', color: 'var(--ink-muted)', fontSize: '0.85rem' }}
+                              >
                                 {field.description}
                               </p>
                             ) : null}
@@ -434,11 +593,17 @@ export function RiskGates() {
                             {field.type === 'boolean' ? (
                               <input
                                 type="checkbox"
+                                id={fieldId}
+                                name={fieldId}
+                                aria-describedby={descId}
                                 checked={Boolean(value)}
                                 onChange={(event) => handleFieldChange(section.key, field, event.target.checked)}
                               />
                             ) : field.type === 'enum' ? (
                               <select
+                                id={fieldId}
+                                name={fieldId}
+                                aria-describedby={descId}
                                 value={String(value ?? '')}
                                 onChange={(event) => handleFieldChange(section.key, field, event.target.value)}
                               >
@@ -451,6 +616,9 @@ export function RiskGates() {
                             ) : (
                               <input
                                 type="number"
+                                id={fieldId}
+                                name={fieldId}
+                                aria-describedby={descId}
                                 value={value === '' || value === undefined || value === null ? '' : Number(value)}
                                 min={field.min}
                                 max={field.max}
