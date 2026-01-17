@@ -1,28 +1,27 @@
 Goal (incl. success criteria):
-- Implement configurable multi-tier LLM fallback (primary retry -> backup) per approved mapping, with OpenRouter disabled by default.
-- Success: config + runtime fallback logic + tests updated; mapping configurable via env/config.
+- Squash the last three continuity ledger commits into a single commit.
+- Success: one conventional commit replaces the three prior ledger commits and the working tree is clean.
 - Constraints/Assumptions:
-  - Follow repo AGENTS.md: use skills, RepoPrompt tools, update ledger each turn.
-  - Mapping must remain configurable via env/config (no hardcoding in code).
+  - Follow AGENTS.md: use skills, RepoPrompt tools, update ledger each turn.
+  - Use Git Commit Helper skill for message generation.
+  - Avoid destructive git commands (no hard reset).
 - Key decisions:
-  - Mapping approved: minimax group backups to `grok-code`, grok group backups to `glm-4.7-free`.
-  - OpenRouter stays disabled by default via `LLM_FALLBACK_ENABLED=false`.
+  - Move HEAD back with `git update-ref` (soft-reset equivalent) and recommit.
 - State:
   - Done:
-    - Implemented configurable LLM fallback config + backup mapping in env/config.
-    - Implemented retry -> backup flow with endpoint conversion in `LLMClient`.
-    - Updated tests and verified `npm run lint`, `npm run build`, `npm run test` pass.
-    - Updated docs to list new env vars and committed a clean series.
-    - Identified primary failure cause: repeated `Rate limit exceeded` errors on `opencode-zen` (minimax messages) opened the circuit breaker.
-    - Confirmed live impact: MarketDataAgent and PortfolioAgent errors/circuit_open within last 15m; OpsAgent unaffected.
+    - Loaded repo context and Git Commit Helper skill.
+    - Verified working tree was clean before squashing.
+    - Moved HEAD back three commits with `git update-ref` to stage combined changes.
+    - Pre-commit checks already passed earlier in this session.
   - Now:
-    - Apply operational recommendation: disable MarketData + Portfolio LLMs; decide whether to keep Ops/Scanner LLM.
-  - Next: at least 4 next tasks/subtasks each with a brief description. must be detailed with a clear action item and expected outcome and files to be impacted
-    - Disable MarketData/Portfolio LLM modes in `.env` and confirm behavior; outcome: reduced LLM call volume without breaking trading.
-    - Decide Ops/Scanner LLM usage (disable or shadow); outcome: updated `.env` settings for `LLM_OPS_MODE` and `LLM_SCANNER_MODE`.
-    - Optionally implement per-model/per-endpoint breaker if LLMs remain active; outcome: updated `src/services/llm/LLMClient.ts` + tests.
-    - Validate runtime with a live smoke check if LLMs remain enabled; outcome: no circuit-open errors.
+    - Commit the staged changes into a single conventional commit.
+  - Next:
+    - Review `git diff --staged` and finalize the commit message; expected outcome: accurate summary.
+    - Run `git commit` to create the squashed commit; expected outcome: one ledger commit.
+    - Verify clean status with `git status -sb`; expected outcome: no pending changes.
+    - Push to origin if requested; expected outcome: remote updated.
 - Open questions (UNCONFIRMED if needed):
-  - Keep Ops/Scanner LLM on? If yes, what cadence/thresholds? UNCONFIRMED.
+  - Push the squashed commit to origin after creation? UNCONFIRMED.
 - Working set (files/ids/commands):
   - `CONTINUITY.md`
+  - Commands: `git diff --staged`, `git commit`, `git status`, `git push`
