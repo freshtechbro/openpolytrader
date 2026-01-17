@@ -18,3 +18,7 @@ data/market-catalog.json
 
 # Auto Claude data directory
 .auto-claude/
+
+# Local artifacts
+data/*.bak-*
+tmp/
