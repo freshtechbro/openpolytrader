@@ -12,17 +12,15 @@ Goal (incl. success criteria):
     - Implemented configurable LLM fallback config + backup mapping in env/config.
     - Implemented retry -> backup flow with endpoint conversion in `LLMClient`.
     - Updated tests and verified `npm run lint`, `npm run build`, `npm run test` pass.
+    - Updated docs to list new env vars and committed a clean series.
   - Now:
-    - Update docs to list new env vars and prepare commit series.
+    - Awaiting review or further changes.
   - Next: at least 4 next tasks/subtasks each with a brief description. must be detailed with a clear action item and expected outcome and files to be impacted
-    - Update `docs/LLM_ZEN_FALLBACK_SPEC.md` to explicitly list new env vars; outcome: spec reflects all new configuration knobs.
-    - Scan other LLM docs for any missing references; outcome: optional updates to `docs/LLM_ZEN_FALLBACK_PLAN.md` or related docs.
-    - Prepare Conventional Commit series covering all current changes; outcome: ordered commit list with scopes and brief rationale.
-    - Apply any requested doc tweaks after review; outcome: final docs aligned.
+    - Review commit series for any grouping changes; outcome: adjusted commits if requested.
+    - Validate runtime behavior in live environment if desired; outcome: confirm fallback works in practice.
+    - Update any additional docs as needed; outcome: documentation remains aligned.
+    - Prepare release/PR summary if required; outcome: concise release notes.
 - Open questions (UNCONFIRMED if needed):
   - None.
 - Working set (files/ids/commands):
-  - `docs/LLM_ZEN_FALLBACK_SPEC.md`
-  - `docs/LLM_ZEN_FALLBACK_PLAN.md`
-  - `git status`
   - `CONTINUITY.md`
