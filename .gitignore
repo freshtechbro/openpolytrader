@@ -20,5 +20,5 @@ data/market-catalog.json
 .auto-claude/
 
 # Local artifacts
-data/*.bak-*
 tmp/
+data/*.bak-*

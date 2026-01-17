@@ -13,14 +13,16 @@ Goal (incl. success criteria):
     - Implemented retry -> backup flow with endpoint conversion in `LLMClient`.
     - Updated tests and verified `npm run lint`, `npm run build`, `npm run test` pass.
     - Updated docs to list new env vars and committed a clean series.
+    - Identified primary failure cause: repeated `Rate limit exceeded` errors on `opencode-zen` (minimax messages) opened the circuit breaker.
+    - Confirmed live impact: MarketDataAgent and PortfolioAgent errors/circuit_open within last 15m; OpsAgent unaffected.
   - Now:
-    - Awaiting review or further changes.
+    - Apply operational recommendation: disable MarketData + Portfolio LLMs; decide whether to keep Ops/Scanner LLM.
   - Next: at least 4 next tasks/subtasks each with a brief description. must be detailed with a clear action item and expected outcome and files to be impacted
-    - Review commit series for any grouping changes; outcome: adjusted commits if requested.
-    - Validate runtime behavior in live environment if desired; outcome: confirm fallback works in practice.
-    - Update any additional docs as needed; outcome: documentation remains aligned.
-    - Prepare release/PR summary if required; outcome: concise release notes.
+    - Disable MarketData/Portfolio LLM modes in `.env` and confirm behavior; outcome: reduced LLM call volume without breaking trading.
+    - Decide Ops/Scanner LLM usage (disable or shadow); outcome: updated `.env` settings for `LLM_OPS_MODE` and `LLM_SCANNER_MODE`.
+    - Optionally implement per-model/per-endpoint breaker if LLMs remain active; outcome: updated `src/services/llm/LLMClient.ts` + tests.
+    - Validate runtime with a live smoke check if LLMs remain enabled; outcome: no circuit-open errors.
 - Open questions (UNCONFIRMED if needed):
-  - None.
+  - Keep Ops/Scanner LLM on? If yes, what cadence/thresholds? UNCONFIRMED.
 - Working set (files/ids/commands):
   - `CONTINUITY.md`
