@@ -15,6 +15,14 @@ dashboard/tests/
 └── e2e/            # Playwright specs (*.spec.ts)
 ```
 
+## Local Instructions
+
+Local `AGENTS.md` files refine these rules:
+- `tests/unit/AGENTS.md`
+- `tests/integration/AGENTS.md`
+- `dashboard/tests/AGENTS.md`
+- `dashboard/tests/e2e/AGENTS.md`
+
 ## Coverage Requirements
 
 **95% threshold** on lines, functions, statements, branches.
@@ -39,6 +47,10 @@ npm run test:coverage  # with 95% thresholds
 
 cd dashboard
 npm run test:e2e       # Playwright
+
+# Live (from repo root)
+npm run dev:live       # Docker backend + dashboard dev server
+npm run dev:live:down  # Stop Docker backend
 ```
 
 ## Patterns

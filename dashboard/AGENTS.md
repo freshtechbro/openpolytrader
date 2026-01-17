@@ -18,6 +18,18 @@ dashboard/
 └── index.html        # Vite entry
 ```
 
+## Local Instructions
+
+Local `AGENTS.md` files refine these rules:
+- `dashboard/src/AGENTS.md`
+- `dashboard/src/components/AGENTS.md`
+- `dashboard/src/pages/AGENTS.md`
+- `dashboard/src/hooks/AGENTS.md`
+- `dashboard/src/lib/AGENTS.md`
+- `dashboard/src/styles/AGENTS.md`
+- `dashboard/tests/AGENTS.md`
+- `dashboard/tests/e2e/AGENTS.md`
+
 ## Components
 
 | Component | Purpose |
@@ -73,6 +85,10 @@ Token: `VITE_OPS_API_TOKEN` env var
 npm run dev      # Vite :5173
 npm run build    # Production
 npm run test:e2e # Playwright
+
+# Live (from repo root)
+npm run dev:live      # Docker backend + dashboard dev server
+npm run dev:live:down # Stop Docker backend
 ```
 
 ## Conventions

@@ -64,7 +64,52 @@ ScannerAgent → RiskAgent → ExecutionAgent → PortfolioAgent
   opportunity  gates         orders          positions
 ```
 
-Events: `opportunity:detected` → `risk:approved` → `execution_lifecycle` → `fill:applied`
+Events: `opportunity:detected` → `risk:approved` → `execution_lifecycle` → `execution:fill`
+
+## Architecture Diagrams
+
+```mermaid
+flowchart LR
+  Gamma[Gamma API] --> CatalogRefresher[MarketCatalogRefresher]
+  CatalogFile[(data/market-catalog.json)] --> Catalog[MarketCatalog]
+  Catalog --> Allowlist[MarketAllowlist]
+  Allowlist --> Supervisor
+
+  PolymarketWS[Polymarket CLOB WS] --> MarketDataAgent
+  PolymarketREST[Polymarket CLOB REST] --> MarketDataAgent
+  MarketDataAgent --> Orderbooks[(Orderbook State)]
+
+  Orderbooks --> ScannerAgent --> RiskAgent --> ExecutionAgent --> PortfolioAgent
+  ExecutionAgent --> PolymarketREST
+  PortfolioAgent --> DataApi[Polymarket Data API]
+
+  EventStore[(SQLite EventStore)] --> OpsApi[Fastify Ops API]
+  MetricsStore[(MetricsStore)] --> OpsAgent --> OpsApi
+  OpsApi --> Dashboard[React Dashboard]
+
+  LLMs[LLM Providers] -. advisory .-> ScannerAgent
+  LLMs -. advisory .-> OpsAgent
+  LLMs -. advisory .-> LearningAgent
+  LearningAgent -. insights .-> ScannerAgent
+```
+
+```mermaid
+flowchart TD
+  MarketUpdate[Market update (WS/REST)] --> ScannerAgent
+  ScannerAgent --> Opportunity[Arbitrage opportunity]
+  Opportunity --> Gates[evaluateGates]
+  Gates -->|pass| RiskAgent
+  Gates -->|fail| GateReject[gate_rejection metric]
+  RiskAgent --> ExecutionAgent
+  ExecutionAgent --> Orders[Place orders]
+  Orders --> PortfolioAgent
+  PortfolioAgent --> EventStore
+  OpsAgent --> OpsApi
+  OpsApi --> Dashboard
+
+  LLMs[LLM advisory] -. scoring/summary .-> ScannerAgent
+  LLMs -. health summary .-> OpsAgent
+```
 
 ## Anti-Patterns (THIS PROJECT)
 
@@ -122,6 +167,9 @@ Events: `opportunity:detected` → `risk:approved` → `execution_lifecycle` →
 # Backend
 npm run dev          # tsx src/main.ts
 npm run build        # tsc compilation
+npm run build:all    # build backend + dashboard + Docker images
+npm run build:all:up # build everything and start Docker containers
+npm run build:all:live # build everything and start backend + dashboard dev server
 npm run start        # node dist/main.js
 npm run lint         # eslint --max-warnings=0
 npm run typecheck    # tsc --noEmit
@@ -136,6 +184,10 @@ npm run test:e2e     # Playwright
 
 # Docker
 docker-compose up    # Local deployment
+
+# Live (Docker backend + dashboard)
+npm run dev:live      # Docker backend + dashboard dev server
+npm run dev:live:down # Stop Docker backend
 ```
 
 ## API Endpoints

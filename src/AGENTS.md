@@ -30,6 +30,16 @@ src/
 └── db/               # Migrations
 ```
 
+## Local Instructions
+
+Local `AGENTS.md` files in subdirectories refine these rules for specific areas:
+- `src/agents/**/AGENTS.md` for each agent
+- `src/core/AGENTS.md`, `src/domain/AGENTS.md`, `src/services/AGENTS.md`
+- `src/config/AGENTS.md`, `src/api/AGENTS.md`, `src/telemetry/AGENTS.md`
+- `src/tools/AGENTS.md`, `src/utils/AGENTS.md`, `src/security/AGENTS.md`, `src/venues/AGENTS.md`
+
+Read the nearest `AGENTS.md` before editing files in that subtree.
+
 ## Agent Flow
 
 ```
@@ -39,7 +49,7 @@ ScannerAgent → RiskAgent → ExecutionAgent → PortfolioAgent
   opportunity  gates         orders          positions
 ```
 
-Events: `market:updated` → `opportunity:detected` → `risk:approved` → `execution_lifecycle` → `fill:applied`
+Events: `market:updated` → `opportunity:detected` → `risk:approved` → `execution_lifecycle` → `execution:fill`
 
 ## Domain Layer
 
@@ -91,3 +101,12 @@ Use `getRequiredAction()` for next step in state machine.
 - Event-sourced state changes (not direct mutation)
 - Explicit failure reasons in arrays
 - No Zod schemas in domain; type guards for validation
+
+## Live Dev
+
+Run from repo root for interactive testing with Docker backend + dashboard:
+
+```bash
+npm run dev:live
+npm run dev:live:down
+```
