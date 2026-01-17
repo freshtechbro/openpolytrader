@@ -34,6 +34,57 @@ High-frequency arbitrage bot for Polymarket CLOB on Polygon POS, designed for $1
 
 ---
 
+## Current Architecture (as built)
+
+### Component Overview
+
+```mermaid
+flowchart LR
+  Gamma[Gamma API] --> CatalogRefresher[MarketCatalogRefresher]
+  CatalogFile[(data/market-catalog.json)] --> Catalog[MarketCatalog]
+  Catalog --> Allowlist[MarketAllowlist]
+  Allowlist --> Supervisor
+
+  PolymarketWS[Polymarket CLOB WS] --> MarketDataAgent
+  PolymarketREST[Polymarket CLOB REST] --> MarketDataAgent
+  MarketDataAgent --> Orderbooks[(Orderbook State)]
+
+  Orderbooks --> ScannerAgent --> RiskAgent --> ExecutionAgent --> PortfolioAgent
+  ExecutionAgent --> PolymarketREST
+  PortfolioAgent --> DataApi[Polymarket Data API]
+
+  EventStore[(SQLite EventStore)] --> OpsApi[Fastify Ops API]
+  MetricsStore[(MetricsStore)] --> OpsAgent --> OpsApi
+  OpsApi --> Dashboard[React Dashboard]
+
+  LLMs[LLM Providers] -. advisory .-> ScannerAgent
+  LLMs -. advisory .-> OpsAgent
+  LLMs -. advisory .-> LearningAgent
+  LearningAgent -. insights .-> ScannerAgent
+```
+
+### Decision and Trade Flow
+
+```mermaid
+flowchart TD
+  MarketUpdate[Market update (WS/REST)] --> ScannerAgent
+  ScannerAgent --> Opportunity[Arbitrage opportunity]
+  Opportunity --> Gates[evaluateGates]
+  Gates -->|pass| RiskAgent
+  Gates -->|fail| GateReject[gate_rejection metric]
+  RiskAgent --> ExecutionAgent
+  ExecutionAgent --> Orders[Place orders]
+  Orders --> PortfolioAgent
+  PortfolioAgent --> EventStore
+  OpsAgent --> OpsApi
+  OpsApi --> Dashboard
+
+  LLMs[LLM advisory] -. scoring/summary .-> ScannerAgent
+  LLMs -. health summary .-> OpsAgent
+```
+
+---
+
 ## System Architecture
 
 ```

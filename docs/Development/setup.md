@@ -21,6 +21,18 @@ npm install
 npm run dev
 ```
 
+## Live (Docker backend + dashboard)
+
+```bash
+npm run dev:live
+```
+
+Requires Docker running. Stop the container with:
+
+```bash
+npm run dev:live:down
+```
+
 ## Environment variables
 
 Start from `.env.example`.
@@ -31,6 +43,11 @@ Safety defaults:
 - `TRADING_ENABLED=false`
 - `TRADING_MODE=off`
 - `OPS_API_ENABLED=true`
+
+Risk profiles:
+- `RISK_PROFILE` selects `near_zero|moderate|high|extra_high` when explicitly set (non-empty).
+- `RISK_PROFILE_PATH` optionally points to a JSON profile file (overrides the default path).
+- Profile selections applied via the Ops API persist to `settings/risk-gates/active.json` and are loaded on boot unless overridden by env.
 
 Optional overrides (see `.env.example`):
 - Ops intervals/retention, allowlist auto-resume, event store path + telemetry retention, Polymarket CLOB/WS endpoints.

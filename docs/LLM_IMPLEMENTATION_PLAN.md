@@ -19,7 +19,7 @@ Goal: add strictly-advisory LLM capabilities while preserving deterministic gate
 - ExecutionAgent uses cached/advisory LLM hints only; no blocking calls on the hot path.
 - Use existing `RetryPolicy` and `CircuitBreaker` utilities for resilience.
 - Persist LLM decisions in the existing `decisions` table for auditability (store richer payloads inside JSON; avoid schema migrations by default).
-- Add global kill switches: `LLM_ENABLED=false` and `LLM_DATA_EXPORT_ENABLED=false` by default.
+- Add global kill switches, but default them on for launch: `LLM_ENABLED=true` and `LLM_DATA_EXPORT_ENABLED=true` (runtime still requires at least one API key).
 
 ### Hard constraints (non-negotiable)
 - LLMs never place/cancel orders or bypass `src/domain/gates.ts`; outputs are untrusted data that must be schema-validated + bounded.

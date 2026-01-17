@@ -1,41 +1,28 @@
-# Continuity Ledger - openpolytrader
-
-## Goal (incl. success criteria):
-- Land pending work as clean, atomic Conventional Commits.
-- Success criteria: working tree clean and commits ready to push/review.
-
-## Constraints/Assumptions:
-- Follow repo commit conventions (Conventional Commits; group by impact/type).
-- Do not commit secrets (only examples/config templates).
-- Prefer separate commits for tooling, docs, backend, dashboard, and tests when feasible.
-
-## Key decisions:
-- Use multiple commits grouped by area to keep review manageable.
-- Stage by explicit file lists (avoid interactive `git add -p` in this workflow).
-
-## State:
+Goal (incl. success criteria):
+- Implement configurable multi-tier LLM fallback (primary retry -> backup) per approved mapping, with OpenRouter disabled by default.
+- Success: config + runtime fallback logic + tests updated; mapping configurable via env/config.
+- Constraints/Assumptions:
+  - Follow repo AGENTS.md: use skills, RepoPrompt tools, update ledger each turn.
+  - Mapping must remain configurable via env/config (no hardcoding in code).
+- Key decisions:
+  - Mapping approved: minimax group backups to `grok-code`, grok group backups to `glm-4.7-free`.
+  - OpenRouter stays disabled by default via `LLM_FALLBACK_ENABLED=false`.
+- State:
   - Done:
-    - Committed the outstanding changes in 4 new commits:
-      - `7658032` feat(core): implement P0 config and ops SLOs
-      - `43c6455` feat(dashboard): refresh ops UI and risk gates
-      - `1f854e1` docs: update near-zero-risk plans and runbooks
-      - `e8e94ea` chore: update continuity ledger
-    - Synced the continuity ledger (`1c79c28` chore: sync continuity ledger).
-    - Pushed `main` to `origin` (remote now includes `caea9e7`, `7658032`, `43c6455`, `1f854e1`, `e8e94ea`, `1c79c28`).
+    - Implemented configurable LLM fallback config + backup mapping in env/config.
+    - Implemented retry -> backup flow with endpoint conversion in `LLMClient`.
+    - Updated tests and verified `npm run lint`, `npm run build`, `npm run test` pass.
   - Now:
-    - Awaiting next instruction (run checks, PR prep, or next feature).
-  - Next:
-    - Task 1: Verify build/test after commits (action: run `npm run lint`, `npm run typecheck`, `npm test`; outcome: confidence that commits are green; files: none)
-    - Task 2: Push branch if desired (action: `git push`; outcome: remote updated; files: none)
-    - Task 3: Rebase/squash if needed (action: interactive rebase); outcome: tidy history; files: none)
-    - Task 4: Update/trim `CONTINUITY.md` if it grows stale (action: keep ledger factual + short; outcome: compaction-safe state; files: `CONTINUITY.md`)
-
-## Open questions (UNCONFIRMED if needed):
-- None.
-
-## Working set (files/ids/commands):
-- `git status --porcelain=v1 -b`
-- `git diff --stat`
-- `git add <paths>`
-- `git commit -m "<type>(<scope>): <msg>"`
-- `git push`
+    - Update docs to list new env vars and prepare commit series.
+  - Next: at least 4 next tasks/subtasks each with a brief description. must be detailed with a clear action item and expected outcome and files to be impacted
+    - Update `docs/LLM_ZEN_FALLBACK_SPEC.md` to explicitly list new env vars; outcome: spec reflects all new configuration knobs.
+    - Scan other LLM docs for any missing references; outcome: optional updates to `docs/LLM_ZEN_FALLBACK_PLAN.md` or related docs.
+    - Prepare Conventional Commit series covering all current changes; outcome: ordered commit list with scopes and brief rationale.
+    - Apply any requested doc tweaks after review; outcome: final docs aligned.
+- Open questions (UNCONFIRMED if needed):
+  - None.
+- Working set (files/ids/commands):
+  - `docs/LLM_ZEN_FALLBACK_SPEC.md`
+  - `docs/LLM_ZEN_FALLBACK_PLAN.md`
+  - `git status`
+  - `CONTINUITY.md`

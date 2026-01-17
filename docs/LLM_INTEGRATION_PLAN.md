@@ -35,13 +35,16 @@ Add optional, **strictly-advisory** LLM capabilities to all 7 agents while prese
 ### Model Policy
 | Agent | Model | Provider | Mode | Rationale |
 |-------|-------|----------|------|-----------|
-| ExecutionAgent | google/gemini-3-flash-preview | OpenRouter | shadow → advisory (cached; conservative-only) | Fast hint synthesis |
-| RiskAgent | glm-4.7-free | OpenCode Zen | shadow → advisory (conservative-only) | Size reduction factor only |
-| ScannerAgent | glm-4.7-free | OpenCode Zen | shadow → advisory | Priority scoring |
-| LearningAgent | minimax/minimax-m2.1 | OpenRouter | active | Insight synthesis |
-| PortfolioAgent | moonshotai/kimi-k2 | OpenRouter | advisory | Anomaly detection |
-| MarketDataAgent | gpt-5-nano | OpenCode Zen | advisory | Outlier detection |
-| OpsAgent | moonshotai/kimi-k2 | OpenRouter | advisory | Health summaries |
+| ExecutionAgent | grok-code | OpenCode Zen | advisory | Fast reasoning for execution hints |
+| RiskAgent | minimax-m2.1-free | OpenCode Zen | advisory | Stable sizing recommendations with reliable fallback |
+| ScannerAgent | minimax-m2.1-free | OpenCode Zen | advisory | Consistent opportunity scoring without Zen GLM errors |
+| LearningAgent | minimax-m2.1-free | OpenCode Zen | active | Long-context synthesis for insights loop |
+| PortfolioAgent | minimax-m2.1-free | OpenCode Zen | advisory | Reconciliation/anomaly summaries with consistent fallback |
+| MarketDataAgent | minimax-m2.1-free | OpenCode Zen | advisory | Lightweight outlier detection |
+| OpsAgent | grok-code | OpenCode Zen | advisory | Ops summaries and incident triage |
+
+Notes:
+- OpenCode Zen is configured as the primary provider with OpenRouter as fallback; model ids are mapped in both directions where possible (e.g., `grok-code` ↔ `x-ai/grok-code-fast-1`).
 
 ---
 
@@ -605,9 +608,9 @@ LLM integration validated in shadow mode before production rollout.
 Add to `.env.example`:
 
 ```bash
-# Global kill switches (default off)
-LLM_ENABLED=false
-LLM_DATA_EXPORT_ENABLED=false
+# Global kill switches (default on; runtime still requires at least one API key)
+LLM_ENABLED=true
+LLM_DATA_EXPORT_ENABLED=true
 
 # LLM Provider Configuration
 LLM_PRIMARY_PROVIDER=opencode-zen
@@ -619,12 +622,12 @@ LLM_FALLBACK_API_KEY=
 
 # LLM Routing (OpenRouter-specific)
 LLM_OPENROUTER_SORT=latency
-LLM_OPENROUTER_ALLOW_FALLBACKS=false
-LLM_OPENROUTER_HTTP_REFERER=
-LLM_OPENROUTER_X_TITLE=
+LLM_OPENROUTER_ALLOW_FALLBACKS=true
+LLM_OPENROUTER_HTTP_REFERER=http://localhost:5173
+LLM_OPENROUTER_X_TITLE=OpenPolyTrader
 
 # LLM Global Settings
-LLM_TIMEOUT_MS=500
+LLM_TIMEOUT_MS=10000
 LLM_MAX_RETRIES=0
 
 # LLM Circuit Breaker
@@ -633,40 +636,43 @@ LLM_CB_COOLDOWN_MS=30000
 LLM_CB_HALF_OPEN_SUCCESSES=2
 
 # Per-Agent LLM Configuration
-LLM_EXECUTION_PROVIDER=openrouter
-LLM_EXECUTION_MODEL=google/gemini-3-flash-preview
-LLM_EXECUTION_MODE=disabled
-LLM_EXECUTION_TIMEOUT_MS=500
+LLM_EXECUTION_PROVIDER=opencode-zen
+LLM_EXECUTION_MODEL=grok-code
+LLM_EXECUTION_MODE=advisory
+LLM_EXECUTION_TIMEOUT_MS=12000
 
 LLM_RISK_PROVIDER=opencode-zen
-LLM_RISK_MODEL=glm-4.7-free
-LLM_RISK_MODE=disabled
-LLM_RISK_TIMEOUT_MS=300
+LLM_RISK_MODEL=minimax-m2.1-free
+LLM_RISK_MODE=advisory
+LLM_RISK_TIMEOUT_MS=12000
 
 LLM_SCANNER_PROVIDER=opencode-zen
-LLM_SCANNER_MODEL=glm-4.7-free
-LLM_SCANNER_MODE=disabled
-LLM_SCANNER_TIMEOUT_MS=500
+LLM_SCANNER_MODEL=minimax-m2.1-free
+LLM_SCANNER_MODE=advisory
+LLM_SCANNER_TIMEOUT_MS=12000
+LLM_SCANNER_SCORE_TOP_N=20
+LLM_SCANNER_SCORE_CONCURRENCY=3
+LLM_SCANNER_SHADOW_MIN_INTERVAL_MS=500
 
-LLM_LEARNING_PROVIDER=openrouter
-LLM_LEARNING_MODEL=minimax/minimax-m2.1
-LLM_LEARNING_MODE=disabled
-LLM_LEARNING_TIMEOUT_MS=2000
+LLM_LEARNING_PROVIDER=opencode-zen
+LLM_LEARNING_MODEL=minimax-m2.1-free
+LLM_LEARNING_MODE=active
+LLM_LEARNING_TIMEOUT_MS=20000
 
-LLM_PORTFOLIO_PROVIDER=openrouter
-LLM_PORTFOLIO_MODEL=moonshotai/kimi-k2
-LLM_PORTFOLIO_MODE=disabled
-LLM_PORTFOLIO_TIMEOUT_MS=1000
+LLM_PORTFOLIO_PROVIDER=opencode-zen
+LLM_PORTFOLIO_MODEL=qwen3-coder
+LLM_PORTFOLIO_MODE=advisory
+LLM_PORTFOLIO_TIMEOUT_MS=20000
 
 LLM_MARKETDATA_PROVIDER=opencode-zen
 LLM_MARKETDATA_MODEL=gpt-5-nano
-LLM_MARKETDATA_MODE=disabled
-LLM_MARKETDATA_TIMEOUT_MS=500
+LLM_MARKETDATA_MODE=advisory
+LLM_MARKETDATA_TIMEOUT_MS=20000
 
-LLM_OPS_PROVIDER=openrouter
-LLM_OPS_MODEL=moonshotai/kimi-k2
-LLM_OPS_MODE=disabled
-LLM_OPS_TIMEOUT_MS=1000
+LLM_OPS_PROVIDER=opencode-zen
+LLM_OPS_MODEL=big-pickle
+LLM_OPS_MODE=advisory
+LLM_OPS_TIMEOUT_MS=12000
 ```
 
 ---

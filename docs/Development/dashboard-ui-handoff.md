@@ -15,7 +15,7 @@ Pages (see `dashboard/src/App.tsx`):
 - Markets: allowlist table.
 - Incidents: incident table.
 - Positions: portfolio snapshot (polled).
-- Risk Gates: placeholder page for future controls.
+- Risk Gates: settings UI + risk profile dropdown for applying gate presets.
 
 Top status area:
 - `TopNav` renders `StatusPill` (health) and a stream connectivity pill. This is the right place to surface trading mode state without adding new layout primitives.
@@ -82,11 +82,34 @@ Returns full config snapshot.
 {
   "policy": { "...": "TradePolicy fields" },
   "risk": { "...": "RiskConfig fields" },
+  "riskProfile": "near_zero|moderate|high|extra_high",
+  "riskProfileSource": "defaults|<path>",
   "tradingMode": "off|shadow|paper|live",
   "tradingEnabled": false
 }
 ```
 - If config store is unavailable, returns `503 { "error": "config_store_not_configured" }`.
+
+### GET /config/risk-profiles
+Returns available risk profiles and the active selection.
+- Response shape:
+```json
+{
+  "activeProfile": "near_zero|moderate|high|extra_high",
+  "activeProfileSource": "defaults|<path>",
+  "availableProfiles": ["near_zero","moderate","high","extra_high"]
+}
+```
+
+### POST /config/risk-profile
+Applies a risk profile (and optional custom path).
+- Body:
+```json
+{ "profile": "near_zero|moderate|high|extra_high", "path": "optional/path.json" }
+```
+- Success: `{ "ok": true, "profile": { ... }, "policy": { ... }, "risk": { ... }, "persisted": true }`.
+- Note: only settings present in the profile are overwritten; other values stay unchanged.
+- Errors: `400 { "error": "invalid_profile", "validProfiles": [...] }` or `503 { "error": "risk_profile_not_configured" }`.
 
 ### GET /config/schema
 Returns schema for settings UI.
@@ -142,6 +165,7 @@ Layout and patterns:
 
 Edit/apply workflow:
 - Direct edit inputs with per-section Save (policy/risk).
+- Risk profile dropdown should call `/config/risk-profiles` on load and `/config/risk-profile` on Apply.
 - Keep policy and risk updates independent to avoid cross-section conflicts.
 
 Validation and errors:
