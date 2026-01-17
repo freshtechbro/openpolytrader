@@ -10,6 +10,12 @@ const DEFAULT_METRICS_MAX_EVENTS = DEFAULT_ENV.METRICS_MAX_EVENTS;
 const DEFAULT_ALLOWLIST_CONFIG = { autoResume: DEFAULT_ENV.ALLOWLIST_AUTO_RESUME };
 
 describe('MetricsStore', () => {
+  it('reports null lastEventAt when empty', () => {
+    const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const snapshot = store.snapshot();
+    expect(snapshot.lastEventAt).toBeNull();
+  });
+
   it('records events and snapshots counts', () => {
     const store = new MetricsStore(2);
     store.record({ type: 'health', timestamp: 1, data: {} });
@@ -70,6 +76,21 @@ describe('MetricsStore', () => {
     store.recordOrderAttempt('m1', now);
     store.recordDelayedAck('m1', now);
     expect(store.getDelayedAckRate('m1', 60000, now)).toBeCloseTo(1);
+  });
+
+  it('caps order tracking arrays during recording', () => {
+    const store = new MetricsStore(10);
+    const now = Date.now();
+
+    for (let i = 0; i < 100; i += 1) {
+      store.recordOrderAttempt('m1', now);
+      store.recordFill('m1', now);
+      store.recordDelayedAck('m1', now);
+    }
+
+    expect(store.getOrderVelocity(999999, now)).toBe(10);
+    expect(store.getOrderStats('m1', 999999, now)).toEqual({ orders: 10, fills: 10 });
+    expect(store.getDelayedAckRate('m1', 999999, now)).toBeCloseTo(1);
   });
 });
 

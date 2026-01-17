@@ -23,7 +23,7 @@ vi.mock('../../src/tools/marketCatalogGenerator.js', () => ({
 }));
 
 describe('market catalog prestart (default deps)', () => {
-  it('uses default deps and bootstraps with maxPairs=50 when the file does not exist', async () => {
+  it('uses default deps and bootstraps with maxPairs=40 when the file does not exist', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const dir = mkdtempSync(join(tmpdir(), 'catalog-prestart-defaults-'));
     const outPath = join(dir, 'missing', 'catalog.json');
@@ -38,7 +38,7 @@ describe('market catalog prestart (default deps)', () => {
     expect(generateMarketCatalogMock).toHaveBeenCalledWith(
       expect.objectContaining({
         outPath,
-        maxPairs: 50,
+        maxPairs: 40,
         yesnoOnly: true,
         merge: true,
         verifyBooks: true,
@@ -51,4 +51,3 @@ describe('market catalog prestart (default deps)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
-

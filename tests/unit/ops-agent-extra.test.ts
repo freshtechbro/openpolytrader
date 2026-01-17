@@ -126,6 +126,31 @@ describe('OpsAgent runChecks', () => {
     }
   });
 
+  it('records non-error webhook exceptions as error metrics', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const fetchMock = vi.fn().mockRejectedValue('network_down');
+    const originalFetch = globalThis.fetch;
+
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    try {
+      const agent = new OpsAgent(
+        {
+          intervalMs: 1000,
+          alertWebhookUrl: 'https://example.invalid/webhook',
+          checks: [{ name: 'fail', check: async () => ({ ok: false, error: 'boom' }) }]
+        },
+        metrics
+      );
+
+      await agent.runOnce();
+
+      expect(metrics.snapshot().counts.error).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('keeps healthy checks when degraded', async () => {
     const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
     const agent = new OpsAgent(

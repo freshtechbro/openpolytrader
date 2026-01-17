@@ -43,6 +43,24 @@ describe('sloChecks', () => {
     expect(result.info).toContain('worst=stale');
   });
 
+  it('keeps first worst book when later books are fresher', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    const check = createBookFreshnessCheck(
+      () =>
+        [
+          { tokenId: 'worst', lastUpdateMs: now - 2000 } as unknown as OrderBookState,
+          { tokenId: 'fresh', lastUpdateMs: now - 100 } as unknown as OrderBookState
+        ],
+      5000
+    );
+    const result = await check.check();
+    expect(result.ok).toBe(true);
+    expect(result.info).toContain('worst=worst');
+  });
+
   it('passes when books are fresh', async () => {
     vi.useFakeTimers();
     const now = Date.now();
@@ -60,6 +78,21 @@ describe('sloChecks', () => {
     const check = createBookFreshnessCheck(() => [], 500);
     const result = await check.check();
     expect(result.ok).toBe(false);
+  });
+
+  it('returns no_active_orderbooks when idle cutoff filters all books', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    const check = createBookFreshnessCheck(
+      () => [{ tokenId: 'stale', lastUpdateMs: now - 10_000 } as unknown as OrderBookState],
+      500,
+      100
+    );
+    const result = await check.check();
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('no_active_orderbooks');
   });
 
   it('evaluates delayed ack rate', async () => {
@@ -91,6 +124,22 @@ describe('sloChecks', () => {
     expect(result.info).toContain('worst=market-2');
   });
 
+  it('keeps initial worst delayed ack rate when later market is lower', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    const metrics = new MetricsStore(1000);
+    metrics.recordOrderAttempt('market-1', now);
+    metrics.recordDelayedAck('market-1', now);
+    metrics.recordOrderAttempt('market-2', now);
+
+    const check = createDelayedAckRateCheck(metrics, () => ['market-1', 'market-2'], 60000, 0.5);
+    const result = await check.check();
+    expect(result.ok).toBe(false);
+    expect(result.info).toContain('worst=market-1');
+  });
+
   it('treats negative delayed ack thresholds as zero and passes when rate is zero', async () => {
     vi.useFakeTimers();
     const now = Date.now();
@@ -108,6 +157,20 @@ describe('sloChecks', () => {
     const check = createDelayedAckRateCheck(metrics, () => [], 60000, 0.5);
     const result = await check.check();
     expect(result.ok).toBe(true);
+  });
+
+  it('passes delayed ack rate when below threshold', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    const metrics = new MetricsStore(1000);
+    metrics.recordOrderAttempt('market-1', now);
+
+    const check = createDelayedAckRateCheck(metrics, () => ['market-1'], 60000, 0.5);
+    const result = await check.check();
+    expect(result.ok).toBe(true);
+    expect(result.info).toContain('worst=market-1');
   });
 
   it('computes latency percentiles from telemetry', async () => {
@@ -186,7 +249,7 @@ describe('sloChecks', () => {
       percentile: Number.NaN,
       thresholdMs: 0,
       windowMs: 60_000,
-      limit: 0
+      limit: 10
     });
 
     const result = await check.check();
@@ -205,6 +268,30 @@ describe('sloChecks', () => {
     });
     const result = await check.check();
     expect(result.ok).toBe(true);
+  });
+
+  it('ignores latency events without numeric samples', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    const metrics = new MetricsStore(1000);
+    metrics.record({
+      type: 'latency',
+      timestamp: now,
+      data: { stage: 'submitted', timestampMs: now }
+    });
+
+    const check = createLatencyPercentileCheck({
+      metrics,
+      stage: 'submitted',
+      percentile: 0.5,
+      thresholdMs: 50,
+      windowMs: 60000
+    });
+    const result = await check.check();
+    expect(result.ok).toBe(true);
+    expect(result.info).toContain('no_samples');
   });
 
   it('uses cumulativeMs when latencyMs is missing', async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import { createOpsServer, startOpsServer } from '../../src/api/server.js';
+import { createOpsServer, startOpsServer, type OpsServerDeps } from '../../src/api/server.js';
 import { ConfigStore } from '../../src/config/store.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import { DEFAULT_RISK_CONFIG } from '../../src/config/risk.js';
@@ -14,6 +14,8 @@ import { EventStore } from '../../src/core/EventStore.js';
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
 
+import { TradingStateManager } from '../../src/core/TradingStateManager.js';
+
 const DEFAULT_ENV = loadEnv({});
 const DEFAULT_METRICS_MAX_EVENTS = DEFAULT_ENV.METRICS_MAX_EVENTS;
 const DEFAULT_ALLOWLIST_CONFIG = { autoResume: DEFAULT_ENV.ALLOWLIST_AUTO_RESUME };
@@ -26,10 +28,14 @@ function buildServer(options?: {
   portfolioAgent?: PortfolioAgent;
   infraConfig?: ReturnType<typeof getInfraConfigSnapshot> | null;
   streamHeartbeatMs?: number;
+  applyRiskProfile?: OpsServerDeps['applyRiskProfile'];
+  riskProfile?: OpsServerDeps['riskProfile'];
+  debugMarketDataOutlier?: OpsServerDeps['debugMarketDataOutlier'];
+  opsAgent?: OpsAgent;
 }) {
   const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
   const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
-  const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+  const opsAgent = options?.opsAgent ?? new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
   const configStore =
     options?.configStore === null
       ? undefined
@@ -45,6 +51,9 @@ function buildServer(options?: {
       portfolioAgent: options?.portfolioAgent,
       tradingMode: 'shadow',
       tradingEnabled: false,
+      applyRiskProfile: options?.applyRiskProfile,
+      riskProfile: options?.riskProfile,
+      debugMarketDataOutlier: options?.debugMarketDataOutlier,
       infraConfig:
         options?.infraConfig === null
           ? undefined
@@ -71,6 +80,31 @@ describe('ops config endpoints', () => {
     await app.close();
   });
 
+  it('returns trading state from manager when configured', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const configStore = new ConfigStore({ ...DEFAULT_TRADE_POLICY }, { ...DEFAULT_RISK_CONFIG });
+    const tradingStateManager = new TradingStateManager(false, 'shadow');
+    tradingStateManager.setMode('paper');
+    tradingStateManager.setEnabled(true);
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, configStore, tradingStateManager },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({ method: 'GET', url: '/config' });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as Record<string, unknown>;
+    expect(body.tradingMode).toBe('paper');
+    expect(body.tradingEnabled).toBe(true);
+    expect(body.tradingStateChangedAt).toBeDefined();
+    expect(body.tradingStateChangedBy).toBe('api');
+
+    await app.close();
+  });
+
   it('returns config schema', async () => {
     const { app } = buildServer();
     const response = await app.inject({ method: 'GET', url: '/config/schema' });
@@ -78,6 +112,183 @@ describe('ops config endpoints', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.sections?.length).toBeGreaterThan(0);
+
+    await app.close();
+  });
+
+  it('returns readiness when checks pass', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const opsAgent = new OpsAgent(
+      {
+        intervalMs: 1000,
+        checks: [
+          {
+            name: 'ok-check',
+            check: async () => ({ ok: true })
+          }
+        ]
+      },
+      metrics
+    );
+    const { app } = buildServer({ opsAgent });
+
+    const response = await app.inject({ method: 'GET', url: '/health/ready' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ ready: true });
+
+    await app.close();
+  });
+
+  it('returns 503 readiness when checks fail', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const opsAgent = new OpsAgent(
+      {
+        intervalMs: 1000,
+        checks: [
+          {
+            name: 'fail-check',
+            check: async () => ({ ok: false, error: 'boom' })
+          }
+        ]
+      },
+      metrics
+    );
+    const { app } = buildServer({ opsAgent });
+
+    const response = await app.inject({ method: 'GET', url: '/health/ready' });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ ready: false });
+
+    await app.close();
+  });
+
+  it('returns risk profile snapshot', async () => {
+    const { app } = buildServer({
+      riskProfile: { id: 'moderate', source: 'defaults' }
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/config/risk-profiles' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      activeProfile: 'moderate',
+      activeProfileSource: 'defaults'
+    });
+
+    await app.close();
+  });
+
+  it('applies risk profile when configured', async () => {
+    const applyRiskProfile = vi.fn().mockReturnValue({
+      profile: { id: 'high', source: 'test' },
+      policy: { ...DEFAULT_TRADE_POLICY },
+      risk: { ...DEFAULT_RISK_CONFIG },
+      persisted: true
+    });
+    const { app } = buildServer({
+      applyRiskProfile,
+      riskProfile: { id: 'near_zero', source: 'defaults' }
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/risk-profile',
+      payload: { profile: 'high' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      ok: true,
+      profile: { id: 'high', source: 'test' },
+      persisted: true
+    });
+    expect(applyRiskProfile).toHaveBeenCalledWith('high', undefined);
+
+    await app.close();
+  });
+
+  it('returns 503 when risk profile apply is not configured', async () => {
+    const { app } = buildServer({
+      riskProfile: { id: 'near_zero', source: 'defaults' }
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/risk-profile',
+      payload: { profile: 'high' }
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: 'risk_profile_not_configured' });
+
+    await app.close();
+  });
+
+  it('trims empty risk profile path', async () => {
+    const applyRiskProfile = vi.fn().mockReturnValue({
+      profile: { id: 'high', source: 'test' },
+      policy: { ...DEFAULT_TRADE_POLICY },
+      risk: { ...DEFAULT_RISK_CONFIG },
+      persisted: true
+    });
+    const { app } = buildServer({
+      applyRiskProfile,
+      riskProfile: { id: 'near_zero', source: 'defaults' }
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/risk-profile',
+      payload: { profile: 'high', path: '   ' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(applyRiskProfile).toHaveBeenCalledWith('high', undefined);
+
+    await app.close();
+  });
+
+  it('returns apply error when risk profile apply fails', async () => {
+    const applyRiskProfile = vi.fn(() => {
+      throw new Error('boom');
+    });
+    const { app } = buildServer({
+      applyRiskProfile,
+      riskProfile: { id: 'near_zero', source: 'defaults' }
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/risk-profile',
+      payload: { profile: 'high' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'risk_profile_apply_failed' });
+
+    await app.close();
+  });
+
+  it('rejects invalid risk profile', async () => {
+    const applyRiskProfile = vi.fn();
+    const { app } = buildServer({
+      applyRiskProfile,
+      riskProfile: { id: 'near_zero', source: 'defaults' }
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/risk-profile',
+      payload: { profile: 'invalid_profile' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = response.json() as { error?: string; validProfiles?: string[] };
+    expect(body.error).toBe('invalid_profile');
+    expect(Array.isArray(body.validProfiles)).toBe(true);
+    expect(applyRiskProfile).not.toHaveBeenCalled();
 
     await app.close();
   });
@@ -91,6 +302,16 @@ describe('ops config endpoints', () => {
     expect(body.ops).toBeDefined();
     expect(body.rpc).toBeDefined();
     expect(body.polymarket).toBeDefined();
+
+    await app.close();
+  });
+
+  it('returns 503 when infra config is missing', async () => {
+    const { app } = buildServer({ infraConfig: null });
+    const response = await app.inject({ method: 'GET', url: '/config/infra' });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: 'infra_config_not_configured' });
 
     await app.close();
   });
@@ -123,6 +344,189 @@ describe('ops config endpoints', () => {
       expect(response.statusCode).toBe(200);
       const body = response.json() as { aggregates?: unknown };
       expect(Array.isArray(body.aggregates)).toBe(true);
+
+      await app.close();
+    } finally {
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it('returns 503 when decisions endpoint is missing event store', async () => {
+    const { app } = buildServer();
+    const response = await app.inject({ method: 'GET', url: '/decisions' });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: 'event_store_not_configured' });
+
+    await app.close();
+  });
+
+  it('returns decisions when event store is configured', async () => {
+    const dbPath = `data/test-${randomUUID()}.db`;
+    const store = new EventStore({ dbPath });
+
+    try {
+      store.persistDecision({
+        id: 'dec-1',
+        subjectId: 'opp-1',
+        timestampMs: 1,
+        agent: 'risk',
+        decisionJson: { ok: true },
+        reasoningJson: { confidence: 0.5 }
+      });
+
+      store.persistDecision({
+        id: 'dec-2',
+        subjectId: 'opp-2',
+        timestampMs: 2,
+        agent: 'ops',
+        decisionJson: { status: 'healthy' },
+        reasoningJson: { confidence: 0.9 }
+      });
+
+      const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+      const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+      const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+
+      const app = createOpsServer(
+        { metrics, allowlist, opsAgent, eventStore: store },
+        { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+      );
+
+      const response = await app.inject({ method: 'GET', url: '/decisions?limit=10' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual([
+        {
+          id: 'dec-1',
+          subjectId: 'opp-1',
+          timestamp: 1,
+          agent: 'risk',
+          decision: { ok: true },
+          reasoning: { confidence: 0.5 }
+        },
+        {
+          id: 'dec-2',
+          subjectId: 'opp-2',
+          timestamp: 2,
+          agent: 'ops',
+          decision: { status: 'healthy' },
+          reasoning: { confidence: 0.9 }
+        }
+      ]);
+
+      await app.close();
+    } finally {
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it('filters decisions by agent, subject, and time bounds', async () => {
+    const dbPath = `data/test-${randomUUID()}.db`;
+    const store = new EventStore({ dbPath });
+
+    try {
+      store.persistDecision({
+        id: 'dec-1',
+        subjectId: 'opp-1',
+        timestampMs: 1,
+        agent: 'risk',
+        decisionJson: { ok: true },
+        reasoningJson: { confidence: 0.2 }
+      });
+
+      store.persistDecision({
+        id: 'dec-2',
+        subjectId: 'opp-2',
+        timestampMs: 2,
+        agent: 'ops',
+        decisionJson: { status: 'healthy' },
+        reasoningJson: { confidence: 0.9 }
+      });
+
+      const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+      const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+      const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+
+      const app = createOpsServer(
+        { metrics, allowlist, opsAgent, eventStore: store },
+        { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+      );
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/decisions?agent=ops&subjectId=opp-2&sinceMs=2&untilMs=2&limit=5'
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as Array<{ subjectId: string; agent: string; timestamp: number }>;
+      expect(body).toHaveLength(1);
+      expect(body[0]).toMatchObject({ subjectId: 'opp-2', agent: 'ops', timestamp: 2 });
+
+      await app.close();
+    } finally {
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
+  it('filters decisions and ignores invalid query params', async () => {
+    const dbPath = `data/test-${randomUUID()}.db`;
+    const store = new EventStore({ dbPath });
+
+    try {
+      store.persistDecision({
+        id: 'dec-10',
+        subjectId: 'opp-10',
+        timestampMs: 100,
+        agent: 'risk',
+        decisionJson: { ok: true },
+        reasoningJson: { confidence: 0.1 }
+      });
+
+      store.persistDecision({
+        id: 'dec-11',
+        subjectId: 'opp-11',
+        timestampMs: 200,
+        agent: 'ops',
+        decisionJson: { status: 'degraded' },
+        reasoningJson: { confidence: 0.2 }
+      });
+
+      const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+      const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+      const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+
+      const app = createOpsServer(
+        { metrics, allowlist, opsAgent, eventStore: store },
+        { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+      );
+
+      const filtered = await app.inject({
+        method: 'GET',
+        url: '/decisions?agent=%20risk%20&subjectId=%20opp-10%20&sinceMs=50&untilMs=150'
+      });
+
+      expect(filtered.statusCode).toBe(200);
+      expect(filtered.json()).toEqual([
+        {
+          id: 'dec-10',
+          subjectId: 'opp-10',
+          timestamp: 100,
+          agent: 'risk',
+          decision: { ok: true },
+          reasoning: { confidence: 0.1 }
+        }
+      ]);
+
+      const invalidQuery = await app.inject({
+        method: 'GET',
+        url: '/decisions?sinceMs=-1&untilMs=abc&sinceMs=1&sinceMs=2'
+      });
+
+      expect(invalidQuery.statusCode).toBe(200);
+      expect(invalidQuery.json().length).toBe(2);
 
       await app.close();
     } finally {
@@ -307,7 +711,7 @@ describe('ops config endpoints', () => {
 
     const app = createOpsServer(
       { metrics, allowlist, opsAgent, configStore },
-      { authToken: '  secret ' }
+      { authToken: '  secret ', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
     );
 
     const unauthorized = await app.inject({ method: 'GET', url: '/health' });
@@ -348,6 +752,19 @@ describe('ops config endpoints', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.payload).toContain('stream_connected');
+    await app.close();
+  });
+
+  it('echoes origin header on stream responses', async () => {
+    const { app } = buildServer();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/stream?once=1',
+      headers: { origin: 'http://localhost:5173' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['access-control-allow-origin']).toBe('http://localhost:5173');
     await app.close();
   });
 
@@ -416,6 +833,19 @@ describe('ops config endpoints', () => {
     await server.close();
   });
 
+  it('starts ops server with default listen', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+
+    const server = await startOpsServer(
+      { metrics, allowlist, opsAgent },
+      { port: 0, host: '127.0.0.1', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    await server.close();
+  });
+
   it('returns 503 on policy update when config store is missing', async () => {
     const { app } = buildServer({ configStore: null });
     const response = await app.inject({
@@ -479,6 +909,515 @@ describe('ops config endpoints', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json().message).toBe('boom');
+    await app.close();
+  });
+
+  it('returns 503 when trading-mode endpoint is called without tradingStateManager', async () => {
+    const { app } = buildServer();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/trading-mode',
+      payload: { mode: 'shadow' }
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error).toBe('trading_state_manager_not_configured');
+    await app.close();
+  });
+
+  it('returns 400 for invalid trading mode', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const tradingStateManager = new TradingStateManager(false, 'shadow');
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, tradingStateManager },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/trading-mode',
+      payload: { mode: 'invalid_mode' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe('invalid_mode');
+    await app.close();
+  });
+
+  it('returns 400 for live mode without confirmation', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const tradingStateManager = new TradingStateManager(false, 'shadow');
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, tradingStateManager },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/trading-mode',
+      payload: { mode: 'live' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe('live_mode_requires_confirmation');
+    await app.close();
+  });
+
+  it('allows live mode with confirmation', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const tradingStateManager = new TradingStateManager(false, 'shadow');
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, tradingStateManager },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/trading-mode?confirm=true',
+      payload: { mode: 'live' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().ok).toBe(true);
+    expect(response.json().state.mode).toBe('live');
+    await app.close();
+  });
+
+  it('changes trading enabled state', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const tradingStateManager = new TradingStateManager(false, 'shadow');
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, tradingStateManager },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/trading-mode',
+      payload: { enabled: true }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().ok).toBe(true);
+    expect(response.json().state.enabled).toBe(true);
+    await app.close();
+  });
+
+  it('updates trading mode and enabled together', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const tradingStateManager = new TradingStateManager(false, 'shadow');
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, tradingStateManager },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/trading-mode',
+      payload: { mode: 'paper', enabled: true }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().state).toMatchObject({ mode: 'paper', enabled: true });
+    await app.close();
+  });
+
+  it('returns markets with null question when clobClient is not provided', async () => {
+    const { app, allowlist } = buildServer();
+    allowlist.allow('market-1');
+
+    const response = await app.inject({ method: 'GET', url: '/markets' });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as Array<{ key: string; question: string | null }>;
+    expect(Array.isArray(body)).toBe(true);
+    expect(body.length).toBe(1);
+    expect(body[0].key).toBe('market-1');
+    expect(body[0].question).toBeNull();
+
+    await app.close();
+  });
+
+  it('returns markets with enriched data when clobClient is provided', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+
+    const mockClobClient = {
+      getMarket: vi.fn().mockResolvedValue({
+        condition_id: 'market-1',
+        question: 'Will it rain tomorrow?',
+        description: 'Weather prediction market'
+      })
+    };
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, clobClient: mockClobClient as never },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    allowlist.allow('market-1');
+
+    const response = await app.inject({ method: 'GET', url: '/markets' });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as Array<{ key: string; question: string | null; description: string | null }>;
+    expect(body[0].question).toBe('Will it rain tomorrow?');
+    expect(body[0].description).toBe('Weather prediction market');
+
+    await app.close();
+  });
+
+  it('reuses cached market info on subsequent requests', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+
+    const mockClobClient = {
+      getMarket: vi.fn().mockResolvedValue({
+        condition_id: 'market-1',
+        question: 'Will it rain tomorrow?',
+        description: 'Weather prediction market'
+      })
+    };
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, clobClient: mockClobClient as never },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    allowlist.allow('market-1');
+
+    await app.inject({ method: 'GET', url: '/markets' });
+    await app.inject({ method: 'GET', url: '/markets' });
+
+    expect(mockClobClient.getMarket).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it('returns markets with null question when clobClient throws error', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+
+    const mockClobClient = {
+      getMarket: vi.fn().mockRejectedValue(new Error('API error'))
+    };
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, clobClient: mockClobClient as never },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    allowlist.allow('market-error');
+
+    const response = await app.inject({ method: 'GET', url: '/markets' });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as Array<{ key: string; question: string | null }>;
+    expect(body[0].question).toBeNull();
+
+    await app.close();
+  });
+});
+
+describe('allowlist endpoints', () => {
+  it('returns 400 when resume is called without a market id', async () => {
+    const { app } = buildServer();
+    const response = await app.inject({ method: 'POST', url: '/allowlist/%20/resume' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'missing_market_id' });
+
+    await app.close();
+  });
+
+  it('resumes allowlist entries by market id', async () => {
+    const { app, allowlist } = buildServer();
+    allowlist.quarantine('market-1', 'testing', 60_000);
+
+    const response = await app.inject({ method: 'POST', url: '/allowlist/market-1/resume' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ ok: true, marketId: 'market-1' });
+
+    await app.close();
+  });
+});
+
+describe('ops stream endpoint', () => {
+  it('returns a one-off stream event when once flag is set', async () => {
+    const { app } = buildServer({ streamHeartbeatMs: 5 });
+
+    const response = await app.inject({ method: 'GET', url: '/stream?once=true' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.payload).toContain('stream_connected');
+
+    await app.close();
+  });
+
+  it('closes the stream after max pings', async () => {
+    const { app } = buildServer({ streamHeartbeatMs: 1 });
+
+    const response = await app.inject({ method: 'GET', url: '/stream?maxPings=1' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.payload).toContain(': ping');
+
+    await app.close();
+  });
+});
+
+describe('ops debug endpoints', () => {
+  it('returns 503 when learning agent is missing', async () => {
+    const { app } = buildServer();
+
+    const response = await app.inject({ method: 'POST', url: '/debug/learning/synthesize' });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: 'learning_agent_not_configured' });
+
+    await app.close();
+  });
+
+  it('runs learning synth when configured', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const learningAgent = { synthesizeNow: vi.fn().mockResolvedValue(undefined) };
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, learningAgent: learningAgent as never },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({ method: 'POST', url: '/debug/learning/synthesize' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    expect(learningAgent.synthesizeNow).toHaveBeenCalledTimes(1);
+
+    await app.close();
+  });
+
+  it('returns 503 when portfolio agent is missing', async () => {
+    const { app } = buildServer();
+
+    const response = await app.inject({ method: 'POST', url: '/debug/portfolio/analyze' });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: 'portfolio_agent_not_configured' });
+
+    await app.close();
+  });
+
+  it('runs portfolio analysis when configured', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const portfolioAgent = { analyzeAnomalies: vi.fn().mockResolvedValue(undefined) };
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, portfolioAgent: portfolioAgent as never },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({ method: 'POST', url: '/debug/portfolio/analyze' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    expect(portfolioAgent.analyzeAnomalies).toHaveBeenCalledTimes(1);
+
+    await app.close();
+  });
+
+  it('returns 503 when marketdata debug is not configured', async () => {
+    const { app } = buildServer();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/debug/marketdata/outlier',
+      payload: { tokenId: 'token-1' }
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: 'marketdata_debug_not_configured' });
+
+    await app.close();
+  });
+
+  it('returns 400 when marketdata debug tokenId is missing', async () => {
+    const debugMarketDataOutlier = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = buildServer({ debugMarketDataOutlier });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/debug/marketdata/outlier',
+      payload: { tokenId: '  ' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'missing_token_id' });
+
+    await app.close();
+  });
+
+  it('returns 400 when marketdata debug reports failure', async () => {
+    const debugMarketDataOutlier = vi.fn().mockResolvedValue({ ok: false, error: 'orderbook_missing' });
+    const { app } = buildServer({ debugMarketDataOutlier });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/debug/marketdata/outlier',
+      payload: { tokenId: 'token-1' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ ok: false, error: 'orderbook_missing' });
+
+    await app.close();
+  });
+
+  it('returns 200 when marketdata debug succeeds', async () => {
+    const debugMarketDataOutlier = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = buildServer({ debugMarketDataOutlier });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/debug/marketdata/outlier',
+      payload: { tokenId: 'token-1' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    expect(debugMarketDataOutlier).toHaveBeenCalledWith('token-1');
+
+    await app.close();
+  });
+
+  it('returns 503 when synthetic opportunity is not configured', async () => {
+    const { app } = buildServer();
+
+    const response = await app.inject({ method: 'POST', url: '/debug/synthetic-opportunity' });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ error: 'synthetic_opportunity_not_configured' });
+
+    await app.close();
+  });
+
+  it('returns 400 when synthetic opportunity returns ok=false', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const syntheticOpportunity = vi.fn().mockResolvedValue({ ok: false, message: 'no-op' });
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, syntheticOpportunity },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/debug/synthetic-opportunity',
+      payload: { execute: false }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ ok: false, message: 'no-op' });
+
+    await app.close();
+  });
+
+  it('returns 200 when synthetic opportunity succeeds', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const syntheticOpportunity = vi.fn().mockResolvedValue({ ok: true, marketId: 'm-1' });
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, syntheticOpportunity },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/debug/synthetic-opportunity',
+      payload: { execute: false }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, marketId: 'm-1' });
+
+    await app.close();
+  });
+
+  it('parses synthetic opportunity inputs and execution mode', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const syntheticOpportunity = vi.fn().mockResolvedValue({ ok: true });
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, syntheticOpportunity },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    await app.inject({
+      method: 'POST',
+      url: '/debug/synthetic-opportunity',
+      payload: {
+        marketId: 'm-1',
+        yesPrice: 0.55,
+        noPrice: 0.45,
+        edge: 0.02,
+        tickSize: 0.01,
+        minOrderSize: 5,
+        maxSizeByDepth: 10,
+        executionMode: 'paper',
+        execute: false
+      }
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/debug/synthetic-opportunity',
+      payload: {
+        marketId: '  ',
+        yesPrice: '0.55',
+        minOrderSize: '5',
+        executionMode: 'invalid'
+      }
+    });
+
+    expect(syntheticOpportunity).toHaveBeenCalledTimes(2);
+    expect(syntheticOpportunity.mock.calls[0][0]).toMatchObject({
+      marketId: 'm-1',
+      executionMode: 'paper'
+    });
+    expect(syntheticOpportunity.mock.calls[1][0]).toMatchObject({
+      marketId: undefined,
+      yesPrice: undefined,
+      minOrderSize: undefined,
+      executionMode: undefined
+    });
+
     await app.close();
   });
 });

@@ -1,0 +1,6 @@
+{
+  "recommended_size": 40,
+  "reason": "Recent delayed-ack rate elevated; be more conservative",
+  "confidence": 0.85
+}
+

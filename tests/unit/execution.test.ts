@@ -5,6 +5,7 @@ import { rmSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 
 import { ExecutionAgent } from '../../src/agents/execution/ExecutionAgent.js';
+import { ExecutionAdvisor } from '../../src/agents/execution/ExecutionAdvisor.js';
 import {
   buildFokBuyOrder,
   createInitialExecutionState,
@@ -24,6 +25,7 @@ import { EventStore, type StoredEvent } from '../../src/core/EventStore.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { loadEnv } from '../../src/config/env.js';
 import type { PolymarketRealtime, UserOrderUpdate } from '../../src/services/PolymarketRealtime.js';
+import { messageBus } from '../../src/core/MessageBus.js';
 
 const DEFAULT_ENV = loadEnv({});
 const DEFAULT_METRICS_MAX_EVENTS = DEFAULT_ENV.METRICS_MAX_EVENTS;
@@ -309,7 +311,7 @@ describe('ExecutionAgent', () => {
       expect(clob.createOrder).not.toHaveBeenCalled();
     });
 
-    it('blocks when order velocity exceeds limit', async () => {
+    it('does not block solely on order velocity', async () => {
       vi.useFakeTimers();
       const now = Date.now();
       vi.setSystemTime(now);
@@ -327,7 +329,8 @@ describe('ExecutionAgent', () => {
         maxOrdersPerMinute: 2,
         orderVelocityWindowMs: 60000,
         maxOrderToTradeRatio: 100,
-        orderToTradeWindowMs: 60000
+        orderToTradeWindowMs: 60000,
+        fillTimeoutMs: 0
       };
 
       const agent = new ExecutionAgent(policy, clob, incidentTracker, metrics, {
@@ -338,9 +341,8 @@ describe('ExecutionAgent', () => {
 
       const result = await agent.executeArbitrage(makeOpportunity(), 100);
 
-      expect(result.status).toBe('blocked');
-      expect(result.reason).toBe('velocity_throttle');
-      expect(incidentTracker.record).toHaveBeenCalledWith(
+      expect(result.status).toBe('submitted');
+      expect(incidentTracker.record).not.toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'velocity_throttle' })
       );
 
@@ -1120,6 +1122,198 @@ describe('ExecutionAgent', () => {
       const recordMock = incidentTracker.record as unknown as { mock: { calls: unknown[][] } };
       expect(recordMock.mock.calls.some((call) => call[0]?.reason === 'partial_fill')).toBe(true);
       expect(recordMock.mock.calls.some((call) => call[0]?.reason === 'unwind_triggered')).toBe(true);
+    });
+
+    it('applies unwind hint in advisory mode when aggressive', async () => {
+      const opportunity = makeOpportunity({ yesPrice: 0.48, tickSize: 0.01 });
+      const portfolio = {
+        expectFill: vi.fn(),
+        applyFillWithReconciliation: vi.fn(),
+        applyUnwind: vi.fn()
+      } as unknown as PortfolioAgent;
+      const clob = {
+        createOrder: vi
+          .fn()
+          .mockResolvedValueOnce({ orderId: 'yes-order-1', status: 'LIVE' })
+          .mockResolvedValueOnce({ errorMsg: 'Insufficient balance', success: false })
+          .mockResolvedValueOnce({ orderId: 'unwind-order-1', status: 'LIVE' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const executionAdvisor = new ExecutionAdvisor({ enabled: true });
+      const riskConfig = {
+        ...DEFAULT_RISK_CONFIG,
+        maxUnwindLossTicks: 6,
+        unwindSlippageToleranceBps: 300
+      };
+
+      try {
+        messageBus.emit('learning:insight', {
+          insights: [
+            { market_id: opportunity.marketId, value: 0.9, ttl_ms: 60000, confidence: 0.9 }
+          ]
+        });
+
+        const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+          tradingEnabled: true,
+          tradingMode: 'live',
+          portfolio,
+          riskConfig,
+          executionAdvisor,
+          executionAdvisorMode: 'advisory',
+          userRealtime: asPolymarketRealtime(new MockUserRealtime(true))
+        });
+
+        await agent.executeArbitrage(opportunity, 100);
+
+        const unwindPayload = clob.createOrder.mock.calls[2][0] as Record<string, unknown>;
+        expect(unwindPayload.price).toBe(0.45);
+      } finally {
+        executionAdvisor.stop();
+      }
+    });
+
+    it('applies unwind hint in advisory mode when conservative', async () => {
+      const opportunity = makeOpportunity({ yesPrice: 0.48, tickSize: 0.01 });
+      const portfolio = {
+        expectFill: vi.fn(),
+        applyFillWithReconciliation: vi.fn(),
+        applyUnwind: vi.fn()
+      } as unknown as PortfolioAgent;
+      const clob = {
+        createOrder: vi
+          .fn()
+          .mockResolvedValueOnce({ orderId: 'yes-order-1', status: 'LIVE' })
+          .mockResolvedValueOnce({ errorMsg: 'Insufficient balance', success: false })
+          .mockResolvedValueOnce({ orderId: 'unwind-order-1', status: 'LIVE' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const executionAdvisor = new ExecutionAdvisor({ enabled: true });
+      const riskConfig = {
+        ...DEFAULT_RISK_CONFIG,
+        maxUnwindLossTicks: 6,
+        unwindSlippageToleranceBps: 300
+      };
+
+      try {
+        messageBus.emit('learning:insight', {
+          insights: [
+            { market_id: opportunity.marketId, value: 0.2, ttl_ms: 60000, confidence: 0.8 }
+          ]
+        });
+
+        const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+          tradingEnabled: true,
+          tradingMode: 'live',
+          portfolio,
+          riskConfig,
+          executionAdvisor,
+          executionAdvisorMode: 'advisory',
+          userRealtime: asPolymarketRealtime(new MockUserRealtime(true))
+        });
+
+        await agent.executeArbitrage(opportunity, 100);
+
+        const unwindPayload = clob.createOrder.mock.calls[2][0] as Record<string, unknown>;
+        expect(unwindPayload.price).toBeCloseTo(0.47, 8);
+      } finally {
+        executionAdvisor.stop();
+      }
+    });
+
+    it('keeps base unwind price when hint is neutral', async () => {
+      const opportunity = makeOpportunity({ yesPrice: 0.48, tickSize: 0.01 });
+      const portfolio = {
+        expectFill: vi.fn(),
+        applyFillWithReconciliation: vi.fn(),
+        applyUnwind: vi.fn()
+      } as unknown as PortfolioAgent;
+      const clob = {
+        createOrder: vi
+          .fn()
+          .mockResolvedValueOnce({ orderId: 'yes-order-1', status: 'LIVE' })
+          .mockResolvedValueOnce({ errorMsg: 'Insufficient balance', success: false })
+          .mockResolvedValueOnce({ orderId: 'unwind-order-1', status: 'LIVE' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const executionAdvisor = new ExecutionAdvisor({ enabled: true });
+      const riskConfig = {
+        ...DEFAULT_RISK_CONFIG,
+        maxUnwindLossTicks: 6,
+        unwindSlippageToleranceBps: 300
+      };
+
+      try {
+        messageBus.emit('learning:insight', {
+          insights: [
+            { market_id: opportunity.marketId, value: 0.5, ttl_ms: 60000, confidence: 0.6 }
+          ]
+        });
+
+        const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+          tradingEnabled: true,
+          tradingMode: 'live',
+          portfolio,
+          riskConfig,
+          executionAdvisor,
+          executionAdvisorMode: 'advisory',
+          userRealtime: asPolymarketRealtime(new MockUserRealtime(true))
+        });
+
+        await agent.executeArbitrage(opportunity, 100);
+
+        const unwindPayload = clob.createOrder.mock.calls[2][0] as Record<string, unknown>;
+        expect(unwindPayload.price).toBe(0.46);
+      } finally {
+        executionAdvisor.stop();
+      }
+    });
+
+    it('ignores unwind hint in shadow mode', async () => {
+      const opportunity = makeOpportunity({ yesPrice: 0.48, tickSize: 0.01 });
+      const portfolio = {
+        expectFill: vi.fn(),
+        applyFillWithReconciliation: vi.fn(),
+        applyUnwind: vi.fn()
+      } as unknown as PortfolioAgent;
+      const clob = {
+        createOrder: vi
+          .fn()
+          .mockResolvedValueOnce({ orderId: 'yes-order-1', status: 'LIVE' })
+          .mockResolvedValueOnce({ errorMsg: 'Insufficient balance', success: false })
+          .mockResolvedValueOnce({ orderId: 'unwind-order-1', status: 'LIVE' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const executionAdvisor = new ExecutionAdvisor({ enabled: true });
+      const riskConfig = {
+        ...DEFAULT_RISK_CONFIG,
+        maxUnwindLossTicks: 6,
+        unwindSlippageToleranceBps: 300
+      };
+
+      try {
+        messageBus.emit('learning:insight', {
+          insights: [
+            { market_id: opportunity.marketId, value: 0.9, ttl_ms: 60000, confidence: 0.9 }
+          ]
+        });
+
+        const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+          tradingEnabled: true,
+          tradingMode: 'live',
+          portfolio,
+          riskConfig,
+          executionAdvisor,
+          executionAdvisorMode: 'shadow',
+          userRealtime: asPolymarketRealtime(new MockUserRealtime(true))
+        });
+
+        await agent.executeArbitrage(opportunity, 100);
+
+        const unwindPayload = clob.createOrder.mock.calls[2][0] as Record<string, unknown>;
+        expect(unwindPayload.price).toBe(0.46);
+      } finally {
+        executionAdvisor.stop();
+      }
     });
 
     it('uses book tick size for unwind pricing when available', async () => {

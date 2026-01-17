@@ -11,7 +11,7 @@ describe('RateLimiter', () => {
     vi.useRealTimers();
   });
 
-  it('delays when exceeding the window limit', async () => {
+  it('delays when exceeding the burst capacity', async () => {
     const limiter = new RateLimiter(2, 1000);
 
     await limiter.acquire();
@@ -22,7 +22,7 @@ describe('RateLimiter', () => {
       resolved = true;
     });
 
-    await vi.advanceTimersByTimeAsync(999);
+    await vi.advanceTimersByTimeAsync(499);
     expect(resolved).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1);

@@ -128,6 +128,7 @@ describe('SQLite SLO aggregates', () => {
 
       // p95 of 1..20 = 19 using ceil(p*n)-1 index rule.
       expect(oneHour?.p95LatencyMs).toBe(19);
+      expect(oneHour?.p95AckLatencyMs).toBe(999);
 
       expect(oneHour?.delayedAckRate).toBeCloseTo(1);
       expect(oneHour?.bookFreshnessViolations).toBe(1);
@@ -153,6 +154,7 @@ describe('SQLite SLO aggregates', () => {
       expect(oneHour).toBeDefined();
       expect(oneHour?.pairedFillRate).toBe(0);
       expect(oneHour?.p95LatencyMs).toBe(0);
+      expect(oneHour?.p95AckLatencyMs).toBe(0);
       expect(oneHour?.delayedAckRate).toBe(0);
       expect(oneHour?.bookFreshnessViolations).toBe(0);
     } finally {
@@ -176,6 +178,7 @@ describe('SQLite SLO aggregates', () => {
 
       expect(oneHour?.pairedFillRate).toBe(0);
       expect(oneHour?.p95LatencyMs).toBe(0);
+      expect(oneHour?.p95AckLatencyMs).toBe(0);
       expect(oneHour?.delayedAckRate).toBe(0);
       expect(oneHour?.bookFreshnessViolations).toBe(0);
     } finally {

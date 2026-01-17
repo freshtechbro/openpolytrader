@@ -49,17 +49,18 @@ describe('evaluateGates', () => {
 
   it('fails when orderbooks are stale', () => {
     const now = Date.now();
+    const staleOffsetMs = DEFAULT_TRADE_POLICY.maxBookStalenessMs + 1000;
     const yesBook = makeBook(
       'yes',
       { price: 0.47, size: 500 },
       { price: 0.48, size: 500 },
-      now - 1000
+      now - staleOffsetMs
     );
     const noBook = makeBook(
       'no',
       { price: 0.48, size: 500 },
       { price: 0.49, size: 500 },
-      now - 1000
+      now - staleOffsetMs
     );
 
     const result = evaluateGates({

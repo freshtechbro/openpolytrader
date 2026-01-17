@@ -1,0 +1,7 @@
+{
+  "anomaly": true,
+  "severity": "medium",
+  "reason": "Position drift exceeds threshold",
+  "confidence": 0.9
+}
+
