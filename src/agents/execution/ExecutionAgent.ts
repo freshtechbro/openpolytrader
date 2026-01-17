@@ -5,6 +5,7 @@ import { isNearZeroRiskMode } from '../../config/policy.js';
 import { DEFAULT_RISK_CONFIG, type RiskConfig } from '../../config/risk.js';
 import type { TradingMode } from '../../config/env.js';
 import type { EventStore, StoredEvent } from '../../core/EventStore.js';
+import { messageBus } from '../../core/MessageBus.js';
 import type { CircuitBreakerRegistry } from '../../core/CircuitBreaker.js';
 import {
   buildFakSellOrder,
@@ -31,6 +32,7 @@ import type { PolymarketRealtime, UserOrderUpdate, UserTradeUpdate } from '../..
 import type { IncidentTracker } from '../../services/IncidentTracker.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import type { PortfolioAgent } from '../portfolio/PortfolioAgent.js';
+import type { ExecutionAdvisor } from './ExecutionAdvisor.js';
 
 export interface ExecutionResult {
   status: 'submitted' | 'failed' | 'blocked';
@@ -50,6 +52,8 @@ export interface ExecutionAgentConfig {
   portfolio?: PortfolioAgent;
   userRealtime?: PolymarketRealtime;
   circuitBreakers?: CircuitBreakerRegistry;
+  executionAdvisor?: ExecutionAdvisor;
+  executionAdvisorMode?: 'disabled' | 'shadow' | 'advisory';
   submitTimeoutMs?: number;
   ackTimeoutMs?: number;
   fillTimeoutMs?: number;
@@ -109,6 +113,8 @@ export class ExecutionAgent {
   private userRealtime?: PolymarketRealtime;
   private circuitBreakers?: CircuitBreakerRegistry;
   private timeouts: ExecutionTimeouts;
+  private executionAdvisor?: ExecutionAdvisor;
+  private executionAdvisorMode: 'disabled' | 'shadow' | 'advisory' = 'disabled';
   private activeExecutions = new Map<string, PairedExecutionState>();
   private idempotencyCache = new Map<string, IdempotencyRecord>();
   private userOrders = new Map<string, ObservedUserOrderState>();
@@ -129,6 +135,8 @@ export class ExecutionAgent {
     this.portfolio = config?.portfolio;
     this.userRealtime = config?.userRealtime;
     this.circuitBreakers = config?.circuitBreakers;
+    this.executionAdvisor = config?.executionAdvisor;
+    this.executionAdvisorMode = config?.executionAdvisorMode ?? 'disabled';
     this.timeouts = {
       submitTimeoutMs: config?.submitTimeoutMs ?? policy.submitTimeoutMs,
       ackTimeoutMs: config?.ackTimeoutMs ?? policy.ackTimeoutMs,
@@ -144,6 +152,28 @@ export class ExecutionAgent {
 
   isTradingEnabled(): boolean {
     return this.tradingEnabled && this.tradingMode === 'live';
+  }
+
+  updateTradingMode(mode: TradingMode): void {
+    this.tradingMode = mode;
+  }
+
+  updateTradingEnabled(enabled: boolean): void {
+    this.tradingEnabled = enabled;
+  }
+
+  updatePolicy(policy: TradePolicy): void {
+    this.policy = policy;
+    this.timeouts = {
+      submitTimeoutMs: policy.submitTimeoutMs,
+      ackTimeoutMs: policy.ackTimeoutMs,
+      fillTimeoutMs: policy.fillTimeoutMs,
+      cancelTimeoutMs: policy.cancelTimeoutMs
+    };
+  }
+
+  updateRiskConfig(riskConfig: RiskConfig): void {
+    this.riskConfig = riskConfig;
   }
 
   getActiveExecutions(): PairedExecutionState[] {
@@ -167,6 +197,44 @@ export class ExecutionAgent {
         this.activeExecutions.set(snapshot.id, snapshot);
       }
     }
+  }
+
+  private getEffectiveTimeouts(
+    marketId: string,
+    opportunityId: string,
+    nowMs: number
+  ): ExecutionTimeouts {
+    const base = this.timeouts;
+    const mode = this.executionAdvisorMode;
+    const advisor = this.executionAdvisor;
+    if (!advisor || mode === 'disabled') return base;
+
+    const hint = advisor.getHint(marketId, nowMs);
+    if (!hint) return base;
+
+    const multiplier = Math.min(1, Math.max(0.1, hint.timeoutMultiplier));
+    const advised: ExecutionTimeouts = {
+      submitTimeoutMs: applyMultiplier(base.submitTimeoutMs, multiplier),
+      ackTimeoutMs: applyMultiplier(base.ackTimeoutMs, multiplier),
+      fillTimeoutMs: applyMultiplier(base.fillTimeoutMs, multiplier),
+      cancelTimeoutMs: applyMultiplier(base.cancelTimeoutMs, multiplier)
+    };
+
+    this.metrics?.record({
+      type: 'shadow_decision',
+      timestamp: nowMs,
+      data: {
+        agent: 'ExecutionAgent',
+        marketId,
+        opportunityId,
+        mode,
+        hint: { timeoutMultiplier: hint.timeoutMultiplier, unwindHint: hint.unwindHint, confidence: hint.confidence },
+        baseTimeouts: base,
+        advisedTimeouts: advised
+      }
+    });
+
+    return mode === 'advisory' ? advised : base;
   }
 
   private handleUserOrderUpdate(update: UserOrderUpdate): void {
@@ -280,6 +348,7 @@ export class ExecutionAgent {
 
     if (!tokenId || !marketId || !side) return;
     if (typeof price !== 'number' || !Number.isFinite(price)) return;
+    if (matchedAmount <= 0 || !Number.isFinite(matchedAmount)) return;
 
     const timestamp =
       typeof trade.timestampMs === 'number' ? trade.timestampMs : Date.now();
@@ -296,6 +365,25 @@ export class ExecutionAgent {
       },
       { sizeTolerance: 0, priceTolerance }
     );
+
+    const expectedPrice =
+      typeof orderState.price === 'number' && Number.isFinite(orderState.price) && orderState.price > 0
+        ? orderState.price
+        : undefined;
+    const slippage =
+      typeof expectedPrice === 'number' ? Math.abs(price - expectedPrice) / expectedPrice : undefined;
+
+    messageBus.emit('execution:fill', {
+      orderId,
+      marketId,
+      tokenId,
+      side,
+      size: matchedAmount,
+      price,
+      expectedPrice,
+      slippage,
+      at_ms: timestamp
+    });
   }
 
   private waitForFillOutcome(orderId: string, desiredSize: number, timeoutMs: number): Promise<UserFillOutcome> {
@@ -411,6 +499,10 @@ export class ExecutionAgent {
     );
     const executionId = idempotencyKey;
     const idleState: ExecutionState = 'idle';
+    const finalize = (result: ExecutionResult, atMs = Date.now()) => {
+      this.emitExecutionOutcome(opportunity, result, atMs);
+      return result;
+    };
 
     if (this.circuitBreakers?.isOpen(opportunity.marketId)) {
       this.incidentTracker?.record({
@@ -420,9 +512,12 @@ export class ExecutionAgent {
         opportunityId: opportunity.id,
         detail: { message: 'market circuit breaker open' }
       });
-      return { status: 'blocked', reason: 'circuit_breaker', idempotencyKey, executionId, state: idleState };
+      return finalize(
+        { status: 'blocked', reason: 'circuit_breaker', idempotencyKey, executionId, state: idleState },
+        nowMs
+      );
     }
-    const timeouts = this.timeouts;
+    const timeouts = this.getEffectiveTimeouts(opportunity.marketId, opportunity.id, nowMs);
     const yesIdempotencyKey = `${idempotencyKey}:yes`;
     const noIdempotencyKey = `${idempotencyKey}:no`;
 
@@ -544,7 +639,10 @@ export class ExecutionAgent {
       unwindSize: number
     ): Promise<{ state: PairedExecutionState; result: UnwindResult }> => {
       const tokenId = filledLeg === 'yes' ? opportunity.yesTokenId : opportunity.noTokenId;
-      const unwindPrice = this.calculateUnwindPrice(entryPrice, tickSize);
+      const unwindPrice = this.calculateUnwindPrice(entryPrice, tickSize, {
+        marketId: opportunity.marketId,
+        opportunityId: opportunity.id
+      });
       const clientOrderId = `${idempotencyKey}:${filledLeg}:unwind`;
       const unwindOrder = buildFakSellOrder({
         tokenId,
@@ -742,13 +840,16 @@ export class ExecutionAgent {
     };
 
     if (!this.tradingEnabled) {
-      return {
-        status: 'blocked',
-        reason: 'trading_disabled',
-        idempotencyKey,
-        executionId,
-        state: idleState
-      };
+      return finalize(
+        {
+          status: 'blocked',
+          reason: 'trading_disabled',
+          idempotencyKey,
+          executionId,
+          state: idleState
+        },
+        nowMs
+      );
     }
 
     if (this.tradingMode !== 'live') {
@@ -765,22 +866,43 @@ export class ExecutionAgent {
           data: { marketId: opportunity.marketId, opportunityId: opportunity.id, reason }
         });
       }
-      return {
-        status: 'blocked',
-        reason,
-        idempotencyKey,
-        executionId,
-        state: idleState
-      };
+      return finalize(
+        {
+          status: 'blocked',
+          reason,
+          idempotencyKey,
+          executionId,
+          state: idleState
+        },
+        nowMs
+      );
     }
 
     const requiresUserChannel = isNearZeroRiskMode(this.policy);
     if (requiresUserChannel) {
       if (!this.userRealtime) {
-        return { status: 'blocked', reason: 'user_channel_unconfigured', idempotencyKey, executionId, state: idleState };
+        return finalize(
+          {
+            status: 'blocked',
+            reason: 'user_channel_unconfigured',
+            idempotencyKey,
+            executionId,
+            state: idleState
+          },
+          nowMs
+        );
       }
       if (!this.userRealtime.isConnected()) {
-        return { status: 'blocked', reason: 'user_channel_disconnected', idempotencyKey, executionId, state: idleState };
+        return finalize(
+          {
+            status: 'blocked',
+            reason: 'user_channel_disconnected',
+            idempotencyKey,
+            executionId,
+            state: idleState
+          },
+          nowMs
+        );
       }
     }
 
@@ -807,25 +929,20 @@ export class ExecutionAgent {
         opportunityId: opportunity.id,
         detail: { decisionLatencyMs, maxDecisionLatencyMs: this.policy.maxDecisionLatencyMs }
       });
-      return { status: 'blocked', reason: 'decision_latency_exceeded', idempotencyKey, executionId, state: idleState };
+      return finalize(
+        {
+          status: 'blocked',
+          reason: 'decision_latency_exceeded',
+          idempotencyKey,
+          executionId,
+          state: idleState
+        },
+        nowMs
+      );
     }
     const plannedOrders = 2;
 
     if (this.metrics) {
-      const windowMs = this.policy.orderVelocityWindowMs;
-      const velocity = this.metrics.getOrderVelocity(windowMs, nowMs);
-      const velocityLimit = this.policy.maxOrdersPerMinute * (windowMs / 60000);
-      if (velocity + plannedOrders > velocityLimit) {
-        this.incidentTracker?.record({
-          marketId: opportunity.marketId,
-          reason: 'velocity_throttle',
-          timestamp: nowMs,
-          opportunityId: opportunity.id,
-          detail: { velocity, windowMs, velocityLimit }
-        });
-        return { status: 'blocked', reason: 'velocity_throttle', idempotencyKey, executionId, state: idleState };
-      }
-
       const otrWindowMs = this.policy.orderToTradeWindowMs;
       const stats = this.metrics.getOrderStats(opportunity.marketId, otrWindowMs, nowMs);
       const projectedRatio = (stats.orders + plannedOrders) / Math.max(stats.fills, 1);
@@ -843,7 +960,10 @@ export class ExecutionAgent {
             maxOrderToTradeRatio: this.policy.maxOrderToTradeRatio
           }
         });
-        return { status: 'blocked', reason: 'otr_exceeded', idempotencyKey, executionId, state: idleState };
+        return finalize(
+          { status: 'blocked', reason: 'otr_exceeded', idempotencyKey, executionId, state: idleState },
+          nowMs
+        );
       }
 
       if (this.policy.maxDelayedAckRate > 0) {
@@ -875,7 +995,16 @@ export class ExecutionAgent {
               windowMs: otrWindowMs
             }
           });
-          return { status: 'blocked', reason: 'delayed_ack_rate_exceeded', idempotencyKey, executionId, state: idleState };
+          return finalize(
+            {
+              status: 'blocked',
+              reason: 'delayed_ack_rate_exceeded',
+              idempotencyKey,
+              executionId,
+              state: idleState
+            },
+            nowMs
+          );
         }
       }
     }
@@ -907,7 +1036,10 @@ export class ExecutionAgent {
             noExpected: opportunity.noPrice
           }
         });
-        return { status: 'blocked', reason: 'price_moved', idempotencyKey, executionId, state: idleState };
+        return finalize(
+          { status: 'blocked', reason: 'price_moved', idempotencyKey, executionId, state: idleState },
+          nowMs
+        );
       }
     }
 
@@ -1056,14 +1188,10 @@ export class ExecutionAgent {
         ? 'order_timeout'
         : 'order_failed';
       const resultReason = incidentReason;
-      return handleFailure(
-        state,
-        Date.now(),
-        resultReason,
-        incidentReason,
-        detail,
-        yesResponse,
-        noResponse
+      const failureAtMs = Date.now();
+      return finalize(
+        await handleFailure(state, failureAtMs, resultReason, incidentReason, detail, yesResponse, noResponse),
+        failureAtMs
       );
     }
 
@@ -1123,56 +1251,68 @@ export class ExecutionAgent {
 
     const ackLatencyMs = ackStageMs - submitMs;
     if (timeouts.ackTimeoutMs > 0 && ackLatencyMs > timeouts.ackTimeoutMs) {
-      return handleFailure(
-        state,
-        ackStageMs,
-        'order_timeout',
-        'order_timeout',
-        { phase: 'ack', ackLatencyMs, ackTimeoutMs: timeouts.ackTimeoutMs },
-        yesResponse,
-        noResponse
+      return finalize(
+        await handleFailure(
+          state,
+          ackStageMs,
+          'order_timeout',
+          'order_timeout',
+          { phase: 'ack', ackLatencyMs, ackTimeoutMs: timeouts.ackTimeoutMs },
+          yesResponse,
+          noResponse
+        ),
+        ackStageMs
       );
     }
 
     if (isDelayedOrderResponse(yesOrder) || isDelayedOrderResponse(noOrder)) {
-      return handleFailure(
-        state,
-        ackStageMs,
-        'order_delayed',
-        'order_delayed',
-        { yesOrder, noOrder },
-        yesResponse,
-        noResponse
+      return finalize(
+        await handleFailure(
+          state,
+          ackStageMs,
+          'order_delayed',
+          'order_delayed',
+          { yesOrder, noOrder },
+          yesResponse,
+          noResponse
+        ),
+        ackStageMs
       );
     }
 
     if (isOrderFailure(yesOrder) || isOrderFailure(noOrder)) {
-      return handleFailure(
-        state,
-        ackStageMs,
-        'order_rejected',
-        'order_rejected',
-        { yesOrder, noOrder },
-        yesResponse,
-        noResponse
+      return finalize(
+        await handleFailure(
+          state,
+          ackStageMs,
+          'order_rejected',
+          'order_rejected',
+          { yesOrder, noOrder },
+          yesResponse,
+          noResponse
+        ),
+        ackStageMs
       );
     }
 
     const legSkewMs = Math.abs(yesAckMs - noAckMs);
     if (this.policy.maxLegSkewMs > 0 && legSkewMs > this.policy.maxLegSkewMs) {
-      return handleFailure(
-        state,
-        ackStageMs,
-        'leg_skew_exceeded',
-        'latency_exceeded',
-        {
-          legSkewMs,
-          maxLegSkewMs: this.policy.maxLegSkewMs,
-          yesAckMs,
-          noAckMs
-        },
-        yesResponse,
-        noResponse
+      return finalize(
+        await handleFailure(
+          state,
+          ackStageMs,
+          'leg_skew_exceeded',
+          'latency_exceeded',
+          {
+            legSkewMs,
+            maxLegSkewMs: this.policy.maxLegSkewMs,
+            yesAckMs,
+            noAckMs
+          },
+          yesResponse,
+          noResponse
+        ),
+        ackStageMs
       );
     }
 
@@ -1181,14 +1321,18 @@ export class ExecutionAgent {
 
     if (requiresUserChannel && remainingFillTimeoutMs > 0) {
       if (!yesOrderId || !noOrderId) {
-        return handleFailure(
-          state,
-          Date.now(),
-          'order_failed',
-          'order_failed',
-          { yesOrderId, noOrderId },
-          yesResponse,
-          noResponse
+        const failureAtMs = Date.now();
+        return finalize(
+          await handleFailure(
+            state,
+            failureAtMs,
+            'order_failed',
+            'order_failed',
+            { yesOrderId, noOrderId },
+            yesResponse,
+            noResponse
+          ),
+          failureAtMs
         );
       }
 
@@ -1220,6 +1364,17 @@ export class ExecutionAgent {
 
         state = this.transition(state, { type: 'COMPLETE', atMs: fillMs });
 
+        if (this.metrics) {
+          this.metrics.recordLatency({
+            stage: 'complete',
+            opportunityId: opportunity.id,
+            marketId: opportunity.marketId,
+            timestampMs: fillMs,
+            latencyMs: fillMs - detectedAt,
+            cumulativeMs: fillMs - detectedAt
+          });
+        }
+
         if (yesOrderId) {
           this.saveIdempotencyRecord({
             ...yesRecord,
@@ -1237,14 +1392,17 @@ export class ExecutionAgent {
           });
         }
 
-        return {
-          status: 'submitted',
-          yesOrder: yesResponse,
-          noOrder: noResponse,
-          idempotencyKey,
-          executionId,
-          state: state.state
-        };
+        return finalize(
+          {
+            status: 'submitted',
+            yesOrder: yesResponse,
+            noOrder: noResponse,
+            idempotencyKey,
+            executionId,
+            state: state.state
+          },
+          fillMs
+        );
       }
 
       const yesMatched = yesOutcome.sizeMatched;
@@ -1254,28 +1412,34 @@ export class ExecutionAgent {
         yesMatched > 0 && noMatched <= 0 ? 'yes' : noMatched > 0 && yesMatched <= 0 ? 'no' : null;
       if (!filledLeg) {
         const timedOut = yesOutcome.timedOut || noOutcome.timedOut;
-        return handleFailure(
-          state,
-          fillMs,
-          timedOut ? 'order_timeout' : 'order_failed',
-          timedOut ? 'order_timeout' : 'order_failed',
-          { yesOutcome, noOutcome, fillMs },
-          yesResponse,
-          noResponse
+        return finalize(
+          await handleFailure(
+            state,
+            fillMs,
+            timedOut ? 'order_timeout' : 'order_failed',
+            timedOut ? 'order_timeout' : 'order_failed',
+            { yesOutcome, noOutcome, fillMs },
+            yesResponse,
+            noResponse
+          ),
+          fillMs
         );
       }
 
       const filledSize = Math.min(filledLeg === 'yes' ? yesMatched : noMatched, size);
       const failureReason = yesOutcome.timedOut || noOutcome.timedOut ? 'order_timeout' : 'order_failed';
-      return handlePartialFill(
-        state,
-        fillMs,
-        filledLeg,
-        filledSize,
-        failureReason,
-        { yesOutcome, noOutcome },
-        yesResponse,
-        noResponse
+      return finalize(
+        await handlePartialFill(
+          state,
+          fillMs,
+          filledLeg,
+          filledSize,
+          failureReason,
+          { yesOutcome, noOutcome },
+          yesResponse,
+          noResponse
+        ),
+        fillMs
       );
     }
 
@@ -1298,6 +1462,17 @@ export class ExecutionAgent {
 
     state = this.transition(state, { type: 'COMPLETE', atMs: fillMs });
 
+    if (this.metrics) {
+      this.metrics.recordLatency({
+        stage: 'complete',
+        opportunityId: opportunity.id,
+        marketId: opportunity.marketId,
+        timestampMs: fillMs,
+        latencyMs: fillMs - detectedAt,
+        cumulativeMs: fillMs - detectedAt
+      });
+    }
+
     if (yesOrderId) {
       this.saveIdempotencyRecord({
         ...yesRecord,
@@ -1315,14 +1490,17 @@ export class ExecutionAgent {
       });
     }
 
-    return {
-      status: 'submitted',
-      yesOrder: yesResponse,
-      noOrder: noResponse,
-      idempotencyKey,
-      executionId,
-      state: state.state
-    };
+    return finalize(
+      {
+        status: 'submitted',
+        yesOrder: yesResponse,
+        noOrder: noResponse,
+        idempotencyKey,
+        executionId,
+        state: state.state
+      },
+      fillMs
+    );
   }
 
   private getIdempotencyRecord(key: string): IdempotencyRecord | undefined {
@@ -1387,16 +1565,73 @@ export class ExecutionAgent {
     return this.policy.fallbackTickSize;
   }
 
-  private calculateUnwindPrice(entryPrice: number, tickSize: number): number {
+  private calculateUnwindPrice(
+    entryPrice: number,
+    tickSize: number,
+    advisory?: { marketId: string; opportunityId: string; nowMs?: number }
+  ): number {
     if (tickSize <= 0) return entryPrice;
     const maxLossTicks = Math.max(this.riskConfig.maxUnwindLossTicks, 0);
     const slippageFraction = Math.max(this.riskConfig.unwindSlippageToleranceBps, 0) / 10000;
     const slippageTicks =
       slippageFraction > 0 ? Math.ceil((entryPrice * slippageFraction) / tickSize) : maxLossTicks;
-    const lossTicks = Math.min(maxLossTicks, slippageTicks);
+    const baseLossTicks = Math.min(maxLossTicks, slippageTicks);
+    const lossTicks = advisory
+      ? this.applyUnwindHint(
+          advisory.marketId,
+          advisory.opportunityId,
+          baseLossTicks,
+          maxLossTicks,
+          advisory.nowMs
+        )
+      : baseLossTicks;
     const capped = entryPrice - tickSize * lossTicks;
     const bounded = Math.max(capped, tickSize);
     return alignPriceUp(bounded, tickSize);
+  }
+
+  private applyUnwindHint(
+    marketId: string,
+    opportunityId: string,
+    baseLossTicks: number,
+    maxLossTicks: number,
+    nowMs = Date.now()
+  ): number {
+    const advisor = this.executionAdvisor;
+    const mode = this.executionAdvisorMode;
+    if (!advisor || mode === 'disabled') return baseLossTicks;
+
+    const hint = advisor.getHint(marketId, nowMs);
+    if (!hint) return baseLossTicks;
+
+    const minLossTicks = baseLossTicks === 0 ? 0 : 1;
+    let advisedLossTicks = baseLossTicks;
+
+    if (hint.unwindHint === 'aggressive') {
+      advisedLossTicks = Math.min(
+        maxLossTicks,
+        Math.max(baseLossTicks, Math.ceil(baseLossTicks * 1.5))
+      );
+    } else if (hint.unwindHint === 'conservative') {
+      advisedLossTicks = Math.max(minLossTicks, Math.floor(baseLossTicks * 0.75));
+    }
+
+    this.metrics?.record({
+      type: 'shadow_decision',
+      timestamp: nowMs,
+      data: {
+        agent: 'ExecutionAgent',
+        marketId,
+        opportunityId,
+        decision: 'unwind_loss_ticks',
+        hint: { unwindHint: hint.unwindHint, confidence: hint.confidence },
+        baseLossTicks,
+        advisedLossTicks,
+        maxLossTicks
+      }
+    });
+
+    return mode === 'advisory' ? advisedLossTicks : baseLossTicks;
   }
 
   private recordUnwindPortfolio(
@@ -1408,6 +1643,24 @@ export class ExecutionAgent {
   ): void {
     if (!this.portfolio) return;
     this.portfolio.applyUnwind({ marketId, tokenId, entryPrice, unwindPrice, size });
+  }
+
+  private emitExecutionOutcome(
+    opportunity: ArbitrageOpportunity,
+    result: ExecutionResult,
+    atMs = Date.now()
+  ): void {
+    const status =
+      result.status === 'failed' && result.reason?.includes('timeout') ? 'timeout' : result.status;
+    messageBus.emit('execution:outcome', {
+      marketId: opportunity.marketId,
+      opportunityId: opportunity.id,
+      executionId: result.executionId,
+      idempotencyKey: result.idempotencyKey,
+      status,
+      reason: result.reason,
+      at_ms: atMs
+    });
   }
 
   private transition(current: PairedExecutionState, event: ExecutionEvent): PairedExecutionState {
@@ -1458,6 +1711,13 @@ export class ExecutionAgent {
 
     return next;
   }
+}
+
+function applyMultiplier(timeoutMs: number, multiplier: number): number {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return timeoutMs;
+  if (!Number.isFinite(multiplier) || multiplier <= 0) return timeoutMs;
+  const scaled = Math.floor(timeoutMs * multiplier);
+  return Math.min(timeoutMs, Math.max(scaled, 1));
 }
 
 class TimeoutError extends Error {

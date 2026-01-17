@@ -20,6 +20,10 @@ export class IncidentTracker {
     private config: IncidentTrackerConfig
   ) {}
 
+  updateConfig(config: Partial<IncidentTrackerConfig>): void {
+    Object.assign(this.config, config);
+  }
+
   record(incident: IncidentRecord): void {
     const normalized: IncidentRecord = {
       ...incident,
@@ -39,6 +43,11 @@ export class IncidentTracker {
         this.config.cooldownMs,
         normalized.reason
       );
+      this.metrics.record({
+        type: 'allowlist_updated',
+        timestamp: Date.now(),
+        data: { marketId: normalized.marketId, action: 'quarantine', reason: normalized.reason }
+      });
     }
 
     this.metrics.record({

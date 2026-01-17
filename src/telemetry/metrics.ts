@@ -10,6 +10,11 @@ export type MetricEventType =
   | 'fill'
   | 'delayed_ack'
   | 'risk'
+  | 'llm_latency'
+  | 'llm_timeout'
+  | 'llm_error'
+  | 'llm_fallback'
+  | 'llm_decision'
   | 'info'
   | 'error'
   | 'latency'
@@ -18,7 +23,8 @@ export type MetricEventType =
   | 'book_fallback'
   | 'slo_violation'
   | 'gate_rejection'
-  | 'shadow_decision';
+  | 'shadow_decision'
+  | 'allowlist_updated';
 
 export interface MetricEvent {
   type: MetricEventType;
@@ -41,9 +47,11 @@ export class MetricsStore extends EventEmitter {
   private events: MetricEvent[] = [];
   private orderAttempts: number[] = [];
   private orderCounts = new Map<string, OrderWindowCounts>();
+  private maxOrderSamples: number;
 
   constructor(private maxEvents: number) {
     super();
+    this.maxOrderSamples = Math.max(this.maxEvents, 1);
   }
 
   record(event: MetricEvent): void {
@@ -60,20 +68,24 @@ export class MetricsStore extends EventEmitter {
 
   recordOrderAttempt(marketId: string, nowMs = Date.now()): void {
     this.orderAttempts.push(nowMs);
+    capWindow(this.orderAttempts, this.maxOrderSamples);
     const counts = this.getOrderCounts(marketId);
     counts.orders.push(nowMs);
+    capWindow(counts.orders, this.maxOrderSamples);
     this.record({ type: 'order_attempt', timestamp: nowMs, data: { marketId } });
   }
 
   recordFill(marketId: string, nowMs = Date.now()): void {
     const counts = this.getOrderCounts(marketId);
     counts.fills.push(nowMs);
+    capWindow(counts.fills, this.maxOrderSamples);
     this.record({ type: 'fill', timestamp: nowMs, data: { marketId } });
   }
 
   recordDelayedAck(marketId: string, nowMs = Date.now()): void {
     const counts = this.getOrderCounts(marketId);
     counts.delayedAcks.push(nowMs);
+    capWindow(counts.delayedAcks, this.maxOrderSamples);
     this.record({ type: 'delayed_ack', timestamp: nowMs, data: { marketId } });
   }
 
@@ -118,6 +130,11 @@ export class MetricsStore extends EventEmitter {
       fill: 0,
       delayed_ack: 0,
       risk: 0,
+      llm_latency: 0,
+      llm_timeout: 0,
+      llm_error: 0,
+      llm_fallback: 0,
+      llm_decision: 0,
       info: 0,
       error: 0,
       latency: 0,
@@ -126,7 +143,8 @@ export class MetricsStore extends EventEmitter {
       book_fallback: 0,
       slo_violation: 0,
       gate_rejection: 0,
-      shadow_decision: 0
+      shadow_decision: 0,
+      allowlist_updated: 0
     };
 
     for (const event of this.events) {
@@ -155,6 +173,13 @@ export class MetricsStore extends EventEmitter {
 
 function pruneWindow(values: number[], cutoff: number): void {
   while (values.length > 0 && values[0] < cutoff) {
+    values.shift();
+  }
+}
+
+function capWindow(values: number[], maxSamples: number): void {
+  const limit = Math.max(maxSamples, 1);
+  while (values.length > limit) {
     values.shift();
   }
 }

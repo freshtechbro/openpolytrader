@@ -87,6 +87,15 @@ export interface ActiveOrdersParams {
   assetId?: string;
 }
 
+export interface MarketInfo {
+  condition_id: string;
+  question: string;
+  description?: string;
+  market_slug?: string;
+  end_date_iso?: string;
+  tokens?: Array<{ token_id: string; outcome: string }>;
+}
+
 export class PolymarketClob {
   private baseUrl: string;
   private limiter: RateLimiter;
@@ -125,6 +134,17 @@ export class PolymarketClob {
         return true;
       }
     });
+  }
+
+  async getMarket(conditionId: string): Promise<MarketInfo | null> {
+    try {
+      return await this.request<MarketInfo>('GET', `/markets/${conditionId}`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async getOrderBook(tokenId: string): Promise<OrderBookResponse> {

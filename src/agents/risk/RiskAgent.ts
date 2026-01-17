@@ -1,6 +1,7 @@
 import { calculateMaxSizeByUnwindBudget, effectiveTradeFraction, type RiskConfig } from '../../config/risk.js';
 import type { ArbitrageOpportunity } from '../../domain/opportunity.js';
 import type { PortfolioSnapshot } from '../../domain/portfolio.js';
+import type { RiskAdvisor } from './RiskAdvisor.js';
 
 export interface RiskDecision {
   approved: boolean;
@@ -25,10 +26,20 @@ export interface RiskAgentOptions {
 }
 
 export class RiskAgent {
+  private advisor?: RiskAdvisor;
+
   constructor(
     private config: RiskConfig,
-    private options: RiskAgentOptions
-  ) {}
+    private options: RiskAgentOptions,
+    deps?: { advisor?: RiskAdvisor }
+  ) {
+    this.advisor = deps?.advisor;
+  }
+
+  updateConfig(config: RiskConfig, options: RiskAgentOptions): void {
+    this.config = config;
+    this.options = options;
+  }
 
   evaluate(opportunity: ArbitrageOpportunity, snapshot: PortfolioSnapshot): RiskDecision {
     const costPerSet = opportunity.costPerSet;
@@ -138,6 +149,50 @@ export class RiskAgent {
       positionNotional,
       worstCaseLoss,
       constraints
+    };
+  }
+
+  async evaluateWithAdvisor(
+    opportunity: ArbitrageOpportunity,
+    snapshot: PortfolioSnapshot
+  ): Promise<RiskDecision> {
+    const deterministic = this.evaluate(opportunity, snapshot);
+    if (!deterministic.approved || !deterministic.positionSize) return deterministic;
+    if (!this.advisor) return deterministic;
+
+    const minSize = Math.max(opportunity.minOrderSize, 0);
+    const deterministicSize = deterministic.positionSize;
+
+    const recommendation = await this.advisor.recommendSize({
+      opportunityId: opportunity.id,
+      marketId: opportunity.marketId,
+      minSize,
+      deterministicSize,
+      constraints: deterministic.constraints ?? {}
+    });
+
+    const adjustedSize = recommendation.clampedSize;
+    if (!Number.isFinite(adjustedSize) || adjustedSize <= 0) {
+      return deterministic;
+    }
+
+    if (adjustedSize === deterministicSize) {
+      return deterministic;
+    }
+
+    const positionNotional = adjustedSize * opportunity.costPerSet;
+    const lossPerSet =
+      deterministic.worstCaseLoss && deterministic.positionSize
+        ? deterministic.worstCaseLoss / deterministic.positionSize
+        : 0;
+    const worstCaseLoss = adjustedSize * lossPerSet;
+
+    return {
+      ...deterministic,
+      reason: `llm_${recommendation.reason}`,
+      positionSize: adjustedSize,
+      positionNotional,
+      worstCaseLoss
     };
   }
 }

@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts);
+CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events (type, ts);
 
 CREATE TABLE IF NOT EXISTS metrics (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,6 +50,10 @@ CREATE TABLE IF NOT EXISTS decisions (
   decision_json TEXT NOT NULL,
   reasoning_json TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_decisions_ts ON decisions (ts);
+CREATE INDEX IF NOT EXISTS idx_decisions_agent_ts ON decisions (agent, ts);
+CREATE INDEX IF NOT EXISTS idx_decisions_opportunity_ts ON decisions (opportunity_id, ts);
 
 CREATE TABLE IF NOT EXISTS idempotency (
   key TEXT PRIMARY KEY,

@@ -22,7 +22,7 @@ export async function runMarketCatalogPrestart(deps?: {
   }
 
   const fileExists = pathExists(outPath);
-  const bootstrapMaxPairs = env.MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS ?? 50;
+  const bootstrapMaxPairs = env.MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS ?? 40;
 
   // Conservative default:
   // - merge only (never remove existing pairs)

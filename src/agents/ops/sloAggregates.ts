@@ -6,6 +6,7 @@ export interface SLOAggregate {
   window: '1h' | '24h';
   pairedFillRate: number;
   p95LatencyMs: number;
+  p95AckLatencyMs: number;
   delayedAckRate: number;
   bookFreshnessViolations: number;
   samples: {
@@ -51,6 +52,7 @@ function computeWindow(
 
   const terminalByExecution = new Map<string, string>();
   const latencySamples: number[] = [];
+  const ackLatencySamples: number[] = [];
   const orderAttemptsByMarket = new Map<string, number>();
   const delayedAcksByMarket = new Map<string, number>();
   let bookFreshnessViolations = 0;
@@ -68,7 +70,6 @@ function computeWindow(
 
     if (event.type === 'latency') {
       const payload = event.data as Partial<LatencyEvent>;
-      if (payload.stage !== 'submitted') continue;
       const value =
         typeof payload.latencyMs === 'number'
           ? payload.latencyMs
@@ -76,7 +77,8 @@ function computeWindow(
             ? payload.cumulativeMs
             : null;
       if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
-        latencySamples.push(value);
+        if (payload.stage === 'submitted') latencySamples.push(value);
+        if (payload.stage === 'acked') ackLatencySamples.push(value);
       }
       continue;
     }
@@ -110,6 +112,7 @@ function computeWindow(
         terminalExecutions;
 
   const p95LatencyMs = percentile(latencySamples, 0.95);
+  const p95AckLatencyMs = percentile(ackLatencySamples, 0.95);
 
   const delayedAckRate = computeWorstDelayedAckRate(orderAttemptsByMarket, delayedAcksByMarket);
 
@@ -120,6 +123,7 @@ function computeWindow(
     window: input.window,
     pairedFillRate,
     p95LatencyMs,
+    p95AckLatencyMs,
     delayedAckRate,
     bookFreshnessViolations,
     samples: {

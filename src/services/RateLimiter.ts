@@ -1,25 +1,41 @@
 export class RateLimiter {
-  private readonly windowMs: number;
-  private readonly timestamps: number[] = [];
+  private readonly capacity: number;
+  private readonly refillRatePerMs: number;
+  private tokens: number;
+  private lastRefill: number;
+  private pending: Promise<void> = Promise.resolve();
 
   constructor(private readonly maxRequestsPerWindow: number, windowMs: number) {
-    this.windowMs = windowMs;
+    const boundedWindowMs = Math.max(windowMs, 1);
+    this.capacity = Math.max(maxRequestsPerWindow, 1);
+    this.refillRatePerMs = this.capacity / boundedWindowMs;
+    this.tokens = this.capacity;
+    this.lastRefill = Date.now();
   }
 
-  async acquire(): Promise<void> {
-    const now = Date.now();
-    while (this.timestamps.length > 0 && now - this.timestamps[0] >= this.windowMs) {
-      this.timestamps.shift();
-    }
+  acquire(count = 1): Promise<void> {
+    const requested = Math.max(1, Math.floor(count));
+    const run = async () => {
+      for (;;) {
+        this.refill();
+        if (this.tokens >= requested) {
+          this.tokens -= requested;
+          return;
+        }
+        const deficit = requested - this.tokens;
+        const waitMs = Math.max(1, Math.ceil(deficit / this.refillRatePerMs));
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    };
 
-    if (this.timestamps.length < this.maxRequestsPerWindow) {
-      this.timestamps.push(now);
-      return;
-    }
+    this.pending = this.pending.then(run, run);
+    return this.pending;
+  }
 
-    const oldest = this.timestamps[0];
-    const waitMs = this.windowMs - (now - oldest);
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-    return this.acquire();
+  private refill(now = Date.now()): void {
+    const elapsedMs = Math.max(0, now - this.lastRefill);
+    if (elapsedMs <= 0) return;
+    this.tokens = Math.min(this.capacity, this.tokens + elapsedMs * this.refillRatePerMs);
+    this.lastRefill = now;
   }
 }

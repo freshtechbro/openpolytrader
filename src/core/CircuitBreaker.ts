@@ -93,6 +93,10 @@ export class CircuitBreakerRegistry {
 
   constructor(private config: CircuitBreakerConfig, private namePrefix = 'market') {}
 
+  updateConfig(config: CircuitBreakerConfig): void {
+    Object.assign(this.config, config);
+  }
+
   get(marketId: string): CircuitBreaker {
     const existing = this.breakers.get(marketId);
     if (existing) return existing;

@@ -22,6 +22,13 @@ export class ConfigStore {
     return { policy: this.policy, risk: this.risk };
   }
 
+  replace(policy: TradePolicy, risk: RiskConfig): { policy: TradePolicy; risk: RiskConfig } {
+    validateP0Config(policy, risk);
+    Object.assign(this.policy, policy);
+    Object.assign(this.risk, risk);
+    return this.snapshot();
+  }
+
   updatePolicy(update: Partial<TradePolicy>): TradePolicy {
     const next = { ...this.policy, ...update };
     validateP0Config(next, this.risk);

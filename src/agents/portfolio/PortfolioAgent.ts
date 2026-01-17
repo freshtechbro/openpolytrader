@@ -12,9 +12,25 @@ import type {
 } from '../../domain/portfolio.js';
 import type { IncidentTracker } from '../../services/IncidentTracker.js';
 import type { VenueOpenOrder, VenuePosition } from '../../domain/venue.js';
+import { messageBus } from '../../core/MessageBus.js';
+import type { EventStore } from '../../core/EventStore.js';
+import type { MetricsStore } from '../../telemetry/metrics.js';
+import type { LLMConfig as AppLLMConfig } from '../../config/llm.js';
+import { PortfolioAnomalySchema } from '../../domain/llm.js';
+import { logLLMDecision } from '../../services/llm/LLMDecisionLogger.js';
+import type { LLMCallResult, LLMRequest } from '../../services/llm/types.js';
+import { safeParseJSON } from '../../utils/serialization.js';
 
 export interface PortfolioAgentOptions {
   tokenToMarketId?: Record<string, string>;
+  metrics?: MetricsStore;
+  eventStore?: EventStore;
+  llm?: {
+    config: AppLLMConfig;
+    client: { call: (agent: 'PortfolioAgent', request: LLMRequest) => Promise<LLMCallResult> };
+    promptVersion: string;
+    policyHashes: { tradePolicyHash: string; riskConfigHash: string };
+  };
 }
 
 export class PortfolioAgent {
@@ -23,6 +39,9 @@ export class PortfolioAgent {
   private positionUpdatedAt = new Map<string, number>();
   private expectedFills = new Map<string, ExpectedFill>();
   private tokenToMarketId: Map<string, string>;
+  private metrics?: MetricsStore;
+  private store?: EventStore;
+  private llm?: NonNullable<PortfolioAgentOptions['llm']>;
 
   constructor(
     private totalCapital: number,
@@ -30,6 +49,9 @@ export class PortfolioAgent {
     options?: PortfolioAgentOptions
   ) {
     this.tokenToMarketId = new Map(Object.entries(options?.tokenToMarketId ?? {}));
+    this.metrics = options?.metrics;
+    this.store = options?.eventStore;
+    this.llm = options?.llm;
   }
 
   expectFill(fill: ExpectedFill): void {
@@ -461,6 +483,92 @@ export class PortfolioAgent {
     }
 
     return { ok: issues.length === 0, checkedAtMs: nowMs, issues };
+  }
+
+  async analyzeAnomalies(input: { venueIssues?: VenueReconciliationIssue[]; nowMs?: number } = {}): Promise<void> {
+    const llm = this.llm;
+    if (!llm || !llm.config.enabled) return;
+    if (llm.config.agents.PortfolioAgent.mode === 'disabled') return;
+
+    const nowMs = input.nowMs ?? Date.now();
+    const snapshot = this.snapshot();
+    const venueIssuesCount = Array.isArray(input.venueIssues) ? input.venueIssues.length : 0;
+
+    const promptEnvelope = {
+      task: 'detect_anomaly',
+      inputs: {
+        snapshot: {
+          total_capital: snapshot.totalCapital,
+          available_capital: snapshot.availableCapital,
+          daily_pnl: snapshot.dailyPnL,
+          open_inventory_age_ms: snapshot.openInventoryAgeMs ?? 0,
+          market_exposure: snapshot.marketExposure,
+          positions_count: this.positions.size,
+          pending_expected_fills: this.expectedFills.size,
+          venue_issues_count: venueIssuesCount
+        }
+      },
+      output: { anomaly: false, severity: 'low|medium|high', reason: null, confidence: 0.0 }
+    };
+
+    const request: LLMRequest = {
+      endpoint: 'chat.completions',
+      model: llm.config.agents.PortfolioAgent.model,
+      temperature: 0,
+      messages: [
+        {
+          role: 'developer',
+          content:
+            'Return JSON only, with shape: {"anomaly":boolean,"severity":"low"|"medium"|"high","reason":string|null,"confidence":number}. No prose.'
+        },
+        { role: 'user', content: JSON.stringify(promptEnvelope) }
+      ]
+    };
+
+    const call = await llm.client.call('PortfolioAgent', request);
+    const parsed = safeParseJSON(call.outputText);
+    const validated = PortfolioAnomalySchema.safeParse(parsed);
+    const finalDecision = validated.success
+      ? validated.data
+      : { anomaly: false, severity: 'low', reason: 'invalid_output', confidence: 0 };
+
+    if (validated.success && validated.data.anomaly) {
+      const alert = {
+        type: 'llm_portfolio_anomaly',
+        severity: validated.data.severity ?? 'low',
+        reason: validated.data.reason,
+        confidence: validated.data.confidence,
+        timestamp: nowMs
+      };
+      messageBus.emit('ops:alert', alert);
+      this.metrics?.record({ type: 'incident', timestamp: nowMs, data: alert });
+    }
+
+    logLLMDecision({
+      agent: 'PortfolioAgent',
+      mode: llm.config.agents.PortfolioAgent.mode,
+      task: 'detect_anomaly',
+      subject: 'system:portfolio',
+      baseline: promptEnvelope.inputs,
+      output: finalDecision,
+      confidence: finalDecision.confidence,
+      applied: validated.success ? validated.data.anomaly : false,
+      clamp: { raw: parsed, final: finalDecision },
+      nowMs,
+      call,
+      request,
+      promptEnvelopeForHash: promptEnvelope,
+      contextForHash: promptEnvelope.inputs,
+      promptVersion: llm.promptVersion,
+      policyHashes: llm.policyHashes,
+      providerFallback: {
+        providerId: llm.config.agents.PortfolioAgent.provider,
+        baseUrl: llm.config.providers[llm.config.agents.PortfolioAgent.provider].baseUrl,
+        endpoint: request.endpoint,
+        model: request.model
+      },
+      store: this.store
+    });
   }
 }
 

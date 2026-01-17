@@ -1,5 +1,11 @@
 import { messageBus } from '../../core/MessageBus.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
+import type { EventStore } from '../../core/EventStore.js';
+import type { LLMConfig as AppLLMConfig } from '../../config/llm.js';
+import { OpsHealthSummarySchema } from '../../domain/llm.js';
+import { logLLMDecision } from '../../services/llm/LLMDecisionLogger.js';
+import type { LLMCallResult, LLMRequest } from '../../services/llm/types.js';
+import { safeParseJSON } from '../../utils/serialization.js';
 
 export interface HealthCheckResult {
   ok: boolean;
@@ -24,12 +30,24 @@ export interface OpsAgentConfig {
   intervalMs: number;
   checks: HealthCheck[];
   alertWebhookUrl?: string;
+  eventStore?: EventStore;
+  llm?: {
+    config: AppLLMConfig;
+    client: { call: (agent: 'OpsAgent', request: LLMRequest) => Promise<LLMCallResult> };
+    promptVersion: string;
+    policyHashes: { tradePolicyHash: string; riskConfigHash: string };
+    eventStore?: EventStore;
+  };
 }
 
 export class OpsAgent {
   private timer: NodeJS.Timeout | null = null;
+  private loopActive = false;
   private startedAt = 0;
   private alertWebhookUrl: string | null;
+  private eventStore?: EventStore;
+  private llm?: NonNullable<OpsAgentConfig['llm']>;
+  private outlierHandler: ((payload: unknown) => void) | null = null;
   private lastReport: OpsHealthReport = {
     status: 'healthy',
     checks: {},
@@ -43,6 +61,8 @@ export class OpsAgent {
   ) {
     const webhook = config.alertWebhookUrl?.trim();
     this.alertWebhookUrl = webhook && webhook.length > 0 ? webhook : null;
+    this.eventStore = config.eventStore;
+    this.llm = config.llm;
   }
 
   setChecks(checks: HealthCheck[]): void {
@@ -50,19 +70,47 @@ export class OpsAgent {
   }
 
   start(): void {
-    if (this.timer) {
+    if (this.loopActive) {
       return;
     }
 
+    this.loopActive = true;
     this.startedAt = Date.now();
-    void this.runChecks();
-    this.timer = setInterval(() => void this.runChecks(), this.config.intervalMs);
+    if (!this.outlierHandler) {
+      this.outlierHandler = (payload) => {
+        const nowMs = Date.now();
+        this.metrics?.record({
+          type: 'info',
+          timestamp: nowMs,
+          data: { message: 'marketdata_outlier', payload }
+        });
+      };
+      messageBus.on('marketdata:outlier', this.outlierHandler);
+    }
+    const tick = async () => {
+      if (!this.loopActive) return;
+      try {
+        await this.runChecks();
+      } catch {
+        // runChecks already records failures; keep scheduling even if something escapes.
+      }
+      if (!this.loopActive) return;
+      const delayMs = Math.max(this.config.intervalMs, 0);
+      this.timer = setTimeout(() => void tick(), delayMs);
+    };
+
+    void tick();
   }
 
   stop(): void {
+    this.loopActive = false;
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
+    }
+    if (this.outlierHandler) {
+      messageBus.off('marketdata:outlier', this.outlierHandler);
+      this.outlierHandler = null;
     }
   }
 
@@ -131,6 +179,84 @@ export class OpsAgent {
         }
       }
     }
+
+    await this.maybeGenerateHealthSummary(this.lastReport, now);
+  }
+
+  private async maybeGenerateHealthSummary(report: OpsHealthReport, nowMs: number): Promise<void> {
+    const llm = this.llm;
+    if (!llm || !llm.config.enabled) return;
+    if (llm.config.agents.OpsAgent.mode === 'disabled') return;
+
+    const promptEnvelope = {
+      task: 'health_summary',
+      inputs: {
+        metrics: {
+          uptimeMs: report.uptimeMs,
+          status: report.status,
+          checks: Object.fromEntries(
+            Object.entries(report.checks).map(([name, check]) => [
+              name,
+              { ok: check.ok, latencyMs: check.latencyMs ?? null, error: check.error ?? null }
+            ])
+          )
+        }
+      },
+      output: {
+        risk_level: 'low|medium|high',
+        alerts: [],
+        summary: '...',
+        confidence: 0.0
+      }
+    };
+
+    const request: LLMRequest = {
+      endpoint: 'chat.completions',
+      model: llm.config.agents.OpsAgent.model,
+      temperature: 0,
+      messages: [
+        {
+          role: 'developer',
+          content:
+            'Return JSON only, with shape: {"risk_level":"low"|"medium"|"high","alerts":string[],"summary":string,"confidence":number}. No prose.'
+        },
+        { role: 'user', content: JSON.stringify(promptEnvelope) }
+      ]
+    };
+
+    const call = await llm.client.call('OpsAgent', request);
+    if (!call.outputText) return;
+
+    const parsed = safeParseJSON(call.outputText);
+    const validated = OpsHealthSummarySchema.safeParse(parsed);
+    if (!validated.success) return;
+
+    messageBus.emit('ops:health_summary', { ...validated.data, generatedAtMs: nowMs });
+    logLLMDecision({
+      agent: 'OpsAgent',
+      mode: llm.config.agents.OpsAgent.mode,
+      task: 'health_summary',
+      subject: 'system:ops-health',
+      baseline: promptEnvelope.inputs,
+      output: validated.data,
+      confidence: validated.data.confidence,
+      applied: true,
+      clamp: { raw: parsed, final: validated.data },
+      nowMs,
+      call,
+      request,
+      promptEnvelopeForHash: promptEnvelope,
+      contextForHash: promptEnvelope.inputs,
+      promptVersion: llm.promptVersion,
+      policyHashes: llm.policyHashes,
+      providerFallback: {
+        providerId: llm.config.agents.OpsAgent.provider,
+        baseUrl: llm.config.providers[llm.config.agents.OpsAgent.provider].baseUrl,
+        endpoint: request.endpoint,
+        model: request.model
+      },
+      store: this.eventStore ?? llm.eventStore
+    });
   }
 
   private async sendAlert(payload: unknown): Promise<void> {

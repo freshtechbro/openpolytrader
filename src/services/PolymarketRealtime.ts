@@ -54,9 +54,12 @@ export class PolymarketRealtime extends EventEmitter {
   private subscribedAssetIds = new Set<string>();
   private subscribedUser = false;
   private userSubscriptionMessage: Record<string, unknown> | null = null;
+  private lastMessageAtMs = 0;
+  private staleThresholdMs = 60000;
 
   constructor(private config: PolymarketRealtimeConfig) {
     super();
+    this.on('error', () => {});
   }
 
   async connect(): Promise<void> {
@@ -84,6 +87,7 @@ export class PolymarketRealtime extends EventEmitter {
       });
 
       ws.on('message', (data: WebSocket.RawData) => {
+        this.lastMessageAtMs = Date.now();
         const text = data.toString();
         try {
           const payload = JSON.parse(text) as RealtimeEvent;
@@ -128,7 +132,8 @@ export class PolymarketRealtime extends EventEmitter {
     }
     this.send({
       type: 'market',
-      assets_ids: assetIds
+      assets_ids: assetIds,
+      initial_dump: true
     });
   }
 
@@ -154,7 +159,15 @@ export class PolymarketRealtime extends EventEmitter {
     this.stopHeartbeat();
 
     if (this.ws) {
-      this.ws.close();
+      try {
+        this.ws.close();
+      } catch {
+        try {
+          this.ws.terminate();
+        } catch {
+          // ignore
+        }
+      }
       this.ws = null;
       this.connected = false;
     }
@@ -170,10 +183,17 @@ export class PolymarketRealtime extends EventEmitter {
       this.heartbeat = null;
     }
 
+    this.lastMessageAtMs = Date.now();
     const interval = this.config.heartbeatIntervalMs;
     this.heartbeat = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send('PING');
+        this.ws.ping();
+        
+        const timeSinceLastMessage = Date.now() - this.lastMessageAtMs;
+        if (timeSinceLastMessage > this.staleThresholdMs) {
+          this.emit('error', new Error(`WebSocket stale: no messages for ${timeSinceLastMessage}ms`));
+          this.ws.terminate();
+        }
       }
     }, interval);
   }
@@ -213,7 +233,8 @@ export class PolymarketRealtime extends EventEmitter {
     if (this.subscribedAssetIds.size > 0) {
       this.send({
         type: 'market',
-        assets_ids: Array.from(this.subscribedAssetIds)
+        assets_ids: Array.from(this.subscribedAssetIds),
+        initial_dump: true
       });
     }
     if (this.subscribedUser) {

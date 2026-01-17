@@ -2,10 +2,12 @@ import type { HealthCheck, HealthCheckResult } from './OpsAgent.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import type { LatencyEvent } from '../../telemetry/events.js';
 import type { OrderBookState } from '../../domain/orderbook.js';
+import { clamp } from '../../utils/math.js';
 
 export function createBookFreshnessCheck(
   getBooks: () => OrderBookState[],
-  thresholdMs: number
+  thresholdMs: number,
+  idleCutoffMs?: number
 ): HealthCheck {
   return {
     name: 'book_freshness',
@@ -17,13 +19,23 @@ export function createBookFreshnessCheck(
         return { ok: false, error: 'no_orderbooks' };
       }
 
-      const first = books[0];
+      const boundedIdle = typeof idleCutoffMs === 'number' ? Math.max(idleCutoffMs, 0) : 0;
+      const activeBooks =
+        boundedIdle > 0
+          ? books.filter((book) => now - book.lastUpdateMs <= boundedIdle)
+          : books;
+
+      if (activeBooks.length === 0) {
+        return { ok: false, error: 'no_active_orderbooks' };
+      }
+
+      const first = activeBooks[0];
       let worst: { tokenId: string; stalenessMs: number } = {
         tokenId: first.tokenId,
         stalenessMs: Math.max(0, now - first.lastUpdateMs)
       };
 
-      for (const book of books.slice(1)) {
+      for (const book of activeBooks.slice(1)) {
         const stalenessMs = Math.max(0, now - book.lastUpdateMs);
         if (stalenessMs > worst.stalenessMs) {
           worst = { tokenId: book.tokenId, stalenessMs };
@@ -98,7 +110,7 @@ export function createLatencyPercentileCheck(input: {
   return {
     name: `latency_p${Math.round(input.percentile * 100)}_${input.stage}`,
     check: async () => {
-      const boundedPercentile = clamp(input.percentile, 0, 1);
+      const boundedPercentile = clamp(input.percentile, 0, 1, 0);
       const boundedThreshold = Math.max(input.thresholdMs, 0);
       const boundedWindow = Math.max(input.windowMs, 0);
       const now = Date.now();
@@ -146,7 +158,7 @@ export function createPairedFillRateCheck(input: {
   return {
     name: 'paired_fill_rate',
     check: async () => {
-      const boundedThreshold = clamp(input.threshold, 0, 1);
+      const boundedThreshold = clamp(input.threshold, 0, 1, 0);
       const boundedWindow = Math.max(input.windowMs, 0);
       const now = Date.now();
       const limit = Math.max(input.limit ?? 2000, 1);
@@ -198,11 +210,6 @@ export function createCircuitBreakerCheck(getOpenMarkets: () => string[]): Healt
 
 function isTerminalExecutionState(state: string): boolean {
   return state === 'complete' || state === 'failed' || state === 'timeout' || state === 'unwind_failed';
-}
-
-function clamp(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(Math.max(value, min), max);
 }
 
 function percentileOf(sortedAscending: number[], percentile: number): number {
