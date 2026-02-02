@@ -28,8 +28,8 @@ start_backend() {
     return
   fi
 
-  nohup OPS_API_TOKEN="$TOKEN" LOG_LEVEL=info TRADING_ENABLED=true TRADING_MODE=paper \
-    npm run dev \
+  OPS_API_TOKEN="$TOKEN" LOG_LEVEL=info TRADING_ENABLED=true TRADING_MODE=paper \
+    nohup npm run dev \
     > "$ROOT_DIR/tmp/backend.log" 2>&1 &
   echo $! > "$BACKEND_PID_FILE"
   echo "Backend started (pid $(cat "$BACKEND_PID_FILE"))."
