@@ -10,7 +10,6 @@ Applies to `dashboard/src/`.
 ## Rules
 - Reuse shared components (`Section`, `Panel`, `MetricsTable`, `StatusPill`).
 - Keep schema-driven forms aligned with `/config/schema`.
-- Update `docs/Development/dashboard-ui-handoff.md` when UI behavior changes.
 
 ## Tests
 - `npm run test:e2e` (from `dashboard/`)

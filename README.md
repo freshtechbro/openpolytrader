@@ -121,6 +121,5 @@ Dashboard:
 
 - `docs/ARCHITECTURE.md` — system architecture and agent flow
 - `docs/Development/setup.md` — dev setup and environment notes
-- `docs/Development/dashboard-ui-handoff.md` — dashboard API/UI contract
 - `docs/Operations/runbook.md` — operational guidance
 - `docs/Testing/strategy.md` — test strategy and coverage requirements
