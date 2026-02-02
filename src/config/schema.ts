@@ -142,7 +142,7 @@ const RISK_FIELDS: ConfigField[] = [
   { key: 'marketCircuitHalfOpenSuccesses', label: 'Market Circuit Half-Open Successes', type: 'number', min: 1, max: 50, step: 1, unit: 'count', integer: true },
   { key: 'maxUnwindLossFraction', label: 'Max Unwind Loss Fraction', type: 'number', min: 0, max: 1, step: 0.001, unit: 'fraction' },
   { key: 'maxUnwindLossTicks', label: 'Max Unwind Loss Ticks', type: 'number', min: 1, max: 10, step: 1, unit: 'ticks', integer: true },
-  { key: 'unwindSlippageToleranceBps', label: 'Unwind Slippage', type: 'number', min: 1, max: 500, step: 1, unit: 'bps', integer: true },
+  { key: 'unwindSlippageToleranceBps', label: 'Unwind Slippage', type: 'number', min: 1, max: 2000, step: 1, unit: 'bps', integer: true },
   { key: 'maxPerTradeLossDollars', label: 'Max Per Trade Loss', type: 'number', min: 1, max: 1000, step: 1, unit: 'usd' },
   { key: 'dailyLossLimitFraction', label: 'Daily Loss Limit', type: 'number', min: 0, max: 1, step: 0.001, unit: 'fraction' }
 ];

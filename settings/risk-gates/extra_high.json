@@ -42,7 +42,7 @@
     "marketCircuitHalfOpenSuccesses": 1,
     "maxUnwindLossFraction": 0.08,
     "maxUnwindLossTicks": 5,
-    "unwindSlippageToleranceBps": 500,
+    "unwindSlippageToleranceBps": 2000,
     "maxPerTradeLossDollars": 75,
     "dailyLossLimitFraction": 0.1
   }
