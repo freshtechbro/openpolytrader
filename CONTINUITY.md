@@ -14,11 +14,12 @@ Key decisions:
 
 State:
   - Done:
-    - RepoPrompt context gathered for README/AGENTS/docs and scripts/env alignment.
+    - Updated README, AGENTS, architecture, setup, runbook, and config-knobs docs.
+    - Committed and pushed documentation updates to `main`.
   - Now:
-    - Identify doc mismatches and apply updates.
+    - None.
   - Next:
-    - Commit doc updates and push to `main`.
+    - None.
 
 Open questions (UNCONFIRMED if needed):
   - None.
@@ -30,10 +31,7 @@ Working set (files/ids/commands):
 - `docs/Development/setup.md`
 - `docs/Operations/runbook.md`
 - `docs/Operations/config-knobs.md`
-- `docs/Testing/strategy.md`
-- `.env.example`
-- `scripts/dev-up.sh`
-- `package.json`
+- `CONTINUITY.md`
 - Commands: `rg`, `git status`
 
 Key learnings:
