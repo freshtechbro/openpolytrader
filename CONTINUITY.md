@@ -1,32 +1,41 @@
 Goal (incl. success criteria):
-- Clean up the `todos/` directory (remove obsolete or completed items, normalize statuses if needed), then commit and push the changes to `main`.
+- Update all docs (README, AGENTS, and docs/ tree) to match current scripts/config/architecture, then commit and push to `main`.
 
 Constraints/Assumptions:
 - Follow AGENTS.md instructions (no stubs/placeholders, DRY, no destructive git commands, prefer `rg`).
 - Only the main agent edits `CONTINUITY.md`; sub-agents append to `sub_continuity.md`.
 - Approval policy is `never`; run needed commands directly and validate locally where useful.
 - Begin replies with a brief Ledger Snapshot (Goal + Now/Next + Open Questions).
-- Use file-todos skill workflows for any `todos/` cleanup.
+- Use RepoPrompt context builder before doc updates (completed).
 
 Key decisions:
-- Remove completed todo files to clean the directory.
+- Align defaults in docs to `.env.example` and `scripts/dev-up.sh`.
+- Remove references to deleted docs and clarify signal agent presence.
 
 State:
   - Done:
-    - Cleaned docs directory (plans/specs/audits/ui handoff) and pushed to `main`.
-    - Deleted all completed todos in `todos/` (001–005).
+    - RepoPrompt context gathered for README/AGENTS/docs and scripts/env alignment.
   - Now:
-    - Commit and push the todos cleanup.
+    - Identify doc mismatches and apply updates.
   - Next:
-    - None.
+    - Commit doc updates and push to `main`.
 
 Open questions (UNCONFIRMED if needed):
   - None.
 
 Working set (files/ids/commands):
-- `CONTINUITY.md`
-- `todos/`
-- Commands: `rg --files todos`, `git status`
+- `README.md`
+- `AGENTS.md`
+- `docs/ARCHITECTURE.md`
+- `docs/Development/setup.md`
+- `docs/Operations/runbook.md`
+- `docs/Operations/config-knobs.md`
+- `docs/Testing/strategy.md`
+- `.env.example`
+- `scripts/dev-up.sh`
+- `package.json`
+- Commands: `rg`, `git status`
 
 Key learnings:
-- None yet.
+- `.env.example` defaults: `TRADING_ENABLED=true`, `TRADING_MODE=shadow`, `RISK_PROFILE=extra_high`.
+- `dev:ops` runs `scripts/dev-up.sh`, which enforces OPS token and runs the dashboard on port 5174 with `TRADING_MODE=paper`.

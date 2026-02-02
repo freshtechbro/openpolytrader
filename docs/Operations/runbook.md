@@ -16,6 +16,12 @@ Stop:
 npm run dev:ops:down
 ```
 
+Notes:
+- Requires `OPS_API_TOKEN` or `VITE_OPS_API_TOKEN` in `dashboard/.env`.
+- `dev:ops` starts the backend with `TRADING_ENABLED=true` and `TRADING_MODE=paper`.
+- Dashboard runs on `http://localhost:5174` by default (override with `DASHBOARD_PORT`).
+- Logs: `tmp/backend.log`, `tmp/dashboard.log`.
+
 ### Backend (manual)
 ```bash
 npm install
@@ -67,10 +73,13 @@ Required for live trading (`TRADING_ENABLED=true` and `TRADING_MODE=live`):
 
 Near-zero-risk live mode fails closed unless the Polymarket **user channel** is configured and connected (uses the same Polymarket credentials; endpoint defaults to `POLYMARKET_USER_WS_URL`).
 
-Safety defaults:
-- `TRADING_ENABLED=false` (default)
-- `TRADING_MODE=off` (default)
+Defaults in `.env.example`:
+- `TRADING_ENABLED=true`
+- `TRADING_MODE=shadow`
+- `RISK_PROFILE=extra_high`
 - `TOTAL_CAPITAL=1000`
+
+For safety in non-trading environments, set `TRADING_ENABLED=false` or `TRADING_MODE=off`.
 
 Ops API:
 - `OPS_API_ENABLED=true`

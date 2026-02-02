@@ -1,7 +1,6 @@
 # OpenPolyTrader Knowledge Base
 
-**Generated:** 2026-01-05  
-**Commit:** caea9e7  
+**Generated:** 2026-02-02  
 **Branch:** main
 
 ## Overview
@@ -13,7 +12,7 @@ Near-zero-risk Polymarket CLOB arbitrage bot. TypeScript + Fastify backend, Reac
 ```
 openpolytrader/
 ├── src/
-│   ├── agents/        # Trading agents (scanner, risk, execution, portfolio, ops, learning, market-data)
+│   ├── agents/        # Trading agents (scanner, signal, risk, execution, portfolio, ops, learning, market-data)
 │   ├── core/          # Supervisor, MessageBus, EventStore
 │   ├── domain/        # Business logic, types, state machines
 │   ├── services/      # External API clients (Polymarket, Polygon)
@@ -26,7 +25,7 @@ openpolytrader/
 │   └── main.ts        # Entry point
 ├── dashboard/         # React/Vite ops dashboard
 ├── tests/             # Vitest unit + integration
-└── docs/              # Architecture, research, plans
+└── docs/              # Architecture, Development, Operations, Testing
 ```
 
 ## Where to Look
@@ -37,6 +36,7 @@ openpolytrader/
 | Risk gates | `src/domain/gates.ts` | Pre-trade validation (edge, depth, staleness) |
 | Portfolio state | `src/agents/portfolio/` | Positions, PnL, reconciliation |
 | Market scanning | `src/agents/scanner/` | Opportunity detection |
+| Signal aggregation | `src/agents/signal/` | EV signal aggregation + web search |
 | API clients | `src/services/` | PolymarketClob, PolymarketRealtime, PolymarketDataApi |
 | Configuration | `src/config/` | env.ts, policy.ts, risk.ts |
 | Event bus | `src/core/MessageBus.ts` | Typed agent communication |
@@ -48,17 +48,17 @@ openpolytrader/
 
 | File | Lines | Why |
 |------|-------|-----|
-| `src/agents/execution/ExecutionAgent.ts` | 1557 | State machine (17 states), timeouts, unwinds, idempotency |
-| `tests/unit/execution.test.ts` | 1616 | Comprehensive execution tests |
+| `src/agents/execution/ExecutionAgent.ts` | 2229 | State machine, timeouts, unwinds, idempotency |
+| `tests/unit/execution.test.ts` | 2843 | Comprehensive execution tests |
 | `tests/unit/portfolio.test.ts` | 1178 | Portfolio reconciliation tests |
-| `src/core/Supervisor.ts` | 545 | Agent orchestration, circuit breakers |
-| `src/agents/portfolio/PortfolioAgent.ts` | 531 | Position management, venue reconciliation |
-| `dashboard/src/pages/RiskGates.tsx` | 500+ | Risk config editing UI |
+| `src/core/Supervisor.ts` | 1027 | Agent orchestration, circuit breakers |
+| `src/agents/portfolio/PortfolioAgent.ts` | 638 | Position management, venue reconciliation |
+| `dashboard/src/pages/RiskGates.tsx` | 668 | Risk config editing UI |
 
 ## Agent Flow
 
 ```
-ScannerAgent → RiskAgent → ExecutionAgent → PortfolioAgent
+SignalAggregatorAgent → ScannerAgent → RiskAgent → ExecutionAgent → PortfolioAgent
      ↓             ↓              ↓               ↓
   Detects      Validates     Executes        Reconciles
   opportunity  gates         orders          positions
@@ -166,6 +166,8 @@ flowchart TD
 ```bash
 # Backend
 npm run dev          # tsx src/main.ts
+npm run dev:ops      # backend + dashboard (scripts/dev-up.sh)
+npm run dev:ops:down # stop dev:ops processes
 npm run build        # tsc compilation
 npm run build:all    # build backend + dashboard + Docker images
 npm run build:all:up # build everything and start Docker containers
@@ -178,12 +180,12 @@ npm run test:coverage # 95% thresholds
 
 # Dashboard
 cd dashboard
-npm run dev          # Vite dev server :5173
+npm run dev          # Vite dev server :5173 (dev:ops uses 5174)
 npm run build        # Production build
 npm run test:e2e     # Playwright
 
 # Docker
-docker-compose up    # Local deployment
+docker compose up    # Local deployment
 
 # Live (Docker backend + dashboard)
 npm run dev:live      # Docker backend + dashboard dev server
@@ -215,6 +217,6 @@ Auth: `Authorization: Bearer $OPS_API_TOKEN`
 ## Notes
 
 - Dashboard token: Set `VITE_OPS_API_TOKEN` matching `OPS_API_TOKEN`
-- Trading disabled by default: `TRADING_ENABLED=false`
+- Defaults in `.env.example`: `TRADING_ENABLED=true`, `TRADING_MODE=shadow`, `RISK_PROFILE=extra_high` (set `TRADING_ENABLED=false` or `TRADING_MODE=off` to hard-disable trading)
 - Market catalog: Optional `MARKET_CATALOG_PATH` JSON array
 - No local GitHub Actions workflow (CI badge references remote)

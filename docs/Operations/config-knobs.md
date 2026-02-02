@@ -20,7 +20,7 @@ These are edited via `PATCH /config/policy` and `PATCH /config/risk` and rendere
 - Edge + spread + book quality: `edgeRequired`, `maxEdge`, `maxSpread`, `requireFreshBook`, `orderbookFreshnessMs`, `maxBookStalenessMs`, `topOfBookStabilityMs`, `maxLegSkewMs`
   - `orderbookFreshnessMs` is a legacy alias; it must match `maxBookStalenessMs` to avoid silent overrides.
 - Inventory + strategy: `strategyMode`, `maxOpenInventorySeconds`
-- Signals + EV: `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional`, `evCooldownSeconds`, `evModelMode`, `evModelRefreshMinutes`, `evCalibrationMethod`, `evModelConfidenceFloor`, `evWebSearchExaEnabled`, `evWebSearchFirecrawlEnabled`, `evWebSearchPrimary`, `evWebSearchLookbackDays`, `evWebSearchMaxResults`, `evWebSearchCacheTtlSeconds`
+- Signals + EV: `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional`, `evCooldownSeconds`, `evModelMode`, `evModelRefreshMinutes`, `evCalibrationMethod`, `evModelConfidenceFloor`, `evWebSearchExaEnabled`, `evWebSearchFirecrawlEnabled`, `evWebSearchPrimary`, `evWebSearchLookbackDays`, `evWebSearchMaxResults`, `evWebSearchCacheTtlSeconds`, `evWebSearchMaxConcurrency`, `evWebSearchFirecrawlMaxDepth`, `evWebSearchFirecrawlMaxPages`
   - `signalMode=near_zero` disables EV signals; `signalMode=ev` disables near-zero arbitrage.
 - Execution safety gates: `rejectDelayed`, `maxDecisionLatencyMs`, `maxDelayedAckRate`, `minPairedFillRate`, `minEdgeTicks`
 - Depth/slippage gates: `depthHeadroomFraction`, `depthBufferMultiplier`, `minDepthLevels`, `entrySlippageToleranceBps`, `priceBandBps`

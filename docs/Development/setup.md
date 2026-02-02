@@ -13,6 +13,19 @@ npm run dev
 
 Ops API defaults to `http://localhost:3000`.
 
+## Backend + Dashboard (dev:ops)
+
+```bash
+npm install
+npm run dev:ops
+```
+
+Notes:
+- Requires `OPS_API_TOKEN` or `VITE_OPS_API_TOKEN` in `dashboard/.env`.
+- Dashboard runs on `http://localhost:5174` by default (override with `DASHBOARD_PORT`).
+- Stop with `npm run dev:ops:down`.
+- Logs: `tmp/backend.log`, `tmp/dashboard.log`.
+
 ## Dashboard
 
 ```bash
@@ -40,9 +53,12 @@ For the full env-key inventory and production guidance, see `docs/Operations/run
 Dashboard env keys live in `dashboard/.env.example`.
 
 Safety defaults:
-- `TRADING_ENABLED=false`
-- `TRADING_MODE=off`
+- `TRADING_ENABLED=true`
+- `TRADING_MODE=shadow`
+- `RISK_PROFILE=extra_high`
 - `OPS_API_ENABLED=true`
+
+For safe local testing, set `TRADING_ENABLED=false` or `TRADING_MODE=off`. The `dev:ops` script overrides to `TRADING_MODE=paper`.
 
 Risk profiles:
 - `RISK_PROFILE` selects `near_zero|moderate|high|extra_high` when explicitly set (non-empty).

@@ -1,6 +1,6 @@
 # Architecture Document - Polymarket Arbitrage Bot
 
-> **Status**: Draft. The canonical research + constraints (especially the execution/partial-fill caveat and strict market gating) are in `docs/RESEARCH_REPORT.md`. This file should be treated as an implementation sketch, not a profitability guarantee.
+> **Status**: Draft. This document summarizes the current architecture and constraints; operational defaults live in `.env.example` and `docs/Operations/runbook.md`. Code snippets are illustrative and may omit implementation details.
 
 
 ## Overview
@@ -49,6 +49,7 @@ flowchart LR
   PolymarketREST[Polymarket CLOB REST] --> MarketDataAgent
   MarketDataAgent --> Orderbooks[(Orderbook State)]
 
+  SignalAggregatorAgent --> ScannerAgent
   Orderbooks --> ScannerAgent --> RiskAgent --> ExecutionAgent --> PortfolioAgent
   ExecutionAgent --> PolymarketREST
   PortfolioAgent --> DataApi[Polymarket Data API]
@@ -115,15 +116,16 @@ flowchart TD
 │         │                  │                                  │
 │         │                  ▼                                  │
 │         │     ┌────────────────────────────────────────┐         │
-│         │     │     Agent Layer (7 Agents)             │         │
+│         │     │     Agent Layer (8 Agents)             │         │
 │         │     ├────────────────────────────────────────┤         │
 │         │     │ 1. MarketDataAgent                    │         │
-│         │     │2. ScannerAgent                        │         │
-│         │     │3. RiskAgent                          │         │
-│         │     │4. ExecutionAgent                     │         │
-│         │     │5. PortfolioAgent                     │         │
-│         │     │6. OpsAgent                           │         │
-│         │     │7. LearningAgent                      │         │
+│         │     │2. SignalAggregatorAgent              │         │
+│         │     │3. ScannerAgent                        │         │
+│         │     │4. RiskAgent                          │         │
+│         │     │5. ExecutionAgent                     │         │
+│         │     │6. PortfolioAgent                     │         │
+│         │     │7. OpsAgent                           │         │
+│         │     │8. LearningAgent                      │         │
 │         │     └────────────────────────────────────────┘         │
 │         │                                                       │
 │         ▼                                                       │
@@ -379,6 +381,8 @@ export class CircuitBreaker {
 ```
 
 ### 3. Agent Layer
+
+Current agents: MarketDataAgent, SignalAggregatorAgent, ScannerAgent, RiskAgent, ExecutionAgent, PortfolioAgent, OpsAgent, LearningAgent.
 
 #### 3.1 MarketDataAgent
 
@@ -813,7 +817,7 @@ export class Supervisor {
 - Pre-fund balances per venue; transfers are **not** on the critical path.
 - Add per-venue health and circuit breakers (rate-limit, trading pause, websocket lag).
 
-See `docs/PHASE2_CROSS_VENUE.md` for constraints and the risk model.
+Phase 2 cross-venue is gated by `PHASE2_CROSS_VENUE_ENABLED` (see `.env.example` and `docs/Operations/runbook.md`).
 
 ---
 
@@ -1035,7 +1039,7 @@ Response: {
 - DEX arbitrage (Uniswap on Polygon)
 - Private RPC for MEV protection
 - Enhanced RL model with more features
- - See `docs/PHASE2_CROSS_VENUE.md` for venue constraints and design notes
+- Cross-venue constraints are governed by `PHASE2_CROSS_VENUE_ENABLED` (see `.env.example` and `docs/Operations/runbook.md`).
 
 ### Phase 3 ($5000+ Capital)
 - Multi-strategy bot (arbitrage + market making)
