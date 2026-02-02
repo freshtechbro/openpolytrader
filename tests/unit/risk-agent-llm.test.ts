@@ -9,7 +9,9 @@ import type { RiskAdvisor, RiskAdvisorResult } from '../../src/agents/risk/RiskA
 const DEFAULT_OPTIONS = {
   fallbackTickSize: DEFAULT_TRADE_POLICY.fallbackTickSize,
   maxOpenInventorySeconds: DEFAULT_TRADE_POLICY.maxOpenInventorySeconds,
-  depthBufferMultiplier: DEFAULT_TRADE_POLICY.depthBufferMultiplier
+  depthBufferMultiplier: DEFAULT_TRADE_POLICY.depthBufferMultiplier,
+  evMaxPerMarketNotional: DEFAULT_TRADE_POLICY.evMaxPerMarketNotional,
+  evMaxPortfolioNotional: DEFAULT_TRADE_POLICY.evMaxPortfolioNotional
 };
 
 const baseOpportunity: ArbitrageOpportunity = {
@@ -60,5 +62,59 @@ describe('RiskAgent LLM sizing advisor', () => {
     });
 
     expect(decision.positionSize).toBeLessThanOrEqual(baseline.positionSize ?? 0);
+  });
+
+  it('returns deterministic sizing when advisor result is invalid', async () => {
+    const baselineAgent = new RiskAgent(DEFAULT_RISK_CONFIG, DEFAULT_OPTIONS);
+    const baseline = baselineAgent.evaluate(baseOpportunity, {
+      totalCapital: 1000,
+      availableCapital: 1000,
+      dailyPnL: 0,
+      marketExposure: {}
+    });
+
+    const advisor: Pick<RiskAdvisor, 'recommendSize'> = {
+      recommendSize: async (): Promise<RiskAdvisorResult> => ({
+        recommendedSizeRaw: 10,
+        clampedSize: Number.NaN,
+        confidence: 0.9,
+        reason: 'invalid',
+        call: null
+      })
+    };
+
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, DEFAULT_OPTIONS, { advisor });
+    const decision = await agent.evaluateWithAdvisor(baseOpportunity, {
+      totalCapital: 1000,
+      availableCapital: 1000,
+      dailyPnL: 0,
+      marketExposure: {}
+    });
+
+    expect(decision.positionSize).toBe(baseline.positionSize);
+    expect(decision.reason).toBe(baseline.reason);
+  });
+
+  it('bumps to min order size when advisor suggests too small', async () => {
+    const advisor: Pick<RiskAdvisor, 'recommendSize'> = {
+      recommendSize: async (): Promise<RiskAdvisorResult> => ({
+        recommendedSizeRaw: 0.1,
+        clampedSize: 0.5,
+        confidence: 0.9,
+        reason: 'too_small',
+        call: null
+      })
+    };
+
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, DEFAULT_OPTIONS, { advisor });
+    const decision = await agent.evaluateWithAdvisor(baseOpportunity, {
+      totalCapital: 1000,
+      availableCapital: 1000,
+      dailyPnL: 0,
+      marketExposure: {}
+    });
+
+    expect(decision.positionSize).toBe(baseOpportunity.minOrderSize);
+    expect(decision.reason).toBe('llm_min_order_size_bump');
   });
 });

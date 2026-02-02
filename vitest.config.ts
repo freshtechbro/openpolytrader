@@ -17,6 +17,8 @@ export default defineConfig({
         'src/services/PolymarketRealtime.ts',
         'src/services/PolygonRpc.ts',
         'src/services/MarketCatalog.ts',
+        'src/services/websearch/WebSearchClient.ts',
+        'src/services/llm/types.ts',
         'src/agents/market-data/**',
         'src/agents/scanner/**',
         'src/agents/learning/**',

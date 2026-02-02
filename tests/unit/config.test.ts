@@ -82,6 +82,22 @@ describe('config env + store', () => {
     expect(env.LLM_OPS_MODE).toBe('advisory');
   });
 
+  it('normalizes LLM endpoint overrides', () => {
+    expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: 'chat' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBe(
+      'chat.completions'
+    );
+    expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: 'completions' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBe(
+      'chat.completions'
+    );
+    expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: 'messages' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBe(
+      'messages'
+    );
+    expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: 'responses' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBe(
+      'responses'
+    );
+    expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: '   ' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBeUndefined();
+  });
+
   it('requires keys for live trading', () => {
     expect(() =>
       loadEnv({ TRADING_ENABLED: 'true', TRADING_MODE: 'live' })
@@ -130,9 +146,9 @@ describe('config env + store', () => {
   });
 
   it('normalizes risk profile env values', () => {
-    expect(loadEnv({ RISK_PROFILE: 'default' }).RISK_PROFILE).toBe('near_zero');
+    expect(loadEnv({ RISK_PROFILE: 'default' }).RISK_PROFILE).toBe('extra_high');
     expect(loadEnv({ RISK_PROFILE: 'Extra-High' }).RISK_PROFILE).toBe('extra_high');
-    expect(loadEnv({ RISK_PROFILE: '   ' }).RISK_PROFILE).toBe('near_zero');
+    expect(loadEnv({ RISK_PROFILE: '   ' }).RISK_PROFILE).toBe('extra_high');
   });
 
   it('rejects alchemy URLs that already include the API key', () => {
@@ -187,6 +203,20 @@ describe('config env + store', () => {
       /edgeRequired/
     );
   });
+
+  it('replaces policy + risk snapshots', () => {
+    const store = new ConfigStore(
+      { ...DEFAULT_TRADE_POLICY },
+      { ...DEFAULT_RISK_CONFIG }
+    );
+
+    const nextPolicy = { ...DEFAULT_TRADE_POLICY, maxDecisionLatencyMs: 400 };
+    const nextRisk = { ...DEFAULT_RISK_CONFIG, maxTradeFraction: 0.15 };
+
+    const snapshot = store.replace(nextPolicy, nextRisk);
+    expect(snapshot.policy.maxDecisionLatencyMs).toBe(400);
+    expect(snapshot.risk.maxTradeFraction).toBe(0.15);
+  });
 });
 
 describe('config validation + schema helpers', () => {
@@ -197,6 +227,59 @@ describe('config validation + schema helpers', () => {
     expect(() => validateP0Config(DEFAULT_TRADE_POLICY, badRisk)).toThrow(
       /maxPerTradeLossDollars/
     );
+  });
+
+  it('rejects fill timeout overrides in near-zero-risk mode', () => {
+    const badPolicy = { ...DEFAULT_TRADE_POLICY, fillTimeoutMs: 0 };
+    expect(() => validateP0Config(badPolicy, DEFAULT_RISK_CONFIG)).toThrow(
+      /fillTimeoutMs/
+    );
+
+    const standardPolicy = { ...DEFAULT_TRADE_POLICY, strategyMode: 'standard', fillTimeoutMs: 0 };
+    expect(() => validateP0Config(standardPolicy, DEFAULT_RISK_CONFIG)).not.toThrow();
+  });
+
+  it('rejects mismatched staleness knobs', () => {
+    const badPolicy = {
+      ...DEFAULT_TRADE_POLICY,
+      orderbookFreshnessMs: 10000,
+      maxBookStalenessMs: 15000
+    };
+
+    expect(() => validateP0Config(badPolicy, DEFAULT_RISK_CONFIG)).toThrow(
+      /orderbookFreshnessMs/
+    );
+  });
+
+  it('rejects evEdgeRequired when zero', () => {
+    const badPolicy = { ...DEFAULT_TRADE_POLICY, evEdgeRequired: 0 };
+    expect(() => validateP0Config(badPolicy, DEFAULT_RISK_CONFIG)).toThrow(/evEdgeRequired/);
+  });
+
+  it('rejects evMaxPerMarketNotional above evMaxPortfolioNotional', () => {
+    const badPolicy = {
+      ...DEFAULT_TRADE_POLICY,
+      evMaxPerMarketNotional: 500,
+      evMaxPortfolioNotional: 100
+    };
+    expect(() => validateP0Config(badPolicy, DEFAULT_RISK_CONFIG)).toThrow(/evMaxPerMarketNotional/);
+  });
+
+  it('rejects invalid evWebSearchPrimary settings', () => {
+    const badExa = { ...DEFAULT_TRADE_POLICY, evWebSearchPrimary: 'exa' as const, evWebSearchExaEnabled: false };
+    expect(() => validateP0Config(badExa, DEFAULT_RISK_CONFIG)).toThrow(/evWebSearchPrimary=exa/);
+
+    const badFirecrawl = {
+      ...DEFAULT_TRADE_POLICY,
+      evWebSearchPrimary: 'firecrawl' as const,
+      evWebSearchFirecrawlEnabled: false
+    };
+    expect(() => validateP0Config(badFirecrawl, DEFAULT_RISK_CONFIG)).toThrow(/evWebSearchPrimary=firecrawl/);
+  });
+
+  it('accepts depth buffer disabled', () => {
+    const policy = { ...DEFAULT_TRADE_POLICY, depthBufferMultiplier: 0 };
+    expect(() => validateP0Config(policy, DEFAULT_RISK_CONFIG)).not.toThrow();
   });
 
   it('identifies near-zero-risk mode', () => {

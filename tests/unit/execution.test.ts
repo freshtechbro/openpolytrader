@@ -13,7 +13,7 @@ import {
   isDelayedOrderResponse,
   isOrderFailure
 } from '../../src/domain/execution.js';
-import { createIdempotencyKey } from '../../src/domain/idempotency.js';
+import { createIdempotencyKey, type IdempotencyRecord } from '../../src/domain/idempotency.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import { DEFAULT_RISK_CONFIG } from '../../src/config/risk.js';
 import type { ArbitrageOpportunity } from '../../src/domain/opportunity.js';
@@ -48,6 +48,17 @@ function makeOpportunity(overrides: Partial<ArbitrageOpportunity> = {}): Arbitra
     pair: { conditionId: 'cond-1', yesTokenId: 'yes-token', noTokenId: 'no-token' }
   };
   return { ...base, ...overrides } as ArbitrageOpportunity;
+}
+
+function makeEvOpportunity(overrides: Partial<ArbitrageOpportunity> = {}): ArbitrageOpportunity {
+  return makeOpportunity({
+    type: 'ev',
+    side: 'yes',
+    evRaw: 0.05,
+    evNet: 0.05,
+    modelConfidence: 0.9,
+    ...overrides
+  });
 }
 
 function makeMockClob(
@@ -123,6 +134,154 @@ function makeMockIncidentTracker(): IncidentTracker {
 }
 
 describe('ExecutionAgent', () => {
+  it('updates trading flags and configs', () => {
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off'
+    });
+
+    agent.updateTradingEnabled(true);
+    agent.updateTradingMode('live');
+    agent.updatePolicy({ ...DEFAULT_TRADE_POLICY, submitTimeoutMs: 1 });
+    agent.updateRiskConfig({ ...DEFAULT_RISK_CONFIG, maxPerTradeLossDollars: 10 });
+
+    expect(agent.isTradingEnabled()).toBe(true);
+  });
+
+  it('cleans up tracked fill waiters', () => {
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off'
+    });
+
+    const orderId = 'order-1';
+    const timeout = setTimeout(() => {}, 1000);
+    const waiters = (agent as unknown as {
+      fillWaiters: Map<string, Array<{ desiredSize: number; resolve: () => void; timeout: ReturnType<typeof setTimeout> }>>;
+      cleanupOrderTracking: (ids: string[]) => void;
+    });
+
+    waiters.fillWaiters.set(orderId, [{ desiredSize: 1, resolve: () => {}, timeout }]);
+    waiters.cleanupOrderTracking([orderId]);
+
+    expect(waiters.fillWaiters.has(orderId)).toBe(false);
+  });
+
+  it('applies unwind hints with minimum loss ticks', () => {
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const executionAdvisor = {
+      getHint: vi.fn().mockReturnValue({
+        timeoutMultiplier: 1,
+        unwindHint: 'conservative',
+        confidence: 0.8,
+        expiresAtMs: Date.now() + 1000
+      })
+    } as unknown as ExecutionAdvisor;
+
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      executionAdvisor,
+      executionAdvisorMode: 'advisory'
+    });
+
+    const applyUnwindHint = (agent as unknown as {
+      applyUnwindHint: (marketId: string, opportunityId: string, baseLossTicks: number, maxLossTicks: number, nowMs?: number) => number;
+    }).applyUnwindHint;
+
+    const zeroTicks = applyUnwindHint.call(agent, 'm1', 'opp-1', 0, 5, Date.now());
+    const nonZeroTicks = applyUnwindHint.call(agent, 'm1', 'opp-1', 2, 5, Date.now());
+
+    expect(zeroTicks).toBe(0);
+    expect(nonZeroTicks).toBeGreaterThanOrEqual(1);
+  });
+
+  it('guards invalid timeout values', () => {
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const executionAdvisor = {
+      getHint: vi.fn().mockReturnValue({
+        timeoutMultiplier: 1,
+        unwindHint: 'neutral',
+        confidence: 0.5,
+        expiresAtMs: Date.now() + 1000
+      })
+    } as unknown as ExecutionAdvisor;
+
+    const zeroPolicy = {
+      ...DEFAULT_TRADE_POLICY,
+      submitTimeoutMs: 0,
+      ackTimeoutMs: 0,
+      fillTimeoutMs: 0,
+      cancelTimeoutMs: 0
+    };
+
+    const agent = new ExecutionAgent(zeroPolicy, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      executionAdvisor,
+      executionAdvisorMode: 'advisory'
+    });
+
+    const timeouts = (agent as unknown as {
+      getEffectiveTimeouts: (marketId: string, opportunityId: string, nowMs: number) => {
+        submitTimeoutMs: number;
+      };
+    }).getEffectiveTimeouts('m1', 'opp-1', Date.now());
+
+    expect(timeouts.submitTimeoutMs).toBe(0);
+  });
+
+  it('uses max loss ticks when slippage tolerance is zero and hint is missing', () => {
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const executionAdvisor = {
+      getHint: vi.fn().mockReturnValue(null)
+    } as unknown as ExecutionAdvisor;
+
+    const riskConfig = {
+      ...DEFAULT_RISK_CONFIG,
+      maxUnwindLossTicks: 5,
+      unwindSlippageToleranceBps: 0
+    };
+
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      executionAdvisor,
+      executionAdvisorMode: 'advisory',
+      riskConfig
+    });
+
+    const calculateUnwindPrice = (agent as unknown as {
+      calculateUnwindPrice: (entryPrice: number, tickSize: number, advisory?: { marketId: string; opportunityId: string; nowMs?: number }) => number;
+    }).calculateUnwindPrice;
+
+    const price = calculateUnwindPrice.call(agent, 0.5, 0.01, { marketId: 'm1', opportunityId: 'opp-1' });
+    expect(price).toBe(0.45);
+  });
+
+  it('uses base loss ticks when no advisory is provided', () => {
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const riskConfig = {
+      ...DEFAULT_RISK_CONFIG,
+      maxUnwindLossTicks: 3,
+      unwindSlippageToleranceBps: 100
+    };
+
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      riskConfig
+    });
+
+    const calculateUnwindPrice = (agent as unknown as {
+      calculateUnwindPrice: (entryPrice: number, tickSize: number, advisory?: { marketId: string; opportunityId: string; nowMs?: number }) => number;
+    }).calculateUnwindPrice;
+
+    const price = calculateUnwindPrice.call(agent, 0.5, 0.01);
+    expect(price).toBeLessThan(0.5);
+  });
   describe('kill-switch (tradingEnabled)', () => {
     it('blocks execution when tradingEnabled is false', async () => {
       const clob = makeMockClob({
@@ -197,6 +356,268 @@ describe('ExecutionAgent', () => {
 
       expect(enabledAgent.isTradingEnabled()).toBe(true);
       expect(disabledAgent.isTradingEnabled()).toBe(false);
+    });
+  });
+
+  it('tracks SELL side updates from user channel', () => {
+    const userRealtime = new MockUserRealtime(true);
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+
+    userRealtime.emit('user:order', {
+      eventType: 'order',
+      orderId: 'sell-order-1',
+      side: 'SELL',
+      status: 'OPEN',
+      timestampMs: Date.now(),
+      raw: {}
+    } as UserOrderUpdate);
+
+    const state = (agent as unknown as { userOrders: Map<string, { side?: string }> }).userOrders.get('sell-order-1');
+    expect(state?.side).toBe('SELL');
+  });
+
+  it('marks cancelled orders from user channel updates', () => {
+    const userRealtime = new MockUserRealtime(true);
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+
+    userRealtime.emit('user:order', {
+      eventType: 'order',
+      orderId: 'cancel-order-1',
+      side: 'HOLD',
+      status: 'OPEN',
+      orderEventType: 'CANCELLATION',
+      timestampMs: Date.now(),
+      raw: {}
+    } as UserOrderUpdate);
+
+    const state = (agent as unknown as { userOrders: Map<string, { side?: string; cancelled?: boolean }> })
+      .userOrders.get('cancel-order-1');
+    expect(state?.side).toBeUndefined();
+    expect(state?.cancelled).toBe(true);
+
+    userRealtime.emit('user:order', {
+      eventType: 'order',
+      orderId: 'cancel-order-2',
+      side: 'BUY',
+      status: 'CANCELED',
+      timestampMs: Date.now(),
+      raw: {}
+    } as UserOrderUpdate);
+
+    const state2 = (agent as unknown as { userOrders: Map<string, { cancelled?: boolean }> })
+      .userOrders.get('cancel-order-2');
+    expect(state2?.cancelled).toBe(true);
+  });
+
+  it('resolves fills from user status updates', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    const userRealtime = new MockUserRealtime(true);
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+
+    const outcomePromise = (agent as unknown as {
+      waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<{
+        fullyFilled: boolean;
+        cancelled: boolean;
+        timedOut: boolean;
+      }>;
+    }).waitForFillOutcome('order-fill-1', 10, 1000);
+
+    await Promise.resolve();
+    userRealtime.emit('user:order', {
+      eventType: 'order',
+      orderId: 'order-fill-1',
+      status: 'FILLED',
+      sizeMatched: 0,
+      timestampMs: now + 10,
+      raw: {}
+    } as UserOrderUpdate);
+
+    const outcome = await outcomePromise;
+    expect(outcome.fullyFilled).toBe(true);
+    expect(outcome.cancelled).toBe(false);
+    expect(outcome.timedOut).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it('resolves cancelled fill waits', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    const userRealtime = new MockUserRealtime(true);
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+
+    const outcomePromise = (agent as unknown as {
+      waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<{
+        fullyFilled: boolean;
+        cancelled: boolean;
+        timedOut: boolean;
+      }>;
+    }).waitForFillOutcome('order-cancel-1', 10, 1000);
+
+    await Promise.resolve();
+    userRealtime.emit('user:order', {
+      eventType: 'order',
+      orderId: 'order-cancel-1',
+      status: 'OPEN',
+      orderEventType: 'CANCELLATION',
+      timestampMs: now + 5,
+      raw: {}
+    } as UserOrderUpdate);
+
+    const outcome = await outcomePromise;
+    expect(outcome.fullyFilled).toBe(false);
+    expect(outcome.cancelled).toBe(true);
+    expect(outcome.timedOut).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it('returns immediate timeout when fill timeout is non-positive', async () => {
+    const userRealtime = new MockUserRealtime(true);
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+
+    const outcome = await (agent as unknown as {
+      waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<{
+        timedOut: boolean;
+      }>;
+    }).waitForFillOutcome('missing-order', 10, 0);
+
+    expect(outcome.timedOut).toBe(true);
+  });
+
+  it('records portfolio fills from user trades and ignores duplicates', () => {
+    const userRealtime = new MockUserRealtime(true);
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const portfolio = { applyFillWithReconciliation: vi.fn() } as unknown as PortfolioAgent;
+    const _agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      portfolio,
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+
+    const handler = vi.fn();
+    messageBus.on('execution:fill', handler);
+
+    userRealtime.emit('user:trade', {
+      eventType: 'trade',
+      tradeId: 'trade-1',
+      marketId: 'm1',
+      assetId: 'asset-1',
+      side: 'BUY',
+      price: 0.45,
+      size: 2,
+      takerOrderId: 'order-taker-1',
+      makerOrderIds: ['order-maker-1', 'order-maker-2'],
+      makerMatches: [
+        { orderId: 'order-maker-1', matchedAmount: 1 },
+        { orderId: 'order-maker-2', matchedAmount: 0 }
+      ],
+      timestampMs: Date.now(),
+      raw: {}
+    });
+
+    userRealtime.emit('user:trade', {
+      eventType: 'trade',
+      tradeId: 'trade-1',
+      marketId: 'm1',
+      assetId: 'asset-1',
+      side: 'BUY',
+      price: 0.45,
+      size: 2,
+      takerOrderId: 'order-taker-1',
+      makerOrderIds: ['order-maker-1'],
+      makerMatches: [{ orderId: 'order-maker-1', matchedAmount: 1 }],
+      timestampMs: Date.now(),
+      raw: {}
+    });
+
+    expect(portfolio.applyFillWithReconciliation).toHaveBeenCalledTimes(2);
+    expect(handler).toHaveBeenCalledTimes(2);
+
+    messageBus.off('execution:fill', handler);
+  });
+
+  it('skips portfolio fill when trade data is incomplete', () => {
+    const userRealtime = new MockUserRealtime(true);
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const portfolio = { applyFillWithReconciliation: vi.fn() } as unknown as PortfolioAgent;
+    const _agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      portfolio,
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+
+    userRealtime.emit('user:trade', {
+      eventType: 'trade',
+      tradeId: 'trade-3',
+      marketId: 'm1',
+      assetId: 'asset-1',
+      side: 'HOLD',
+      price: NaN,
+      size: 2,
+      takerOrderId: 'order-taker-3',
+      makerOrderIds: [],
+      makerMatches: [],
+      timestampMs: Date.now(),
+      raw: {}
+    });
+
+    expect(portfolio.applyFillWithReconciliation).not.toHaveBeenCalled();
+  });
+  it('ignores trade updates when portfolio is missing', () => {
+    const userRealtime = new MockUserRealtime(true);
+    const clob = makeMockClob({ yes: {}, no: {} });
+    const _agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: false,
+      tradingMode: 'off',
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+
+    userRealtime.emit('user:trade', {
+      eventType: 'trade',
+      tradeId: 'trade-2',
+      marketId: 'm1',
+      assetId: 'asset-1',
+      side: 'BUY',
+      price: 0.45,
+      size: 2,
+      takerOrderId: 'order-taker-2',
+      makerOrderIds: [],
+      makerMatches: [],
+      timestampMs: Date.now(),
+      raw: {}
     });
   });
 
@@ -278,6 +699,69 @@ describe('ExecutionAgent', () => {
       expect(result.state).toBe('idle');
       expect(clob.createOrder).not.toHaveBeenCalled();
     });
+
+    it('blocks EV execution when user channel is unconfigured', async () => {
+      const clob = makeMockClob({
+        yes: { orderId: 'o1', status: 'LIVE' },
+        no: { orderId: 'o2', status: 'LIVE' }
+      });
+
+      const policy = { ...DEFAULT_TRADE_POLICY, strategyMode: 'standard' as const };
+      const agent = new ExecutionAgent(policy, clob, undefined, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live'
+      });
+
+      const result = await agent.executeArbitrage(makeEvOpportunity(), 100);
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('user_channel_unconfigured');
+      expect(result.state).toBe('idle');
+      expect(clob.createOrder).not.toHaveBeenCalled();
+    });
+
+    it('blocks EV execution when user channel is disconnected', async () => {
+      const clob = makeMockClob({
+        yes: { orderId: 'o1', status: 'LIVE' },
+        no: { orderId: 'o2', status: 'LIVE' }
+      });
+
+      const policy = { ...DEFAULT_TRADE_POLICY, strategyMode: 'standard' as const };
+      const userRealtime = new MockUserRealtime(false);
+      const agent = new ExecutionAgent(policy, clob, undefined, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const result = await agent.executeArbitrage(makeEvOpportunity(), 100);
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('user_channel_disconnected');
+      expect(result.state).toBe('idle');
+      expect(clob.createOrder).not.toHaveBeenCalled();
+    });
+  });
+
+  it('blocks execution when circuit breaker is open', async () => {
+    const clob = makeMockClob({
+      yes: { orderId: 'o1', status: 'LIVE' },
+      no: { orderId: 'o2', status: 'LIVE' }
+    });
+
+    const incidentTracker = makeMockIncidentTracker();
+    const circuitBreakers = { isOpen: vi.fn().mockReturnValue(true) } as unknown as { isOpen: (marketId: string) => boolean };
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, incidentTracker, undefined, {
+      tradingEnabled: true,
+      tradingMode: 'live',
+      circuitBreakers
+    });
+
+    const result = await agent.executeArbitrage(makeOpportunity(), 100);
+
+    expect(result.status).toBe('blocked');
+    expect(result.reason).toBe('circuit_breaker');
+    expect(incidentTracker.record).toHaveBeenCalledWith(expect.objectContaining({ reason: 'circuit_breaker' }));
   });
 
   describe('pre-trade controls', () => {
@@ -326,10 +810,11 @@ describe('ExecutionAgent', () => {
 
       const policy = {
         ...DEFAULT_TRADE_POLICY,
-        maxOrdersPerMinute: 2,
+        maxOrdersPerMinute: 5,
         orderVelocityWindowMs: 60000,
         maxOrderToTradeRatio: 100,
         orderToTradeWindowMs: 60000,
+        strategyMode: 'standard',
         fillTimeoutMs: 0
       };
 
@@ -343,6 +828,45 @@ describe('ExecutionAgent', () => {
 
       expect(result.status).toBe('submitted');
       expect(incidentTracker.record).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'velocity_throttle' })
+      );
+
+      vi.useRealTimers();
+    });
+
+    it('blocks when order velocity exceeds limit', async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      vi.setSystemTime(now);
+
+      const clob = makeMockClob({
+        yes: { orderId: 'o1', status: 'LIVE' },
+        no: { orderId: 'o2', status: 'LIVE' }
+      });
+      const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+      const incidentTracker = makeMockIncidentTracker();
+      metrics.recordOrderAttempt('market-1', now);
+      metrics.recordOrderAttempt('market-1', now);
+
+      const policy = {
+        ...DEFAULT_TRADE_POLICY,
+        maxOrdersPerMinute: 2,
+        orderVelocityWindowMs: 60000,
+        maxOrderToTradeRatio: 100,
+        orderToTradeWindowMs: 60000
+      };
+
+      const agent = new ExecutionAgent(policy, clob, incidentTracker, metrics, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(new MockUserRealtime(true))
+      });
+
+      const result = await agent.executeArbitrage(makeOpportunity(), 100);
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('velocity_throttle');
+      expect(incidentTracker.record).toHaveBeenCalledWith(
         expect.objectContaining({ reason: 'velocity_throttle' })
       );
 
@@ -1675,6 +2199,515 @@ describe('ExecutionAgent', () => {
       await agent.executeArbitrage(opp, 100, { nowMs: later });
 
       expect(clob.reserveNonce).toHaveBeenCalledTimes(4);
+    });
+  });
+
+  describe('EV execution', () => {
+    it('blocks EV when side is missing', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now, side: undefined });
+      const clob = makeMockClob({ yes: {}, no: {} });
+
+      const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live'
+      });
+
+      const result = await agent.executeArbitrage(opp, 10, { nowMs: now });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('ev_missing_side');
+    });
+
+    it('blocks EV when price moves beyond band', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now, side: 'yes', yesPrice: 0.4 });
+      const clob = makeMockClob({ yes: { orderId: 'o1', status: 'LIVE' }, no: { orderId: 'o2', status: 'LIVE' } });
+      const incidentTracker = makeMockIncidentTracker();
+      const userRealtime = new MockUserRealtime(true);
+      const policy = { ...DEFAULT_TRADE_POLICY, priceBandBps: 10 };
+
+      const agent = new ExecutionAgent(policy, clob, incidentTracker, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const yesBook = { bestAsk: { price: 0.6, size: 1 } } as OrderBookState;
+      const noBook = { bestAsk: { price: 0.7, size: 1 } } as OrderBookState;
+
+      const result = await agent.executeArbitrage(opp, 10, { nowMs: now, yesBook, noBook });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('price_moved');
+      expect(incidentTracker.record).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'price_moved' })
+      );
+    });
+
+    it('blocks EV when price is invalid', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now, yesPrice: 0 });
+      const clob = makeMockClob({ yes: {}, no: {} });
+      const userRealtime = new MockUserRealtime(true);
+
+      const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const result = await agent.executeArbitrage(opp, 10, { nowMs: now });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('invalid_price');
+    });
+
+    it('blocks EV helper when side is missing', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now, side: undefined });
+      const clob = {
+        createOrder: vi.fn(),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+
+      const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live'
+      });
+
+      const idempotencyKey = createIdempotencyKey(
+        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+      );
+      const yesKey = `${idempotencyKey}:yes`;
+      const noKey = `${idempotencyKey}:no`;
+      const baseRecord: IdempotencyRecord = {
+        key: yesKey,
+        nonce: 'n1',
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now
+      };
+      const timeouts = (agent as unknown as { timeouts: unknown }).timeouts;
+
+      const result = await (agent as unknown as {
+        executeEvOrder: (
+          opportunity: ArbitrageOpportunity,
+          size: number,
+          context: unknown,
+          params: {
+            nowMs: number;
+            idempotencyKey: string;
+            executionId: string;
+            idleState: string;
+            timeouts: unknown;
+            yesIdempotencyKey: string;
+            noIdempotencyKey: string;
+            yesRecord: IdempotencyRecord;
+            noRecord: IdempotencyRecord;
+            trackedOrderIds: string[];
+            requiresUserChannel: boolean;
+          }
+        ) => Promise<{ status: string; reason?: string }>;
+      }).executeEvOrder(opp, 10, undefined, {
+        nowMs: now,
+        idempotencyKey,
+        executionId: idempotencyKey,
+        idleState: 'idle',
+        timeouts,
+        yesIdempotencyKey: yesKey,
+        noIdempotencyKey: noKey,
+        yesRecord: baseRecord,
+        noRecord: { ...baseRecord, key: noKey },
+        trackedOrderIds: [],
+        requiresUserChannel: false
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.reason).toBe('ev_missing_side');
+    });
+
+    it('records portfolio expectation in EV helper', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now, side: 'yes' });
+      const clob = {
+        createOrder: vi.fn().mockResolvedValue({ orderID: 'ev-order-1', status: 'LIVE' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const portfolio = { expectFill: vi.fn() } as unknown as PortfolioAgent;
+
+      const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        portfolio
+      });
+
+      const idempotencyKey = createIdempotencyKey(
+        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+      );
+      const yesKey = `${idempotencyKey}:yes`;
+      const noKey = `${idempotencyKey}:no`;
+      const baseRecord: IdempotencyRecord = {
+        key: yesKey,
+        nonce: 'n1',
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now
+      };
+      const timeouts = (agent as unknown as { timeouts: unknown }).timeouts;
+
+      await (agent as unknown as {
+        executeEvOrder: (
+          opportunity: ArbitrageOpportunity,
+          size: number,
+          context: unknown,
+          params: {
+            nowMs: number;
+            idempotencyKey: string;
+            executionId: string;
+            idleState: string;
+            timeouts: unknown;
+            yesIdempotencyKey: string;
+            noIdempotencyKey: string;
+            yesRecord: IdempotencyRecord;
+            noRecord: IdempotencyRecord;
+            trackedOrderIds: string[];
+            requiresUserChannel: boolean;
+          }
+        ) => Promise<{ status: string; state: string }>;
+      }).executeEvOrder(opp, 10, undefined, {
+        nowMs: now,
+        idempotencyKey,
+        executionId: idempotencyKey,
+        idleState: 'idle',
+        timeouts,
+        yesIdempotencyKey: yesKey,
+        noIdempotencyKey: noKey,
+        yesRecord: baseRecord,
+        noRecord: { ...baseRecord, key: noKey },
+        trackedOrderIds: [],
+        requiresUserChannel: false
+      });
+
+      expect(portfolio.expectFill).toHaveBeenCalledWith(
+        expect.objectContaining({
+          opportunityId: opp.id,
+          tokenId: opp.yesTokenId,
+          expectedSize: 10,
+          expectedPrice: opp.yesPrice
+        })
+      );
+    });
+
+    it('waits for EV fills and confirms idempotency', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now });
+      const baseKey = createIdempotencyKey(
+        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+      );
+      const dbPath = `data/test-${randomUUID()}.db`;
+      const store = new EventStore({ dbPath });
+
+      try {
+        const userRealtime = new MockUserRealtime(true);
+        const clob = {
+          createOrder: vi.fn().mockImplementation(() => {
+            const orderId = 'ev-order-1';
+            emitOrderMatched(userRealtime, orderId);
+            return Promise.resolve({ orderId, status: 'LIVE' });
+          }),
+          ...makeCancelMocks()
+        } as unknown as PolymarketClob;
+
+        const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+        const policy = { ...DEFAULT_TRADE_POLICY, strategyMode: 'standard' as const };
+        const agent = new ExecutionAgent(policy, clob, undefined, metrics, {
+          tradingEnabled: true,
+          tradingMode: 'live',
+          eventStore: store,
+          userRealtime: asPolymarketRealtime(userRealtime)
+        });
+
+        const result = await agent.executeArbitrage(opp, 50, { nowMs: now });
+
+        expect(result.status).toBe('submitted');
+        expect(result.state).toBe('complete');
+        expect(clob.createOrder).toHaveBeenCalledTimes(1);
+        expect(metrics.recent('fill', 1).length).toBe(1);
+
+        const record = store.getIdempotencyRecord(`${baseKey}:yes`);
+        expect(record?.status).toBe('confirmed');
+      } finally {
+        store.close();
+        rmSync(dbPath, { force: true });
+      }
+    });
+
+    it('fails EV when order response is missing orderId', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now });
+      const clob = {
+        createOrder: vi.fn().mockResolvedValue({ status: 'LIVE' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const incidentTracker = makeMockIncidentTracker();
+      const userRealtime = new MockUserRealtime(true);
+
+      const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, incidentTracker, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const result = await agent.executeArbitrage(opp, 25, { nowMs: now });
+
+      expect(result.status).toBe('failed');
+      expect(result.reason).toBe('order_failed');
+      expect(incidentTracker.record).toHaveBeenCalledWith(expect.objectContaining({ reason: 'order_failed' }));
+    });
+
+    it('fails EV when order response is delayed', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now });
+      const clob = {
+        createOrder: vi.fn().mockResolvedValue({ status: 'DELAYED' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const incidentTracker = makeMockIncidentTracker();
+      const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+      const userRealtime = new MockUserRealtime(true);
+
+      const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, incidentTracker, metrics, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const result = await agent.executeArbitrage(opp, 10, { nowMs: now });
+
+      expect(result.status).toBe('failed');
+      expect(result.reason).toBe('order_delayed');
+      expect(incidentTracker.record).toHaveBeenCalledWith(expect.objectContaining({ reason: 'order_delayed' }));
+      expect(metrics.recent('delayed_ack', 1).length).toBe(1);
+    });
+
+    it('fails EV when order response is rejected', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now });
+      const clob = {
+        createOrder: vi.fn().mockResolvedValue({ status: 'rejected' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const incidentTracker = makeMockIncidentTracker();
+      const userRealtime = new MockUserRealtime(true);
+
+      const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, incidentTracker, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const result = await agent.executeArbitrage(opp, 10, { nowMs: now });
+
+      expect(result.status).toBe('failed');
+      expect(result.reason).toBe('order_rejected');
+      expect(incidentTracker.record).toHaveBeenCalledWith(expect.objectContaining({ reason: 'order_rejected' }));
+    });
+
+    it('reuses stored orderId when ack response omits it', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now });
+      const baseKey = createIdempotencyKey(
+        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+      );
+      const dbPath = `data/test-${randomUUID()}.db`;
+      const store = new EventStore({ dbPath });
+
+      try {
+        store.upsertIdempotencyRecord({
+          key: `${baseKey}:yes`,
+          nonce: 'n1',
+          status: 'submitted',
+          orderId: 'stored-order-1',
+          createdAt: now,
+          updatedAt: now
+        });
+
+        const clob = {
+          createOrder: vi.fn().mockResolvedValue({ status: 'DELAYED' }),
+          ...makeCancelMocks()
+        } as unknown as PolymarketClob;
+        const incidentTracker = makeMockIncidentTracker();
+        const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+        const userRealtime = new MockUserRealtime(true);
+
+        const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, incidentTracker, metrics, {
+          tradingEnabled: true,
+          tradingMode: 'live',
+          eventStore: store,
+          userRealtime: asPolymarketRealtime(userRealtime)
+        });
+
+        const result = await agent.executeArbitrage(opp, 10, { nowMs: now });
+
+        expect(result.reason).toBe('order_delayed');
+        const record = store.getIdempotencyRecord(`${baseKey}:yes`);
+        expect(record?.orderId).toBe('stored-order-1');
+      } finally {
+        store.close();
+        rmSync(dbPath, { force: true });
+      }
+    });
+
+    it('returns complete when user channel is not required in EV helper', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now });
+      const clob = {
+        createOrder: vi.fn().mockResolvedValue({ orderID: 'ev-order-1', status: 'LIVE' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const userRealtime = new MockUserRealtime(true);
+
+      const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const idempotencyKey = createIdempotencyKey(
+        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+      );
+      const yesKey = `${idempotencyKey}:yes`;
+      const noKey = `${idempotencyKey}:no`;
+      const baseRecord: IdempotencyRecord = {
+        key: yesKey,
+        nonce: 'n1',
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now
+      };
+      const timeouts = (agent as unknown as { timeouts: unknown }).timeouts;
+
+      const result = await (agent as unknown as {
+        executeEvOrder: (
+          opportunity: ArbitrageOpportunity,
+          size: number,
+          context: unknown,
+          params: {
+            nowMs: number;
+            idempotencyKey: string;
+            executionId: string;
+            idleState: string;
+            timeouts: unknown;
+            yesIdempotencyKey: string;
+            noIdempotencyKey: string;
+            yesRecord: IdempotencyRecord;
+            noRecord: IdempotencyRecord;
+            trackedOrderIds: string[];
+            requiresUserChannel: boolean;
+          }
+        ) => Promise<{ status: string; state: string }>;
+      }).executeEvOrder(opp, 10, undefined, {
+        nowMs: now,
+        idempotencyKey,
+        executionId: idempotencyKey,
+        idleState: 'idle',
+        timeouts,
+        yesIdempotencyKey: yesKey,
+        noIdempotencyKey: noKey,
+        yesRecord: baseRecord,
+        noRecord: { ...baseRecord, key: noKey },
+        trackedOrderIds: [],
+        requiresUserChannel: false
+      });
+
+      expect(result.status).toBe('submitted');
+      expect(result.state).toBe('complete');
+    });
+
+    it('fails EV when submit timeout is exceeded', async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      vi.setSystemTime(now);
+
+      const opp = makeEvOpportunity({ detectedAt: now });
+      const pending = new Promise(() => {});
+      const clob = {
+        createOrder: vi.fn().mockReturnValue(pending),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const incidentTracker = makeMockIncidentTracker();
+      const userRealtime = new MockUserRealtime(true);
+      const policy = { ...DEFAULT_TRADE_POLICY, submitTimeoutMs: 5 };
+
+      const agent = new ExecutionAgent(policy, clob, incidentTracker, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const resultPromise = agent.executeArbitrage(opp, 10, { nowMs: now });
+      await vi.advanceTimersByTimeAsync(10);
+      const result = await resultPromise;
+
+      expect(result.status).toBe('failed');
+      expect(result.reason).toBe('order_timeout');
+      expect(incidentTracker.record).toHaveBeenCalledWith(expect.objectContaining({ reason: 'order_timeout' }));
+
+      vi.useRealTimers();
+    });
+
+    it('fails EV when submit throws non-timeout error', async () => {
+      const now = Date.now();
+      const opp = makeEvOpportunity({ detectedAt: now });
+      const clob = {
+        createOrder: vi.fn().mockRejectedValue(new Error('boom')),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+      const incidentTracker = makeMockIncidentTracker();
+      const userRealtime = new MockUserRealtime(true);
+
+      const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, incidentTracker, undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const result = await agent.executeArbitrage(opp, 10, { nowMs: now });
+
+      expect(result.status).toBe('failed');
+      expect(result.reason).toBe('order_failed');
+      expect(incidentTracker.record).toHaveBeenCalledWith(expect.objectContaining({ reason: 'order_failed' }));
+    });
+
+    it('fails EV when fill times out', async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
+      vi.setSystemTime(now);
+
+      const opp = makeEvOpportunity({ detectedAt: now });
+      const clob = {
+        createOrder: vi.fn().mockResolvedValue({ orderId: 'ev-timeout-1', status: 'LIVE' }),
+        ...makeCancelMocks()
+      } as unknown as PolymarketClob;
+
+      const policy = { ...DEFAULT_TRADE_POLICY, strategyMode: 'standard' as const, fillTimeoutMs: 5 };
+      const userRealtime = new MockUserRealtime(true);
+      const agent = new ExecutionAgent(policy, clob, makeMockIncidentTracker(), undefined, {
+        tradingEnabled: true,
+        tradingMode: 'live',
+        userRealtime: asPolymarketRealtime(userRealtime)
+      });
+
+      const resultPromise = agent.executeArbitrage(opp, 50, { nowMs: now });
+      await Promise.resolve();
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+
+      expect(result.status).toBe('failed');
+      expect(result.reason).toBe('order_timeout');
+
+      vi.useRealTimers();
     });
   });
 

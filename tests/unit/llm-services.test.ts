@@ -243,7 +243,7 @@ describe('LLM services', () => {
     expect(result.usage).toEqual({ inputTokens: 1, outputTokens: 2, totalTokens: 3 });
   });
 
-  it('LLMClient: maps Zen model ids when falling back to OpenRouter', async () => {
+  it('LLMClient: maps Zen chat model ids when falling back to OpenRouter', async () => {
     const primary = await startOpenAICompatServer();
     const fallback = await startOpenAICompatServer();
     servers.push(primary, fallback);
@@ -276,13 +276,13 @@ describe('LLM services', () => {
     config.agents.ExecutionAgent.provider = 'opencode-zen';
 
     const client = new LLMClient(config);
-    const result = await client.call('ExecutionAgent', { ...ACTIVE_REQUEST, model: 'grok-code' });
+    const result = await client.call('ExecutionAgent', { ...ACTIVE_REQUEST, model: 'glm-4.7' });
 
     expect(result.status).toBe('fallback');
-    expect(openrouterChatModel).toBe('x-ai/grok-code-fast-1');
+    expect(openrouterChatModel).toBe('z-ai/glm-4.7');
   });
 
-  it('LLMClient: maps Zen minimax ids when messages requests fall back to OpenRouter', async () => {
+  it('LLMClient: preserves Zen claude ids when messages requests fall back to OpenRouter', async () => {
     const primary = await startOpenAICompatServer();
     const fallback = await startOpenAICompatServer();
     servers.push(primary, fallback);
@@ -317,7 +317,7 @@ describe('LLM services', () => {
     const client = new LLMClient(config);
     const result = await client.call('LearningAgent', {
       endpoint: 'messages',
-      model: 'minimax-m2.1-free',
+      model: 'claude-sonnet-4',
       system: 'Return JSON only.',
       messages: [{ role: 'user', content: '{"task":"ping"}' }],
       temperature: 0,
@@ -325,7 +325,7 @@ describe('LLM services', () => {
     });
 
     expect(result.status).toBe('fallback');
-    expect(openrouterChatModel).toBe('minimax/minimax-m2.1');
+    expect(openrouterChatModel).toBe('claude-sonnet-4');
   });
 
   it('LLMClient: falls back when a messages response has empty output text', async () => {
@@ -355,7 +355,7 @@ describe('LLM services', () => {
     const client = new LLMClient(config);
     const result = await client.call('RiskAgent', {
       endpoint: 'messages',
-      model: 'minimax-m2.1-free',
+      model: 'claude-sonnet-4',
       system: 'Return JSON only.',
       messages: [{ role: 'user', content: '{"task":"ping"}' }],
       temperature: 0,
@@ -396,12 +396,12 @@ describe('LLM services', () => {
     });
     config.agents.LearningAgent.mode = 'active';
     config.agents.LearningAgent.provider = 'opencode-zen';
-    config.agents.LearningAgent.backupModel = 'grok-code';
+    config.agents.LearningAgent.backupModel = 'glm-4.7';
 
     const client = new LLMClient(config);
     const result = await client.call('LearningAgent', {
       endpoint: 'messages',
-      model: 'minimax-m2.1-free',
+      model: 'claude-sonnet-4',
       system: 'Return JSON only.',
       messages: [{ role: 'user', content: '{"task":"ping"}' }],
       temperature: 0,
@@ -415,6 +415,293 @@ describe('LLM services', () => {
     expect(primary.calls.messages).toBe(1);
     expect(primary.calls.chat).toBe(1);
     expect(fallback.calls.chat).toBe(0);
+  });
+
+  it('LLMClient: converts responses request to messages for backup model', async () => {
+    const primary = await startOpenAICompatServer();
+    const fallback = await startOpenAICompatServer();
+    servers.push(primary, fallback);
+
+    primary.setResponsesHandler(() => ({
+      status: 500,
+      body: { error: { message: 'boom' } }
+    }));
+
+    primary.setMessagesHandler(() => ({
+      status: 200,
+      body: { id: 'msg-backup', content: [{ type: 'output_text', text: '{"ok":"backup"}' }] }
+    }));
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'primary-key' },
+      fallback: { id: 'openrouter', baseUrl: fallback.baseURL, apiKey: 'fallback-key' },
+      timeoutMs: 1000,
+      fallbackEnabled: true
+    });
+    config.agents.LearningAgent.mode = 'active';
+    config.agents.LearningAgent.provider = 'opencode-zen';
+    config.agents.LearningAgent.backupModel = 'claude-sonnet-4';
+
+    const client = new LLMClient(config);
+    const result = await client.call('LearningAgent', { ...RESPONSES_REQUEST, model: 'glm-4.7' });
+
+    expect(result.status).toBe('fallback');
+    expect(result.endpoint).toBe('messages');
+    expect(primary.calls.responses).toBe(1);
+    expect(primary.calls.messages).toBe(1);
+  });
+
+  it('LLMClient: converts messages request to responses for GPT-5 backup model', async () => {
+    const primary = await startOpenAICompatServer();
+    const fallback = await startOpenAICompatServer();
+    servers.push(primary, fallback);
+
+    primary.setMessagesHandler(() => ({
+      status: 500,
+      body: { error: { message: 'boom' } }
+    }));
+
+    primary.setResponsesHandler(() => ({
+      status: 200,
+      body: { id: 'resp-backup', output: [{ type: 'output_text', content: [{ type: 'text', text: '{"ok":"backup"}' }] }] }
+    }));
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'primary-key' },
+      fallback: { id: 'openrouter', baseUrl: fallback.baseURL, apiKey: 'fallback-key' },
+      timeoutMs: 1000,
+      fallbackEnabled: true
+    });
+    config.agents.LearningAgent.mode = 'active';
+    config.agents.LearningAgent.provider = 'opencode-zen';
+    config.agents.LearningAgent.backupModel = 'gpt-5';
+
+    const client = new LLMClient(config);
+    const result = await client.call('LearningAgent', {
+      endpoint: 'messages',
+      model: 'claude-sonnet-4',
+      system: 'Return JSON only.',
+      messages: [{ role: 'user', content: '{"task":"ping"}' }],
+      temperature: 0,
+      max_tokens: 10
+    });
+
+    expect(result.status).toBe('fallback');
+    expect(result.endpoint).toBe('responses');
+    expect(primary.calls.messages).toBe(1);
+    expect(primary.calls.responses).toBe(1);
+  });
+
+  it('LLMClient: converts responses request to chat for explicit backup endpoint', async () => {
+    const primary = await startOpenAICompatServer();
+    const fallback = await startOpenAICompatServer();
+    servers.push(primary, fallback);
+
+    primary.setResponsesHandler(() => ({
+      status: 500,
+      body: { error: { message: 'boom' } }
+    }));
+
+    primary.setChatHandler(() => ({
+      status: 200,
+      body: { id: 'chat-backup', choices: [{ message: { content: '{"ok":"backup"}' } }] }
+    }));
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'primary-key' },
+      fallback: { id: 'openrouter', baseUrl: fallback.baseURL, apiKey: 'fallback-key' },
+      timeoutMs: 1000,
+      fallbackEnabled: true
+    });
+    config.agents.LearningAgent.mode = 'active';
+    config.agents.LearningAgent.provider = 'opencode-zen';
+    config.agents.LearningAgent.backupModel = 'glm-4.7';
+    config.agents.LearningAgent.backupEndpoint = 'chat.completions';
+
+    const client = new LLMClient(config);
+    const result = await client.call('LearningAgent', { ...RESPONSES_REQUEST, model: 'glm-4.7' });
+
+    expect(result.status).toBe('fallback');
+    expect(result.endpoint).toBe('chat.completions');
+    expect(primary.calls.responses).toBe(1);
+    expect(primary.calls.chat).toBe(1);
+  });
+
+  it('LLMClient: falls back when backup model also fails', async () => {
+    const primary = await startOpenAICompatServer();
+    const fallback = await startOpenAICompatServer();
+    servers.push(primary, fallback);
+
+    primary.setChatHandler(() => ({
+      status: 500,
+      body: { error: { message: 'boom' } }
+    }));
+
+    fallback.setChatHandler(() => ({
+      status: 200,
+      body: { id: 'chat-fallback', choices: [{ message: { content: '{"ok":"fallback"}' } }] }
+    }));
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'primary-key' },
+      fallback: { id: 'openrouter', baseUrl: fallback.baseURL, apiKey: 'fallback-key' },
+      timeoutMs: 1000,
+      fallbackEnabled: true
+    });
+    config.agents.ExecutionAgent.mode = 'advisory';
+    config.agents.ExecutionAgent.provider = 'opencode-zen';
+    config.agents.ExecutionAgent.backupModel = 'glm-4.7';
+
+    const client = new LLMClient(config);
+    const result = await client.call('ExecutionAgent', { ...ACTIVE_REQUEST, model: 'glm-4.7' });
+
+    expect(result.status).toBe('fallback');
+    expect(result.providerId).toBe('openrouter');
+    expect(primary.calls.chat).toBe(2);
+    expect(fallback.calls.chat).toBe(1);
+  });
+
+  it('LLMClient: leaves unknown endpoints unchanged during backup conversion', async () => {
+    const primary = await startOpenAICompatServer();
+    const fallback = await startOpenAICompatServer();
+    servers.push(primary, fallback);
+
+    let responsesCalls = 0;
+    primary.setResponsesHandler(() => {
+      responsesCalls += 1;
+      return { status: 500, body: { error: { message: 'boom' } } };
+    });
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'primary-key' },
+      fallback: { id: 'openrouter', baseUrl: fallback.baseURL, apiKey: 'fallback-key' },
+      timeoutMs: 1000,
+      fallbackEnabled: true
+    });
+    config.agents.ExecutionAgent.mode = 'advisory';
+    config.agents.ExecutionAgent.provider = 'opencode-zen';
+    config.agents.ExecutionAgent.backupModel = 'glm-4.7';
+    config.agents.ExecutionAgent.backupEndpoint = 'chat.completions';
+
+    const client = new LLMClient(config);
+    const weirdRequest = {
+      endpoint: 'weird',
+      model: 'glm-4.7',
+      input: '{"task":"ping"}',
+      instructions: 'Return JSON only.',
+      temperature: 0,
+      max_output_tokens: 10
+    } as unknown as LLMRequest;
+
+    const result = await client.call('ExecutionAgent', weirdRequest);
+
+    expect(result.status).toBe('error');
+    expect(responsesCalls).toBe(2);
+  });
+
+  it('LLMClient: preserves unknown endpoints when converting to messages', async () => {
+    const primary = await startOpenAICompatServer();
+    const fallback = await startOpenAICompatServer();
+    servers.push(primary, fallback);
+
+    let messagesCalls = 0;
+    primary.setMessagesHandler(() => {
+      messagesCalls += 1;
+      if (messagesCalls === 1) {
+        return { status: 500, body: { error: { message: 'boom' } } };
+      }
+      return {
+        status: 200,
+        body: {
+          id: 'msg-backup',
+          content: [{ type: 'text', text: '{"ok":"backup"}' }],
+          usage: { input_tokens: 1, output_tokens: 1 }
+        }
+      };
+    });
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'primary-key' },
+      fallback: { id: 'openrouter', baseUrl: fallback.baseURL, apiKey: 'fallback-key' },
+      timeoutMs: 1000,
+      fallbackEnabled: true
+    });
+    config.agents.ExecutionAgent.mode = 'advisory';
+    config.agents.ExecutionAgent.provider = 'opencode-zen';
+    config.agents.ExecutionAgent.backupModel = 'claude-sonnet-4';
+    config.agents.ExecutionAgent.backupEndpoint = 'messages';
+
+    const client = new LLMClient(config);
+    const weirdRequest = {
+      endpoint: 'weird',
+      model: 'claude-sonnet-4',
+      messages: [
+        { role: 'developer', content: 'Return JSON only.' },
+        { role: 'user', content: '{"task":"ping"}' }
+      ],
+      temperature: 0,
+      max_tokens: 10
+    } as unknown as LLMRequest;
+
+    const result = await client.call('ExecutionAgent', weirdRequest);
+
+    expect(result.status).toBe('fallback');
+    expect(result.providerId).toBe('opencode-zen');
+    expect(messagesCalls).toBe(2);
+  });
+
+  it('LLMClient: leaves unknown endpoints unchanged when converting to responses', async () => {
+    const primary = await startOpenAICompatServer();
+    const fallback = await startOpenAICompatServer();
+    servers.push(primary, fallback);
+
+    let responsesCalls = 0;
+    primary.setResponsesHandler(() => {
+      responsesCalls += 1;
+      if (responsesCalls === 1) {
+        return { status: 500, body: { error: { message: 'boom' } } };
+      }
+      return {
+        status: 200,
+        body: { id: 'resp-backup', output_text: '{"ok":"backup"}' }
+      };
+    });
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'primary-key' },
+      fallback: { id: 'openrouter', baseUrl: fallback.baseURL, apiKey: 'fallback-key' },
+      timeoutMs: 1000,
+      fallbackEnabled: false
+    });
+    config.agents.ExecutionAgent.mode = 'advisory';
+    config.agents.ExecutionAgent.provider = 'opencode-zen';
+    config.agents.ExecutionAgent.backupModel = 'glm-4.7';
+    config.agents.ExecutionAgent.backupEndpoint = 'responses';
+
+    const client = new LLMClient(config);
+    const weirdRequest = {
+      endpoint: 'weird',
+      model: 'glm-4.7',
+      messages: [
+        { role: 'developer', content: 'Return JSON only.' },
+        { role: 'user', content: '{"task":"ping"}' }
+      ],
+      temperature: 0,
+      max_tokens: 10
+    } as unknown as LLMRequest;
+
+    const result = await client.call('ExecutionAgent', weirdRequest);
+
+    expect(result.status).toBe('fallback');
+    expect(result.providerId).toBe('opencode-zen');
+    expect(responsesCalls).toBe(2);
   });
 
   it('LLMClient: skips provider fallback when disabled', async () => {
@@ -443,7 +730,7 @@ describe('LLM services', () => {
     config.agents.ExecutionAgent.provider = 'opencode-zen';
 
     const client = new LLMClient(config);
-    const result = await client.call('ExecutionAgent', { ...ACTIVE_REQUEST, model: 'grok-code' });
+    const result = await client.call('ExecutionAgent', { ...ACTIVE_REQUEST, model: 'glm-4.7' });
 
     expect(result.status).toBe('error');
     expect(result.providerId).toBe('opencode-zen');
@@ -486,7 +773,9 @@ describe('LLM services', () => {
     const client = new LLMClient(config);
 
     const modelsToTest = [
-      ['glm-4.7-free', 'z-ai/glm-4.7'],
+      ['glm-4.7', 'z-ai/glm-4.7'],
+      ['kimi-k2.5', 'moonshotai/kimi-k2.5'],
+      ['minimax-m2.1', 'minimax/minimax-m2.1'],
       ['gpt-5-nano', 'openai/gpt-5-nano'],
       ['qwen3-coder', 'qwen/qwen3-coder'],
       ['openai/gpt-5-nano', 'openai/gpt-5-nano'],
@@ -1250,7 +1539,7 @@ describe('LLM services', () => {
       const client = new LLMClient(config);
       const result = await client.call('LearningAgent', {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: 'Return JSON only.',
         messages: [{ role: 'user', content: '{"task":"ping"}' }],
         temperature: 0,
@@ -1290,7 +1579,7 @@ describe('LLM services', () => {
     const client = new LLMClient(config);
     const result = await client.call('LearningAgent', {
       endpoint: 'messages',
-      model: 'minimax-m2.1-free',
+      model: 'claude-sonnet-4',
       system: 'Return JSON only.',
       messages: [{ role: 'user', content: '{"task":"ping"}' }],
       temperature: 0,
@@ -1335,7 +1624,7 @@ describe('LLM services', () => {
       const client = new LLMClient(config);
       const result = await client.call('LearningAgent', {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: 'Return JSON only.',
         messages: [{ role: 'user', content: '{"task":"ping"}' }],
         temperature: 0,
@@ -1380,7 +1669,7 @@ describe('LLM services', () => {
       const client = new LLMClient(config);
       const result = await client.call('LearningAgent', {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: 'Return JSON only.',
         messages: [{ role: 'user', content: '{"task":"ping"}' }],
         temperature: 0,
@@ -1415,7 +1704,8 @@ describe('LLM services', () => {
     const config = makeConfig({
       enabled: true,
       primary: { id: 'opencode-zen', baseUrl: primaryServer.baseURL, apiKey: 'k' },
-      fallback: { id: 'openrouter', baseUrl: fallbackServer.baseURL, apiKey: 'k' }
+      fallback: { id: 'openrouter', baseUrl: fallbackServer.baseURL, apiKey: 'k' },
+      timeoutMs: 1000
     });
     config.agents.RiskAgent.mode = 'shadow';
     config.agents.RiskAgent.provider = 'opencode-zen';

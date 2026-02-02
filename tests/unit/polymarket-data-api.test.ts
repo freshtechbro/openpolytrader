@@ -107,6 +107,19 @@ describe('PolymarketDataApi', () => {
     expect(positions).toEqual([]);
   });
 
+  it('filters out entries without a token id', async () => {
+    stubFetch([
+      { conditionId: 'market-1', size: 1 },
+      { asset_id: 'token-2', conditionId: 'market-2', size: 2 }
+    ]);
+    const api = new PolymarketDataApi(BASE_CONFIG);
+
+    const positions = await api.getPositions({ user: '0xabc' });
+
+    expect(positions).toHaveLength(1);
+    expect(positions[0].tokenId).toBe('token-2');
+  });
+
   it('retries on 5xx and succeeds on retry', async () => {
     const fetchSpy = vi
       .fn()
@@ -214,6 +227,22 @@ describe('PolymarketDataApi', () => {
     expect(positions).toEqual([]);
   });
 
+  it('throws DataApiError when error responses are not JSON', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'not-json'
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const api = new PolymarketDataApi({
+      ...BASE_CONFIG,
+      retryMaxRetries: 0
+    });
+
+    await expect(api.getPositions({ user: '0xabc' })).rejects.toThrow(/Polymarket Data API error/);
+  });
+
   it('returns empty array when the response body is empty', async () => {
     stubFetchText('');
     const api = new PolymarketDataApi(BASE_CONFIG);
@@ -273,14 +302,6 @@ describe('PolymarketDataApi', () => {
 
     const positions = await api.getPositions({ user: '0xabc' });
 
-    expect(positions[0]).toEqual(
-      expect.objectContaining({
-        tokenId: '',
-        marketId: undefined,
-        size: 0,
-        avgPrice: undefined,
-        currentPrice: undefined
-      })
-    );
+    expect(positions).toEqual([]);
   });
 });

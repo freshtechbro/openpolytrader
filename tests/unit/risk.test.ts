@@ -8,7 +8,9 @@ import type { ArbitrageOpportunity } from '../../src/domain/opportunity.js';
 const DEFAULT_OPTIONS = {
   fallbackTickSize: DEFAULT_TRADE_POLICY.fallbackTickSize,
   maxOpenInventorySeconds: DEFAULT_TRADE_POLICY.maxOpenInventorySeconds,
-  depthBufferMultiplier: DEFAULT_TRADE_POLICY.depthBufferMultiplier
+  depthBufferMultiplier: DEFAULT_TRADE_POLICY.depthBufferMultiplier,
+  evMaxPerMarketNotional: DEFAULT_TRADE_POLICY.evMaxPerMarketNotional,
+  evMaxPortfolioNotional: DEFAULT_TRADE_POLICY.evMaxPortfolioNotional
 };
 
 const baseOpportunity: ArbitrageOpportunity = {
@@ -154,6 +156,86 @@ describe('RiskAgent', () => {
     expect(decision.constraints?.binding).toBe('exposure');
   });
 
+  it('records EV per-market cap as binding constraint', () => {
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, {
+      ...DEFAULT_OPTIONS,
+      evMaxPerMarketNotional: 10,
+      evMaxPortfolioNotional: 1000
+    });
+    const decision = agent.evaluate(
+      { ...baseOpportunity, type: 'ev', side: 'yes', costPerSet: 1, maxSizeByDepth: 1000 },
+      {
+        totalCapital: 10000,
+        availableCapital: 10000,
+        dailyPnL: 0,
+        marketExposure: {}
+      }
+    );
+
+    expect(decision.approved).toBe(true);
+    expect(decision.constraints?.binding).toBe('ev_per_market');
+    expect(decision.constraints?.maxByEvMarket).toBeCloseTo(10);
+  });
+
+  it('records EV portfolio cap as binding constraint', () => {
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, {
+      ...DEFAULT_OPTIONS,
+      evMaxPerMarketNotional: 1000,
+      evMaxPortfolioNotional: 20
+    });
+    const decision = agent.evaluate(
+      { ...baseOpportunity, type: 'ev', side: 'yes', costPerSet: 1, maxSizeByDepth: 1000 },
+      {
+        totalCapital: 10000,
+        availableCapital: 10000,
+        dailyPnL: 0,
+        marketExposure: { m1: 15 }
+      }
+    );
+
+    expect(decision.approved).toBe(true);
+    expect(decision.constraints?.binding).toBe('ev_portfolio');
+    expect(decision.constraints?.maxByEvPortfolio).toBeCloseTo(5);
+  });
+
+  it('rejects EV when portfolio notional cap is exhausted', () => {
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, {
+      ...DEFAULT_OPTIONS,
+      evMaxPerMarketNotional: 1000,
+      evMaxPortfolioNotional: 10
+    });
+    const decision = agent.evaluate(
+      { ...baseOpportunity, type: 'ev', side: 'yes', costPerSet: 1, maxSizeByDepth: 1000 },
+      {
+        totalCapital: 10000,
+        availableCapital: 10000,
+        dailyPnL: 0,
+        marketExposure: { m1: 15 }
+      }
+    );
+
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('ev_notional_cap');
+  });
+
+  it('updates config and options via updateConfig', () => {
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, DEFAULT_OPTIONS);
+    agent.updateConfig(
+      { ...DEFAULT_RISK_CONFIG, dailyLossLimitFraction: 0.001 },
+      { ...DEFAULT_OPTIONS, maxOpenInventorySeconds: 1 }
+    );
+
+    const decision = agent.evaluate(baseOpportunity, {
+      totalCapital: 1000,
+      availableCapital: 1000,
+      dailyPnL: -2,
+      marketExposure: {}
+    });
+
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('daily_loss_limit');
+  });
+
   it('rejects when daily drawdown exceeds limit', () => {
     const agent = new RiskAgent(
       { ...DEFAULT_RISK_CONFIG, dailyLossLimitFraction: 0 },
@@ -168,6 +250,25 @@ describe('RiskAgent', () => {
 
     expect(decision.approved).toBe(false);
     expect(decision.reason).toBe('daily_drawdown_limit');
+  });
+
+  it('ignores drawdown when disabled', () => {
+    const agent = new RiskAgent(
+      {
+        ...DEFAULT_RISK_CONFIG,
+        maxDailyDrawdownFraction: 0,
+        dailyLossLimitFraction: 0
+      },
+      DEFAULT_OPTIONS
+    );
+    const decision = agent.evaluate(baseOpportunity, {
+      totalCapital: 1000,
+      availableCapital: 1000,
+      dailyPnL: -30,
+      marketExposure: {}
+    });
+
+    expect(decision.approved).toBe(true);
   });
 
   it('rejects when daily loss limit exceeds threshold', () => {
@@ -271,6 +372,32 @@ describe('RiskAgent', () => {
 
     expect(decision.approved).toBe(false);
     expect(decision.reason).toBe('below_min_order_size');
+  });
+
+  it('bumps to minimum order size when trade fraction is the only limiter', () => {
+    const agent = new RiskAgent(
+      {
+        ...DEFAULT_RISK_CONFIG,
+        targetTradeFraction: 0.005,
+        maxTradeFraction: 0.005
+      },
+      DEFAULT_OPTIONS
+    );
+
+    const decision = agent.evaluate(
+      { ...baseOpportunity, minOrderSize: 10, maxSizeByDepth: 1000 },
+      {
+        totalCapital: 1000,
+        availableCapital: 1000,
+        dailyPnL: 0,
+        marketExposure: {}
+      }
+    );
+
+    expect(decision.approved).toBe(true);
+    expect(decision.reason).toBe('min_order_size_bump');
+    expect(decision.positionSize).toBeCloseTo(10);
+    expect(decision.constraints?.binding).toBe('exposure');
   });
 
   it('rejects when unwind loss fraction exceeds bps tolerance', () => {

@@ -60,7 +60,7 @@ describe('ZenMessagesClient', () => {
     const result = await client.request(
       {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: 'Return JSON only.',
         messages: [{ role: 'user', content: '{"task":"ping"}' }],
         temperature: 0,
@@ -86,7 +86,7 @@ describe('ZenMessagesClient', () => {
     const result = await client.request(
       {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: null,
         messages: [{ role: 'user', content: 'ping' }],
         temperature: 0,
@@ -110,7 +110,7 @@ describe('ZenMessagesClient', () => {
     const result = await client.request(
       {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: 's',
         messages: [{ role: 'user', content: 'ping' }],
         temperature: 0,
@@ -142,7 +142,7 @@ describe('ZenMessagesClient', () => {
     const result = await client.request(
       {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: 's',
         messages: [{ role: 'user', content: 'ping' }],
         temperature: 0,
@@ -152,6 +152,59 @@ describe('ZenMessagesClient', () => {
     );
 
     expect(result.outputText).toBeNull();
+  });
+
+  it('extracts text from nested message and choices fields', async () => {
+    const server = await startServer(() => ({
+      status: 200,
+      body: JSON.stringify({
+        id: 'msg-nested',
+        message: { text: 'hello' },
+        choices: [{ content: 'world' }]
+      })
+    }));
+    servers.push(server);
+
+    const client = new ZenMessagesClient({ apiKey: 'k', baseURL: server.baseURL });
+    const result = await client.request(
+      {
+        endpoint: 'messages',
+        model: 'claude-sonnet-4',
+        system: 's',
+        messages: [{ role: 'user', content: 'ping' }],
+        temperature: 0,
+        max_tokens: 1
+      },
+      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+    );
+
+    expect(result.outputText).toBe('hello\nworld');
+  });
+
+  it('extracts text from output arrays and nested content', async () => {
+    const server = await startServer(() => ({
+      status: 200,
+      body: JSON.stringify({
+        id: 'msg-output',
+        output: [{ text: 'alpha' }, { content: { text: 'beta' } }]
+      })
+    }));
+    servers.push(server);
+
+    const client = new ZenMessagesClient({ apiKey: 'k', baseURL: server.baseURL });
+    const result = await client.request(
+      {
+        endpoint: 'messages',
+        model: 'claude-sonnet-4',
+        system: 's',
+        messages: [{ role: 'user', content: 'ping' }],
+        temperature: 0,
+        max_tokens: 1
+      },
+      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+    );
+
+    expect(result.outputText).toBe('alpha\nbeta');
   });
 
   it('throws ZenMessagesError with parsed error.message', async () => {
@@ -167,7 +220,7 @@ describe('ZenMessagesClient', () => {
       client.request(
         {
           endpoint: 'messages',
-          model: 'minimax-m2.1-free',
+          model: 'claude-sonnet-4',
           system: 's',
           messages: [{ role: 'user', content: 'ping' }],
           temperature: 0,
@@ -191,7 +244,7 @@ describe('ZenMessagesClient', () => {
       client.request(
         {
           endpoint: 'messages',
-          model: 'minimax-m2.1-free',
+          model: 'claude-sonnet-4',
           system: 's',
           messages: [{ role: 'user', content: 'ping' }],
           temperature: 0,
@@ -200,6 +253,30 @@ describe('ZenMessagesClient', () => {
         { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
       )
     ).rejects.toMatchObject<Partial<ZenMessagesError>>({ name: 'ZenMessagesError', message: 'http_500', status: 500 });
+  });
+
+  it('falls back to http_<status> when error message is not a string', async () => {
+    const server = await startServer(() => ({
+      status: 418,
+      body: JSON.stringify({ error: { message: 123 } })
+    }));
+    servers.push(server);
+
+    const client = new ZenMessagesClient({ apiKey: 'k', baseURL: server.baseURL });
+
+    await expect(
+      client.request(
+        {
+          endpoint: 'messages',
+          model: 'claude-sonnet-4',
+          system: 's',
+          messages: [{ role: 'user', content: 'ping' }],
+          temperature: 0,
+          max_tokens: 1
+        },
+        { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      )
+    ).rejects.toMatchObject<Partial<ZenMessagesError>>({ name: 'ZenMessagesError', message: 'http_418', status: 418 });
   });
 
   it('handles non-JSON success bodies without throwing', async () => {
@@ -213,7 +290,7 @@ describe('ZenMessagesClient', () => {
     const result = await client.request(
       {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: 's',
         messages: [{ role: 'user', content: 'ping' }],
         temperature: 0,
@@ -242,7 +319,7 @@ describe('ZenMessagesClient', () => {
     const result = await client.request(
       {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: 's',
         messages: [{ role: 'user', content: 'ping' }],
         temperature: 0,
@@ -269,7 +346,7 @@ describe('ZenMessagesClient', () => {
     const result = await client.request(
       {
         endpoint: 'messages',
-        model: 'minimax-m2.1-free',
+        model: 'claude-sonnet-4',
         system: 's',
         messages: [{ role: 'user', content: 'ping' }],
         temperature: 0,

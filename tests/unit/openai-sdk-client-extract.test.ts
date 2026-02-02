@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { extractTextFromOpenAIResponse } from '../../src/services/llm/OpenAISdkClient.js';
+import { extractTextFromOpenAIResponse, OpenAISdkClient } from '../../src/services/llm/OpenAISdkClient.js';
 
 describe('extractTextFromOpenAIResponse', () => {
   it('extracts text from chat content arrays', () => {
@@ -41,5 +41,48 @@ describe('extractTextFromOpenAIResponse', () => {
 
     expect(extractTextFromOpenAIResponse(completionNested)).toBe('done');
     expect(extractTextFromOpenAIResponse(outputNested)).toBe('nested');
+  });
+
+  it('returns null for non-object inputs', () => {
+    expect(extractTextFromOpenAIResponse(null)).toBeNull();
+    expect(extractTextFromOpenAIResponse('hello')).toBeNull();
+  });
+
+  it('collects text from nested message and choices objects', () => {
+    const response = {
+      output_text: '   ',
+      message: { text: { text: 'message-text' } },
+      choices: [{ text: 'choice-text' }]
+    };
+
+    expect(extractTextFromOpenAIResponse(response)).toBe('message-text\nchoice-text');
+  });
+
+  it('returns null when no usable text is present', () => {
+    const response = { content: [{ type: 'tool', name: 'noop' }, { text: '   ' }] };
+    expect(extractTextFromOpenAIResponse(response)).toBeNull();
+  });
+
+  it('rejects messages endpoint requests', async () => {
+    const client = new OpenAISdkClient({
+      apiKey: 'test-key',
+      baseURL: 'https://example.com',
+      defaultHeaders: {},
+      timeoutMs: 1000,
+      maxRetries: 0
+    });
+
+    await expect(
+      client.request(
+        {
+          endpoint: 'messages',
+          model: 'gpt-4',
+          system: 's',
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1
+        },
+        { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      )
+    ).rejects.toThrow(/does not support messages endpoint/);
   });
 });

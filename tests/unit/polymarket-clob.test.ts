@@ -102,4 +102,30 @@ describe('PolymarketClob order submission', () => {
       expect.objectContaining({ success: true, status: 'LIVE', duplicate: true })
     );
   });
+
+  it('retries on invalid JSON responses', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => 'not-json'
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ ok: true })
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const clob = new PolymarketClob({
+      ...BASE_CONFIG,
+      retryMaxRetries: 1,
+      retryBaseDelayMs: 0,
+      retryMaxDelayMs: 0
+    });
+
+    const response = await clob.getPrices([{ token_id: 'token-1', side: 'BUY' }]);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(response).toEqual({ ok: true });
+  });
 });

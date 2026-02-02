@@ -28,6 +28,16 @@ describe('MetricsStore', () => {
     expect(snapshot.lastEventAt).toBe(3);
   });
 
+  it('tracks ev_signal and web_search counts', () => {
+    const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    store.record({ type: 'ev_signal', timestamp: 1, data: {} });
+    store.record({ type: 'web_search', timestamp: 2, data: {} });
+
+    const snapshot = store.snapshot();
+    expect(snapshot.counts.ev_signal).toBe(1);
+    expect(snapshot.counts.web_search).toBe(1);
+  });
+
   it('filters recent events by type', () => {
     const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
     store.record({ type: 'info', timestamp: 10, data: {} });

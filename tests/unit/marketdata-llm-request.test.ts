@@ -45,22 +45,22 @@ describe('MarketDataAgent LLM request selection', () => {
       agents: {
         ExecutionAgent: {
           provider: 'opencode-zen',
-          model: 'grok-code',
-          backupModel: 'glm-4.7-free',
+          model: 'kimi-k2.5',
+          backupModel: 'glm-4.7',
           mode: 'disabled',
           timeoutMs: 1000
         },
         RiskAgent: {
           provider: 'opencode-zen',
-          model: 'glm-4.7-free',
-          backupModel: 'grok-code',
+          model: 'minimax-m2.1',
+          backupModel: 'glm-4.7',
           mode: 'disabled',
           timeoutMs: 1000
         },
         ScannerAgent: {
           provider: 'opencode-zen',
-          model: 'glm-4.7-free',
-          backupModel: 'grok-code',
+          model: 'glm-4.7',
+          backupModel: 'minimax-m2.1',
           mode: 'disabled',
           timeoutMs: 1000,
           scoreTopN: 20,
@@ -69,29 +69,29 @@ describe('MarketDataAgent LLM request selection', () => {
         },
         LearningAgent: {
           provider: 'opencode-zen',
-          model: 'minimax-m2.1-free',
-          backupModel: 'grok-code',
+          model: 'qwen3-coder',
+          backupModel: 'glm-4.7',
           mode: 'disabled',
           timeoutMs: 1000
         },
         PortfolioAgent: {
           provider: 'opencode-zen',
-          model: 'qwen3-coder',
-          backupModel: 'grok-code',
+          model: 'minimax-m2.1',
+          backupModel: 'glm-4.7',
           mode: 'disabled',
           timeoutMs: 1000
         },
         MarketDataAgent: {
           provider: 'opencode-zen',
           model: 'gpt-5-nano',
-          backupModel: 'grok-code',
+          backupModel: 'minimax-m2.1',
           mode: 'advisory',
           timeoutMs: 1000
         },
         OpsAgent: {
           provider: 'opencode-zen',
-          model: 'big-pickle',
-          backupModel: 'glm-4.7-free',
+          model: 'glm-4.7',
+          backupModel: 'minimax-m2.1',
           mode: 'disabled',
           timeoutMs: 1000
         }

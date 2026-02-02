@@ -152,6 +152,27 @@ describe('MarketCatalogRefresher', () => {
   });
 
   describe('refresh', () => {
+    it('skips concurrent refresh calls', async () => {
+      let resolveFetch: (value: unknown) => void;
+      const fetchPromise = new Promise((resolve) => {
+        resolveFetch = resolve;
+      });
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => fetchPromise
+      });
+
+      const first = refresher.refresh();
+      const second = await refresher.refresh();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(second.pagesScanned).toBe(0);
+
+      resolveFetch!([]);
+      await first;
+    });
+
     it('fetches markets from gamma API', async () => {
       fetchMock.mockResolvedValue({
         ok: true,
@@ -168,6 +189,136 @@ describe('MarketCatalogRefresher', () => {
           })
         })
       );
+    });
+
+    it('paginates with offset and stops once enough pairs are collected', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 2,
+          minVolume24h: 0,
+          maxSpread: 0.02,
+          pageSize: 1,
+          maxPages: 3,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const marketA = createGammaMarket({
+        condition_id: 'market-a',
+        clobTokenIds: ['yes-a', 'no-a']
+      });
+      const marketB = createGammaMarket({
+        condition_id: 'market-b',
+        clobTokenIds: ['yes-b', 'no-b']
+      });
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve([marketA])
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve([marketB])
+        });
+
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const firstUrl = new URL(fetchMock.mock.calls[0][0] as string);
+      const secondUrl = new URL(fetchMock.mock.calls[1][0] as string);
+      expect(firstUrl.searchParams.get('offset')).toBe('0');
+      expect(secondUrl.searchParams.get('offset')).toBe('1');
+      expect(result.totalPairs).toBe(2);
+      expect(result.pagesScanned).toBe(2);
+    });
+
+    it('uses newest ordering when configured', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 0,
+          maxSpread: 0.02,
+          pageSize: 1,
+          maxPages: 1,
+          order: 'newest',
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([])
+      });
+
+      await refresher.refresh();
+
+      const url = new URL(fetchMock.mock.calls[0][0] as string);
+      expect(url.searchParams.get('order')).toBe('id');
+      expect(url.searchParams.get('ascending')).toBe('false');
+    });
+
+    it('uses cursor pagination when provided', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 0,
+          maxSpread: 0.02,
+          pageSize: 1,
+          maxPages: 2,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({ accepting_orders: false });
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: [market], next_cursor: 'next-1' })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: [] })
+        });
+
+      await refresher.refresh();
+
+      const secondUrl = new URL(fetchMock.mock.calls[1][0] as string);
+      expect(secondUrl.searchParams.get('cursor')).toBe('next-1');
+    });
+
+    it('restarts the interval when refresh config changes', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([])
+      });
+
+      refresher.start();
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+
+      refresher.updateConfig({ refreshIntervalMs: 120000 });
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+
+      refresher.updateConfig({ refreshIntervalMs: 120000 });
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(global.fetch).toHaveBeenCalledTimes(4);
     });
 
     it('filters out inactive markets', async () => {
@@ -598,6 +749,41 @@ describe('MarketCatalogRefresher', () => {
           })
         })
       );
+    });
+
+    it('backs off and logs once on repeated empty refreshes', async () => {
+      const existingPair: MarketPair = {
+        marketId: 'market-123',
+        yesTokenId: 'existing-yes',
+        noTokenId: 'existing-no'
+      };
+      refresher.seed([existingPair]);
+
+      const market = createGammaMarket({ condition_id: 'market-other', accepting_orders: false });
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      const first = await refresher.refresh();
+
+      expect(first.totalPairs).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(30000);
+
+      const second = await refresher.refresh();
+
+      expect(second.totalPairs).toBe(1);
+      expect(second.pagesScanned).toBe(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      const recordMock = mockMetrics.record as unknown as ReturnType<typeof vi.fn>;
+      const emptyLogs = recordMock.mock.calls.filter(
+        ([entry]) => entry?.data?.message === 'market_catalog_refresh_empty'
+      );
+      expect(emptyLogs).toHaveLength(1);
     });
 
     it('records metrics on success', async () => {
