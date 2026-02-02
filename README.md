@@ -16,6 +16,31 @@ Near-zero-risk Polymarket CLOB arbitrage automation with event-sourced state, ag
 - Deterministic unwind logic with idempotency + timeout controls.
 - Market catalog + allowlist gating for controlled trading universe.
 
+## Strategy
+
+- Universe control: load an explicit market catalog, seed the allowlist, and quarantine markets after incidents.
+- Opportunity types: near-zero arbitrage is the default path; EV signals can be enabled via `signalMode=ev` when desired.
+- Risk gating: enforce depth, spread, freshness, sizing caps, and daily loss limits before any execution.
+- Execution discipline: timeouts and idempotency are enforced; delayed or partial fills trigger conservative handling.
+- Post-trade: portfolio reconciliation and incident tracking drive ops visibility and automatic quarantines.
+
+## Architecture (ASCII)
+
+```
+External Services
+  Gamma API -> MarketCatalogRefresher -> MarketCatalog -> Allowlist
+  Polymarket WS/REST -> MarketDataAgent -> Orderbooks
+  Polymarket Data API -> PortfolioAgent
+
+Core Flow
+  SignalAggregatorAgent -> ScannerAgent -> RiskAgent -> ExecutionAgent -> PortfolioAgent
+  PortfolioAgent -> EventStore -> Ops API -> Dashboard
+
+Ops/Telemetry
+  OpsAgent -> Ops API (/health, /metrics, /slo, /stream)
+  MessageBus connects agents and events end-to-end
+```
+
 ## Quickstart
 
 ### Ops dev (backend + dashboard, local processes)
