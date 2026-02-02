@@ -74,7 +74,12 @@ When starting via `npm start` (including the Docker image), a prestart hook runs
 - Uses merge semantics (never removes existing pairs)
 - Preserves existing pair count by default in merge mode
 
-If the file does not exist yet, it bootstraps up to `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS` near-zero-compatible pairs (default: 50).
+If the file does not exist yet, it bootstraps up to `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS` near-zero-compatible pairs (default: 80).
+
+Refresher tuning (env-only):
+- `MARKET_CATALOG_MIN_VOLUME_24H` (default: 1000) sets the minimum 24h volume.
+- `MARKET_CATALOG_ORDER` (default: `volume24hr`) accepts `volume24hr` or `newest` (maps to Gamma `order=id`).
+- `MARKET_CATALOG_PAGE_SIZE` (default: 100) and `MARKET_CATALOG_MAX_PAGES` (default: 5) bound pagination.
 
 Manual refresh that never removes existing pairs:
 ```bash

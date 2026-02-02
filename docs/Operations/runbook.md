@@ -5,13 +5,24 @@ Operate the OpenPolyTrader runtime safely with near-risk-free gating and tight i
 
 ## Start/Stop
 
-### Backend
+### Backend + Dashboard (one command)
+```bash
+npm install
+npm run dev:ops
+```
+
+Stop:
+```bash
+npm run dev:ops:down
+```
+
+### Backend (manual)
 ```bash
 npm install
 npm run dev
 ```
 
-### Dashboard
+### Dashboard (manual)
 ```bash
 cd dashboard
 npm install
@@ -74,6 +85,11 @@ Ops API:
 - `OPS_RECONCILIATION_INTERVAL_MS=300000` (portfolio reconciliation cadence; 0 disables interval)
 - `OPS_RECONCILIATION_AFTER_INCIDENT_DELAY_MS=0` (reconcile after any incident)
 - `OPS_RECONCILIATION_POSITION_SIZE_TOLERANCE=0.000001` (tolerance when comparing venue vs internal sizes)
+- `OPS_BOOK_REFRESH_INTERVAL_MS=5000` (stale book refresh cadence; 0 disables interval)
+- `OPS_BOOK_REFRESH_STALE_MS=10000` (refresh snapshot once a book exceeds this age)
+- `OPS_BOOK_STALE_QUARANTINE_THRESHOLD=3` (number of repeated stale incidents before quarantine)
+- `OPS_BOOK_STALE_QUARANTINE_WINDOW_MS=300000` (rolling window for stale incident count)
+- `OPS_BOOK_STALE_QUARANTINE_COOLDOWN_MS=0` (override cooldown; 0 uses risk cooldown)
 - `METRICS_MAX_EVENTS=1000` (metrics retention)
 - `INCIDENTS_MAX_EVENTS=1000` (incident retention)
 - `ALLOWLIST_AUTO_RESUME=true` (auto-resume quarantines after cooldown)
@@ -84,7 +100,12 @@ Ops API:
 Market catalog:
 - `MARKET_CATALOG_PATH=/path/to/markets.json` (optional)
   - Recommended: `MARKET_CATALOG_PATH=data/market-catalog.json` and generate/refresh it via `docs/Development/market-catalog.md`.
-- `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS=50` (optional; only used when the catalog file does not exist yet and `npm start` runs the prestart generator)
+- `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS=80` (optional; only used when the catalog file does not exist yet and `npm start` runs the prestart generator)
+- `MARKET_CATALOG_MIN_VOLUME_24H=1000` (optional; minimum 24h volume for refresh inclusion)
+- `MARKET_CATALOG_ORDER=volume24hr` (optional; accepts `volume24hr` or `newest` to bias discovery)
+- `MARKET_CATALOG_PAGE_SIZE=100` (optional; Gamma page size)
+- `MARKET_CATALOG_MAX_PAGES=5` (optional; cap on refresh pagination)
+- Empty refreshes (no valid pairs) keep the last known allowlist and trigger a single `market_catalog_refresh_empty` error per backoff window.
 
 Polymarket connectivity (optional overrides):
 - `POLYMARKET_CLOB_BASE_URL=...`
@@ -107,6 +128,8 @@ Polymarket connectivity (optional overrides):
 - `POLYMARKET_WS_RECONNECT_BASE_MS=250`
 - `POLYMARKET_WS_RECONNECT_MAX_MS=30000`
 - `POLYMARKET_WS_RECONNECT_JITTER_PCT=0.2`
+- `POLYMARKET_L1_PRIVATE_KEY=...` (optional; derives fresh CLOB API creds at boot)
+- `POLYMARKET_L1_NONCE=0` (nonce used when deriving CLOB API creds)
 
 Polymarket Data API (used for reconciliation):
 - `POLYMARKET_DATA_API_BASE_URL=https://data-api.polymarket.com`
@@ -180,7 +203,8 @@ curl -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/health
 ## Incident Response
 
 ### Automatic quarantine
-Markets are quarantined after delayed or rejected order responses.
+Markets are quarantined after delayed or rejected order responses and after repeated
+`book_freshness` incidents within the configured rolling window.
 If `ALLOWLIST_AUTO_RESUME=false`, quarantines persist until manually resumed.
 
 ### Manual triage

@@ -796,6 +796,14 @@ export class Supervisor {
 
 ---
 
+## EV Signal Ingestion Limits
+
+- Web-search ingestion runs with bounded concurrency (`evWebSearchMaxConcurrency`).
+- Web-search cache is TTL-based and size-capped to prevent unbounded growth.
+- Firecrawl crawl fallback enforces max depth/pages via policy limits to cap cost and latency.
+
+---
+
 ## Phase 2 Cross-Venue Readiness (design now)
 
 ### Venue abstraction (Phase 1 scaffolding)
