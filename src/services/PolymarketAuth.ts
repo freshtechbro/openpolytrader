@@ -11,36 +11,12 @@ export interface PolymarketApiCreds {
 
 function decodeBase64Secret(secret: string): Buffer {
   const trimmed = secret.trim();
-  const looksLikeHex = trimmed.length > 0 && trimmed.length % 2 === 0 && /^[0-9a-fA-F]+$/.test(trimmed);
-  if (looksLikeHex) {
-    const decoded = Buffer.from(trimmed, 'hex');
-    if (decoded.length > 0) return decoded;
-  }
-
-  const normalized = trimmed.replace(/=+$/, '');
-  const lengthIsValid = normalized.length > 0 && normalized.length % 4 !== 1;
-  const looksLikeBase64 = /^[A-Za-z0-9+/]+$/.test(normalized);
-  const looksLikeBase64Url = /^[A-Za-z0-9_-]+$/.test(normalized);
-
-  if (!lengthIsValid || (!looksLikeBase64 && !looksLikeBase64Url)) {
-    return Buffer.from(trimmed, 'utf8');
-  }
-
-  const normalizedBase64 = looksLikeBase64Url && !looksLikeBase64
-    ? normalized.replace(/-/g, '+').replace(/_/g, '/')
-    : normalized;
-  const padded = normalizedBase64.padEnd(Math.ceil(normalizedBase64.length / 4) * 4, '=');
-  const decoded = Buffer.from(padded, 'base64');
-  if (decoded.length === 0) {
-    return Buffer.from(trimmed, 'utf8');
-  }
-
-  const roundTrip = decoded.toString('base64').replace(/=+$/, '');
-  if (roundTrip !== normalizedBase64.replace(/=+$/, '')) {
-    return Buffer.from(trimmed, 'utf8');
-  }
-
-  return decoded;
+  const normalized = trimmed
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .replace(/[^A-Za-z0-9+/=]/g, '');
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+  return Buffer.from(padded, 'base64');
 }
 
 export function createPolymarketHmacAuthProvider(creds: PolymarketApiCreds): AuthHeadersProvider {
@@ -52,13 +28,16 @@ export function createPolymarketHmacAuthProvider(creds: PolymarketApiCreds): Aut
   return {
     getHeaders: ({ method, path, body }) => {
       const timestampSeconds = Math.floor(Date.now() / 1000).toString();
-      const payload = body === undefined ? '' : JSON.stringify(body);
-      const prehash = `${timestampSeconds}${method.toUpperCase()}${path}${payload}`;
+      const normalizedMethod = method.trim().toUpperCase();
+      const payload =
+        body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body);
+      const prehash = `${timestampSeconds}${normalizedMethod}${path}${payload ?? ''}`;
       const signature = createHmac('sha256', secretKey).update(prehash).digest('base64');
+      const signatureUrlSafe = signature.replace(/\+/g, '-').replace(/\//g, '_');
 
       return {
         POLY_ADDRESS: address,
-        POLY_SIGNATURE: signature,
+        POLY_SIGNATURE: signatureUrlSafe,
         POLY_TIMESTAMP: timestampSeconds,
         POLY_API_KEY: apiKey,
         POLY_PASSPHRASE: passphrase

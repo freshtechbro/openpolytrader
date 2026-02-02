@@ -17,6 +17,7 @@ import { ConfigStore } from './config/store.js';
 import { validateP0Config } from './config/validate.js';
 import { MarketAllowlist } from './domain/allowlist.js';
 import { OpsAgent } from './agents/ops/OpsAgent.js';
+import { createBookFreshnessQuarantine, isOpsAlertPayload } from './agents/ops/bookFreshnessQuarantine.js';
 import { ExecutionAdvisor } from './agents/execution/ExecutionAdvisor.js';
 import {
   createBookFreshnessCheck,
@@ -34,10 +35,14 @@ import { PolymarketClob } from './services/PolymarketClob.js';
 import { PolymarketDataApi } from './services/PolymarketDataApi.js';
 import { PolymarketRealtime } from './services/PolymarketRealtime.js';
 import { createPolymarketHmacAuthProvider } from './services/PolymarketAuth.js';
+import { resolvePolymarketL2Creds } from './services/PolymarketApiCreds.js';
 import { IncidentTracker } from './services/IncidentTracker.js';
+import { ExaClient, FirecrawlClient, WebSearchCache } from './services/websearch/index.js';
 import { PortfolioAgent } from './agents/portfolio/PortfolioAgent.js';
 import { LearningAgent } from './agents/learning/LearningAgent.js';
+import { SignalAggregatorAgent } from './agents/signal/SignalAggregatorAgent.js';
 import { EventStore } from './core/EventStore.js';
+import { messageBus } from './core/MessageBus.js';
 import { Supervisor } from './core/Supervisor.js';
 import { TradingStateManager } from './core/TradingStateManager.js';
 import { createShutdownHandler } from './core/shutdown.js';
@@ -67,7 +72,7 @@ try {
 }
 
 // Env overrides (profile or path) win; otherwise fall back to persisted selection.
-let profileId: RiskProfileId = envProfile ?? persistedProfile?.id ?? 'near_zero';
+let profileId: RiskProfileId = envProfile ?? persistedProfile?.id ?? 'extra_high';
 let profilePath = envProfile ? envProfilePath : persistedProfile?.source;
 let loadedProfile: ReturnType<typeof loadRiskProfile> = null;
 
@@ -105,12 +110,32 @@ const activeRiskProfile = {
 
 const deriveBookRefreshSettings = (policy: TradePolicy) => {
   const maxBookStalenessMs = Math.max(policy.maxBookStalenessMs, 0);
+  const refreshIntervalOverride = Math.max(env.OPS_BOOK_REFRESH_INTERVAL_MS, 0);
+  const refreshStaleOverride = Math.max(env.OPS_BOOK_REFRESH_STALE_MS, 0);
+  const bookRefreshIntervalMs =
+    refreshIntervalOverride > 0 ? refreshIntervalOverride : Math.max(maxBookStalenessMs, 10000);
+  const bookRefreshStaleMs =
+    refreshStaleOverride > 0
+      ? maxBookStalenessMs > 0
+        ? Math.min(refreshStaleOverride, maxBookStalenessMs)
+        : refreshStaleOverride
+      : maxBookStalenessMs;
   return {
     maxBookStalenessMs,
-    bookRefreshIntervalMs: Math.max(maxBookStalenessMs, 10000),
+    bookRefreshIntervalMs,
+    bookRefreshStaleMs,
     bookIdleCutoffMs: Math.max(maxBookStalenessMs * 6, 60000),
     catalogRefreshMs: Math.min(Math.max(maxBookStalenessMs * 6, 60000), 300000)
   };
+};
+
+const parseDomainList = (value?: string): string[] => {
+  if (!value) return [];
+  const entries = value
+    .split(/[,\s]+/)
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  return Array.from(new Set(entries));
 };
 
 console.log('[boot] openpolytrader starting');
@@ -216,11 +241,35 @@ const incidentTracker = new IncidentTracker(allowlist, metrics, {
   cooldownMs: riskConfig.marketCooldownSeconds * 1000,
   maxIncidents: env.INCIDENTS_MAX_EVENTS
 });
-const tokenToMarketId = marketPairs.reduce<Record<string, string>>((acc, pair) => {
-  acc[pair.yesTokenId] = pair.marketId;
-  acc[pair.noTokenId] = pair.marketId;
-  return acc;
-}, {});
+const tokenToMarketId: Record<string, string> = {};
+const updateTokenToMarketId = (pairs: typeof marketPairs) => {
+  for (const key of Object.keys(tokenToMarketId)) {
+    delete tokenToMarketId[key];
+  }
+  for (const pair of pairs) {
+    tokenToMarketId[pair.yesTokenId] = pair.marketId;
+    tokenToMarketId[pair.noTokenId] = pair.marketId;
+  }
+};
+updateTokenToMarketId(marketPairs);
+const bookStaleQuarantine = createBookFreshnessQuarantine({
+  allowlist,
+  incidentTracker,
+  tokenToMarketId,
+  config: {
+    threshold: env.OPS_BOOK_STALE_QUARANTINE_THRESHOLD,
+    windowMs: env.OPS_BOOK_STALE_QUARANTINE_WINDOW_MS,
+    cooldownMs:
+      env.OPS_BOOK_STALE_QUARANTINE_COOLDOWN_MS > 0
+        ? env.OPS_BOOK_STALE_QUARANTINE_COOLDOWN_MS
+        : riskConfig.marketCooldownSeconds * 1000
+  }
+});
+messageBus.on('ops:alert', (payload) => {
+  if (isOpsAlertPayload(payload)) {
+    bookStaleQuarantine.handle(payload);
+  }
+});
 const portfolio = new PortfolioAgent(env.TOTAL_CAPITAL, incidentTracker, {
   tokenToMarketId,
   metrics,
@@ -252,15 +301,40 @@ const learning = new LearningAgent(
   store
 );
 learning.start();
-const clobAuthProvider =
-  env.POLYMARKET_API_KEY && env.POLYMARKET_API_SECRET && env.POLYMARKET_PASSPHRASE && env.POLYMARKET_POSITIONS_USER
-    ? createPolymarketHmacAuthProvider({
-        apiKey: env.POLYMARKET_API_KEY,
-        secret: env.POLYMARKET_API_SECRET,
-        passphrase: env.POLYMARKET_PASSPHRASE,
-        address: env.POLYMARKET_POSITIONS_USER
-      })
-    : undefined;
+let resolvedCreds: Awaited<ReturnType<typeof resolvePolymarketL2Creds>> | null = null;
+try {
+  resolvedCreds = await resolvePolymarketL2Creds(env);
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  metrics.record({
+    type: 'error',
+    timestamp: Date.now(),
+    data: { message: 'polymarket_creds_resolve_failed', error: message }
+  });
+}
+
+const clobAuthProvider = resolvedCreds
+  ? createPolymarketHmacAuthProvider({
+      apiKey: resolvedCreds.apiKey,
+      secret: resolvedCreds.secret,
+      passphrase: resolvedCreds.passphrase,
+      address: resolvedCreds.address
+    })
+  : undefined;
+if (resolvedCreds) {
+  const positionsUser = env.POLYMARKET_POSITIONS_USER?.trim();
+  if (positionsUser && positionsUser.toLowerCase() !== resolvedCreds.address.toLowerCase()) {
+    metrics.record({
+      type: 'info',
+      timestamp: Date.now(),
+      data: {
+        message: 'polymarket_creds_address_mismatch',
+        positionsUser,
+        signingAddress: resolvedCreds.address
+      }
+    });
+  }
+}
 
 const clob = new PolymarketClob({
   baseUrl: env.POLYMARKET_CLOB_BASE_URL,
@@ -297,18 +371,17 @@ const realtime = new PolymarketRealtime({
   reconnectJitterPct: env.POLYMARKET_WS_RECONNECT_JITTER_PCT
 });
 
-const userAuthMessage =
-  env.POLYMARKET_API_KEY && env.POLYMARKET_API_SECRET && env.POLYMARKET_PASSPHRASE
-    ? {
-        type: 'user',
-        auth: {
-          apiKey: env.POLYMARKET_API_KEY,
-          secret: env.POLYMARKET_API_SECRET,
-          passphrase: env.POLYMARKET_PASSPHRASE
-        },
-        markets: marketPairs.map((pair) => pair.marketId)
-      }
-    : undefined;
+const userAuthMessage = resolvedCreds
+  ? {
+      type: 'user',
+      auth: {
+        apiKey: resolvedCreds.apiKey,
+        secret: resolvedCreds.secret,
+        passphrase: resolvedCreds.passphrase
+      },
+      markets: marketPairs.map((pair) => pair.marketId)
+    }
+  : undefined;
 
 const userRealtime = userAuthMessage
   ? new PolymarketRealtime({
@@ -324,6 +397,81 @@ const policy = configStore.getPolicy();
 const risk = configStore.getRisk();
 let refreshSettings = deriveBookRefreshSettings(policy);
 
+const webSearchCache = new WebSearchCache();
+const webSearchRateLimit = Math.max(env.EV_WEBSEARCH_REQUESTS_PER_MINUTE, 1);
+const webSearchRateLimitWindowMs = Math.max(env.EV_WEBSEARCH_RATE_LIMIT_WINDOW_MS, 1000);
+const webSearchRetry = { maxRetries: 2, baseDelayMs: 250, maxDelayMs: 2000 };
+const domainAllowlist = parseDomainList(env.EV_WEBSEARCH_DOMAIN_ALLOWLIST);
+const domainDenylist = parseDomainList(env.EV_WEBSEARCH_DOMAIN_DENYLIST);
+
+let exaClient: ExaClient | undefined;
+if (env.EXA_API_KEY) {
+  exaClient = new ExaClient({
+    baseUrl: env.EXA_BASE_URL,
+    apiKey: env.EXA_API_KEY,
+    timeoutMs: env.EV_WEBSEARCH_TIMEOUT_MS,
+    rateLimitPerWindow: webSearchRateLimit,
+    rateLimitWindowMs: webSearchRateLimitWindowMs,
+    retryMaxRetries: webSearchRetry.maxRetries,
+    retryBaseDelayMs: webSearchRetry.baseDelayMs,
+    retryMaxDelayMs: webSearchRetry.maxDelayMs,
+    maxContentBytes: env.EV_WEBSEARCH_MAX_CONTENT_BYTES,
+    searchPath: env.EXA_SEARCH_PATH,
+    contentsPath: env.EXA_CONTENTS_PATH,
+    cache: webSearchCache,
+    metrics
+  });
+} else if (policy.evWebSearchExaEnabled) {
+  metrics.record({
+    type: 'web_search',
+    timestamp: Date.now(),
+    data: { event: 'exa_missing_api_key' }
+  });
+}
+
+let firecrawlClient: FirecrawlClient | undefined;
+if (env.FIRECRAWL_API_KEY) {
+  firecrawlClient = new FirecrawlClient({
+    baseUrl: env.FIRECRAWL_BASE_URL,
+    apiKey: env.FIRECRAWL_API_KEY,
+    timeoutMs: env.EV_WEBSEARCH_TIMEOUT_MS,
+    rateLimitPerWindow: webSearchRateLimit,
+    rateLimitWindowMs: webSearchRateLimitWindowMs,
+    retryMaxRetries: webSearchRetry.maxRetries,
+    retryBaseDelayMs: webSearchRetry.baseDelayMs,
+    retryMaxDelayMs: webSearchRetry.maxDelayMs,
+    maxContentBytes: env.EV_WEBSEARCH_MAX_CONTENT_BYTES,
+    searchPath: env.FIRECRAWL_SEARCH_PATH,
+    scrapePath: env.FIRECRAWL_SCRAPE_PATH,
+    crawlPath: env.FIRECRAWL_CRAWL_PATH,
+    crawlEnabled: env.FIRECRAWL_CRAWL_ENABLED,
+    crawlMaxDepth: policy.evWebSearchFirecrawlMaxDepth,
+    crawlMaxPages: policy.evWebSearchFirecrawlMaxPages,
+    cache: webSearchCache,
+    metrics
+  });
+} else if (policy.evWebSearchFirecrawlEnabled) {
+  metrics.record({
+    type: 'web_search',
+    timestamp: Date.now(),
+    data: { event: 'firecrawl_missing_api_key' }
+  });
+}
+
+const signalAggregator =
+  exaClient || firecrawlClient
+    ? new SignalAggregatorAgent({
+        policy,
+        marketPairs,
+        clob,
+        exa: exaClient,
+        firecrawl: firecrawlClient,
+        domainAllowlist,
+        domainDenylist,
+        metrics
+      })
+    : undefined;
+
 const tradingStateManager = new TradingStateManager(env.TRADING_ENABLED, env.TRADING_MODE);
 
 const supervisor = new Supervisor(
@@ -338,7 +486,7 @@ const supervisor = new Supervisor(
     maxCapitalInFlight: env.MAX_CAPITAL_IN_FLIGHT,
     bookRefresh: {
       intervalMs: refreshSettings.bookRefreshIntervalMs,
-      maxStalenessMs: refreshSettings.maxBookStalenessMs
+      maxStalenessMs: refreshSettings.bookRefreshStaleMs
     },
     reconciliation: {
       intervalMs: env.OPS_RECONCILIATION_INTERVAL_MS,
@@ -362,7 +510,8 @@ const supervisor = new Supervisor(
     eventStore: store,
     llm: llmConfig.enabled ? llmFacade : undefined,
     executionAdvisor,
-    riskAdvisor
+    riskAdvisor,
+    signalAggregator
   }
 );
 
@@ -386,7 +535,13 @@ const syncRuntimeConfig = () => {
   refreshSettings = nextRefresh;
   supervisor.updateBookRefresh({
     intervalMs: nextRefresh.bookRefreshIntervalMs,
-    maxStalenessMs: nextRefresh.maxBookStalenessMs
+    maxStalenessMs: nextRefresh.bookRefreshStaleMs
+  });
+  bookStaleQuarantine.updateConfig({
+    cooldownMs:
+      env.OPS_BOOK_STALE_QUARANTINE_COOLDOWN_MS > 0
+        ? env.OPS_BOOK_STALE_QUARANTINE_COOLDOWN_MS
+        : riskSnapshot.marketCooldownSeconds * 1000
   });
   catalogRefresher?.updateConfig({ refreshIntervalMs: nextRefresh.catalogRefreshMs });
   incidentTracker.updateConfig({
@@ -456,8 +611,11 @@ catalogRefresher = new MarketCatalogRefresher(
   {
     refreshIntervalMs: refreshSettings.catalogRefreshMs,
     maxPairs,
-    minVolume24h: 50000,
+    minVolume24h: env.MARKET_CATALOG_MIN_VOLUME_24H,
     maxSpread: 0.02,
+    pageSize: env.MARKET_CATALOG_PAGE_SIZE,
+    maxPages: env.MARKET_CATALOG_MAX_PAGES,
+    order: env.MARKET_CATALOG_ORDER,
     gammaApiBaseUrl: env.GAMMA_API_BASE_URL
   },
   clob,
@@ -469,6 +627,7 @@ catalogRefresher.seed(marketPairs);
 catalogRefresher.on('refresh', ({ pairs }: { pairs: typeof marketPairs }) => {
   supervisor.updateMarketPairs(pairs);
   allowlist.seed(pairs.map((p) => p.marketId));
+  updateTokenToMarketId(pairs);
 });
 
 catalogRefresher.on('error', (error) => {

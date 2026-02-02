@@ -1,8 +1,9 @@
 import 'dotenv/config';
 
 import { loadEnv } from '../src/config/env.js';
-import { PolymarketClob } from '../src/services/PolymarketClob.js';
+import { ApiError, PolymarketClob } from '../src/services/PolymarketClob.js';
 import { createPolymarketHmacAuthProvider } from '../src/services/PolymarketAuth.js';
+import { resolvePolymarketL2Creds } from '../src/services/PolymarketApiCreds.js';
 
 function requireNonEmpty(value: string | undefined, label: string): string {
   const trimmed = value?.trim() ?? '';
@@ -15,12 +16,26 @@ function requireNonEmpty(value: string | undefined, label: string): string {
 async function main(): Promise<void> {
   const env = loadEnv();
 
-  const apiKey = requireNonEmpty(env.POLYMARKET_API_KEY, 'POLYMARKET_API_KEY');
-  const secret = requireNonEmpty(env.POLYMARKET_API_SECRET, 'POLYMARKET_API_SECRET');
-  const passphrase = requireNonEmpty(env.POLYMARKET_PASSPHRASE, 'POLYMARKET_PASSPHRASE');
-  const address = requireNonEmpty(env.POLYMARKET_POSITIONS_USER, 'POLYMARKET_POSITIONS_USER');
+  const resolved = await resolvePolymarketL2Creds(env);
+  if (!resolved) {
+    requireNonEmpty(env.POLYMARKET_API_KEY, 'POLYMARKET_API_KEY');
+    requireNonEmpty(env.POLYMARKET_API_SECRET, 'POLYMARKET_API_SECRET');
+    requireNonEmpty(env.POLYMARKET_PASSPHRASE, 'POLYMARKET_PASSPHRASE');
+    requireNonEmpty(env.POLYMARKET_POSITIONS_USER, 'POLYMARKET_POSITIONS_USER');
+    throw new Error('Missing Polymarket credentials (set API key + secret + passphrase + address or L1 private key)');
+  }
 
-  const authProvider = createPolymarketHmacAuthProvider({ apiKey, secret, passphrase, address });
+  console.log('[polymarket] creds resolved', {
+    derived: resolved.derived,
+    address: resolved.address
+  });
+
+  const authProvider = createPolymarketHmacAuthProvider({
+    apiKey: resolved.apiKey,
+    secret: resolved.secret,
+    passphrase: resolved.passphrase,
+    address: resolved.address
+  });
 
   const clob = new PolymarketClob({
     baseUrl: env.POLYMARKET_CLOB_BASE_URL,
@@ -47,8 +62,15 @@ async function main(): Promise<void> {
 }
 
 await main().catch((error) => {
+  if (error instanceof ApiError) {
+    console.error('[polymarket] auth check failed', {
+      status: error.status,
+      body: error.body ?? null
+    });
+    process.exitCode = 1;
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   console.error(`[polymarket] auth check failed: ${message}`);
   process.exitCode = 1;
 });
-

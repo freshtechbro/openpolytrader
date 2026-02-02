@@ -218,7 +218,7 @@ export class OpsAgent {
         {
           role: 'developer',
           content:
-            'Return JSON only, with shape: {"risk_level":"low"|"medium"|"high","alerts":string[],"summary":string,"confidence":number}. No prose.'
+            'Return JSON only, with shape: {"risk_level":"low"|"medium"|"high","alerts":string[],"summary":string,"confidence":number}. Use only the inputs. Alerts must reference failing checks by name; if all checks are ok, return alerts=[], risk_level="low". Keep summary concise (1-2 sentences). Confidence must be between 0 and 1. No prose.'
         },
         { role: 'user', content: JSON.stringify(promptEnvelope) }
       ]

@@ -244,17 +244,22 @@ export class PolymarketClob {
         });
 
         const text = await response.text();
-        const parsed = text.length > 0 ? JSON.parse(text) : null;
+        const parsedResult = safeParseJson(text);
 
         if (!response.ok) {
           throw new ApiError(
             `Polymarket CLOB error ${response.status} for ${method} ${path}`,
             response.status,
-            parsed
+            parsedResult.failed ? { raw: text } : parsedResult.parsed
           );
         }
 
-        return parsed as T;
+        if (parsedResult.failed) {
+          const snippet = text.slice(0, 200);
+          throw new Error(`Polymarket CLOB invalid JSON for ${method} ${path}: ${snippet}`);
+        }
+
+        return parsedResult.parsed as T;
       } finally {
         clearTimeout(timeout);
       }
@@ -284,6 +289,17 @@ function buildDuplicateOrderResponse(body: unknown): Record<string, unknown> {
   };
   if (orderID) response.orderID = orderID;
   return response;
+}
+
+function safeParseJson(text: string): { parsed: unknown; failed: boolean } {
+  if (!text || text.trim().length === 0) {
+    return { parsed: null, failed: false };
+  }
+  try {
+    return { parsed: JSON.parse(text), failed: false };
+  } catch {
+    return { parsed: null, failed: true };
+  }
 }
 
 function normalizeVenueOpenOrder(raw: unknown): VenueOpenOrder {

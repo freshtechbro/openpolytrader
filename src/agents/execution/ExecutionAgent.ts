@@ -488,21 +488,47 @@ export class ExecutionAgent {
     }
   }
 
+  private cleanupOrderTracking(orderIds: string[]): void {
+    for (const orderId of orderIds) {
+      const waiters = this.fillWaiters.get(orderId);
+      if (waiters) {
+        for (const waiter of waiters) {
+          clearTimeout(waiter.timeout);
+        }
+        this.fillWaiters.delete(orderId);
+      }
+      this.userOrders.delete(orderId);
+      this.seenTradesByOrder.delete(orderId);
+    }
+  }
+
   async executeArbitrage(
     opportunity: ArbitrageOpportunity,
     size: number,
     context?: ExecutionContext
   ): Promise<ExecutionResult> {
     const nowMs = context?.nowMs ?? Date.now();
+    const isEv = opportunity.type === 'ev';
     const idempotencyKey = createIdempotencyKey(
       `${opportunity.marketId}:${opportunity.yesTokenId}:${opportunity.noTokenId}:${opportunity.detectedAt}`
     );
     const executionId = idempotencyKey;
     const idleState: ExecutionState = 'idle';
+    const trackedOrderIds: string[] = [];
     const finalize = (result: ExecutionResult, atMs = Date.now()) => {
       this.emitExecutionOutcome(opportunity, result, atMs);
+      if (trackedOrderIds.length > 0) {
+        this.cleanupOrderTracking(trackedOrderIds);
+      }
       return result;
     };
+
+    if (isEv && !opportunity.side) {
+      return finalize(
+        { status: 'blocked', reason: 'ev_missing_side', idempotencyKey, executionId, state: idleState },
+        nowMs
+      );
+    }
 
     if (this.circuitBreakers?.isOpen(opportunity.marketId)) {
       this.incidentTracker?.record({
@@ -878,7 +904,7 @@ export class ExecutionAgent {
       );
     }
 
-    const requiresUserChannel = isNearZeroRiskMode(this.policy);
+    const requiresUserChannel = isNearZeroRiskMode(this.policy) || isEv;
     if (requiresUserChannel) {
       if (!this.userRealtime) {
         return finalize(
@@ -906,7 +932,7 @@ export class ExecutionAgent {
       }
     }
 
-    if (this.policy.rejectDelayed === false) {
+    if (!isEv && this.policy.rejectDelayed === false) {
       throw new Error('ExecutionAgent requires rejectDelayed=true for near-risk-free mode');
     }
     const decisionLatencyMs = nowMs - opportunity.detectedAt;
@@ -940,7 +966,7 @@ export class ExecutionAgent {
         nowMs
       );
     }
-    const plannedOrders = 2;
+    const plannedOrders = isEv ? 1 : 2;
 
     if (this.metrics) {
       const otrWindowMs = this.policy.orderToTradeWindowMs;
@@ -964,6 +990,42 @@ export class ExecutionAgent {
           { status: 'blocked', reason: 'otr_exceeded', idempotencyKey, executionId, state: idleState },
           nowMs
         );
+      }
+
+      if (this.policy.maxOrdersPerMinute > 0) {
+        const velocityWindowMs = this.policy.orderVelocityWindowMs;
+        const currentOrders = this.metrics.getOrderVelocity(velocityWindowMs, nowMs);
+        const projectedOrders = currentOrders + plannedOrders;
+        if (projectedOrders > this.policy.maxOrdersPerMinute) {
+          this.metrics.record({
+            type: 'slo_violation',
+            timestamp: nowMs,
+            data: {
+              sloName: 'order_velocity',
+              threshold: this.policy.maxOrdersPerMinute,
+              actual: projectedOrders,
+              windowMs: velocityWindowMs,
+              marketId: opportunity.marketId,
+              timestampMs: nowMs
+            }
+          });
+          this.incidentTracker?.record({
+            marketId: opportunity.marketId,
+            reason: 'velocity_throttle',
+            timestamp: nowMs,
+            opportunityId: opportunity.id,
+            detail: {
+              windowMs: velocityWindowMs,
+              orders: currentOrders,
+              projectedOrders,
+              maxOrdersPerMinute: this.policy.maxOrdersPerMinute
+            }
+          });
+          return finalize(
+            { status: 'blocked', reason: 'velocity_throttle', idempotencyKey, executionId, state: idleState },
+            nowMs
+          );
+        }
       }
 
       if (this.policy.maxDelayedAckRate > 0) {
@@ -1009,38 +1071,83 @@ export class ExecutionAgent {
       }
     }
 
-    if (context?.yesBook?.bestAsk && context?.noBook?.bestAsk) {
+    const yesBestAsk = context?.yesBook?.bestAsk;
+    const noBestAsk = context?.noBook?.bestAsk;
+    if (yesBestAsk && noBestAsk) {
       const bandFraction = this.policy.priceBandBps / 10000;
-      const yesDeviation =
-        opportunity.yesPrice > 0
-          ? Math.abs(context.yesBook.bestAsk.price - opportunity.yesPrice) / opportunity.yesPrice
-          : 0;
-      const noDeviation =
-        opportunity.noPrice > 0
-          ? Math.abs(context.noBook.bestAsk.price - opportunity.noPrice) / opportunity.noPrice
-          : 0;
 
-      if (yesDeviation > bandFraction || noDeviation > bandFraction) {
-        this.incidentTracker?.record({
-          marketId: opportunity.marketId,
-          reason: 'price_moved',
-          timestamp: nowMs,
-          opportunityId: opportunity.id,
-          detail: {
-            yesDeviation,
-            noDeviation,
-            bandFraction,
-            yesObserved: context.yesBook.bestAsk.price,
-            noObserved: context.noBook.bestAsk.price,
-            yesExpected: opportunity.yesPrice,
-            noExpected: opportunity.noPrice
-          }
-        });
-        return finalize(
-          { status: 'blocked', reason: 'price_moved', idempotencyKey, executionId, state: idleState },
-          nowMs
-        );
+      if (isEv && opportunity.side) {
+        const sideBestAsk = opportunity.side === 'yes' ? yesBestAsk : noBestAsk;
+        const expected = opportunity.side === 'yes' ? opportunity.yesPrice : opportunity.noPrice;
+        const deviation = expected > 0 ? Math.abs(sideBestAsk.price - expected) / expected : 0;
+        if (deviation > bandFraction) {
+          this.incidentTracker?.record({
+            marketId: opportunity.marketId,
+            reason: 'price_moved',
+            timestamp: nowMs,
+            opportunityId: opportunity.id,
+            detail: {
+              side: opportunity.side,
+              deviation,
+              bandFraction,
+              observed: sideBestAsk.price,
+              expected
+            }
+          });
+          return finalize(
+            { status: 'blocked', reason: 'price_moved', idempotencyKey, executionId, state: idleState },
+            nowMs
+          );
+        }
+      } else {
+        const yesDeviation =
+          opportunity.yesPrice > 0
+            ? Math.abs(yesBestAsk.price - opportunity.yesPrice) / opportunity.yesPrice
+            : 0;
+        const noDeviation =
+          opportunity.noPrice > 0
+            ? Math.abs(noBestAsk.price - opportunity.noPrice) / opportunity.noPrice
+            : 0;
+
+        if (yesDeviation > bandFraction || noDeviation > bandFraction) {
+          this.incidentTracker?.record({
+            marketId: opportunity.marketId,
+            reason: 'price_moved',
+            timestamp: nowMs,
+            opportunityId: opportunity.id,
+            detail: {
+              yesDeviation,
+              noDeviation,
+              bandFraction,
+              yesObserved: yesBestAsk.price,
+              noObserved: noBestAsk.price,
+              yesExpected: opportunity.yesPrice,
+              noExpected: opportunity.noPrice
+            }
+          });
+          return finalize(
+            { status: 'blocked', reason: 'price_moved', idempotencyKey, executionId, state: idleState },
+            nowMs
+          );
+        }
       }
+    }
+
+    if (isEv) {
+      const evResult = await this.executeEvOrder(opportunity, size, context, {
+        nowMs,
+        idempotencyKey,
+        executionId,
+        idleState,
+        timeouts,
+        yesIdempotencyKey,
+        noIdempotencyKey,
+        yesRecord,
+        noRecord,
+        trackedOrderIds,
+        requiresUserChannel
+      });
+      return finalize(evResult, Date.now());
     }
 
     const detectedAt = opportunity.detectedAt;
@@ -1208,6 +1315,9 @@ export class ExecutionAgent {
 
     const yesOrderId = extractOrderId(yesResponse) ?? yesRecord.orderId;
     const noOrderId = extractOrderId(noResponse) ?? noRecord.orderId;
+    trackedOrderIds.length = 0;
+    if (yesOrderId) trackedOrderIds.push(yesOrderId);
+    if (noOrderId) trackedOrderIds.push(noOrderId);
 
     if (yesOrderId && !extractOrderId(yesResponse)) {
       yesResponse = { ...yesResponse, orderID: yesOrderId };
@@ -1503,6 +1613,309 @@ export class ExecutionAgent {
     );
   }
 
+  private async executeEvOrder(
+    opportunity: ArbitrageOpportunity,
+    size: number,
+    _context: ExecutionContext | undefined,
+    params: {
+      nowMs: number;
+      idempotencyKey: string;
+      executionId: string;
+      idleState: ExecutionState;
+      timeouts: ExecutionTimeouts;
+      yesIdempotencyKey: string;
+      noIdempotencyKey: string;
+      yesRecord: IdempotencyRecord;
+      noRecord: IdempotencyRecord;
+      trackedOrderIds: string[];
+      requiresUserChannel: boolean;
+    }
+  ): Promise<ExecutionResult> {
+    const {
+      nowMs,
+      idempotencyKey,
+      executionId,
+      idleState,
+      timeouts,
+      yesIdempotencyKey,
+      noIdempotencyKey,
+      yesRecord,
+      noRecord,
+      trackedOrderIds,
+      requiresUserChannel
+    } = params;
+
+    const side = opportunity.side;
+    if (!side) {
+      return {
+        status: 'blocked',
+        reason: 'ev_missing_side',
+        idempotencyKey,
+        executionId,
+        state: idleState
+      };
+    }
+
+    const tokenId = side === 'yes' ? opportunity.yesTokenId : opportunity.noTokenId;
+    const price = side === 'yes' ? opportunity.yesPrice : opportunity.noPrice;
+    if (!Number.isFinite(price) || price <= 0) {
+      return {
+        status: 'blocked',
+        reason: 'invalid_price',
+        idempotencyKey,
+        executionId,
+        state: idleState
+      };
+    }
+
+    if (this.metrics) {
+      this.metrics.recordLatency({
+        stage: 'detected',
+        opportunityId: opportunity.id,
+        marketId: opportunity.marketId,
+        timestampMs: opportunity.detectedAt,
+        latencyMs: 0,
+        cumulativeMs: 0
+      });
+    }
+
+    if (this.portfolio) {
+      this.portfolio.expectFill({
+        opportunityId: opportunity.id,
+        tokenId,
+        expectedSize: size,
+        expectedPrice: price,
+        timestamp: nowMs
+      });
+    }
+
+    const recordKey = side === 'yes' ? yesIdempotencyKey : noIdempotencyKey;
+    const record = side === 'yes' ? yesRecord : noRecord;
+
+    const submitMs = Date.now();
+    if (this.metrics) {
+      this.metrics.recordLatency({
+        stage: 'submitted',
+        opportunityId: opportunity.id,
+        marketId: opportunity.marketId,
+        timestampMs: submitMs,
+        latencyMs: submitMs - opportunity.detectedAt,
+        cumulativeMs: submitMs - opportunity.detectedAt
+      });
+    }
+    this.metrics?.recordOrderAttempt(opportunity.marketId, submitMs);
+
+    const payload = toClobOrderPayload(
+      buildFokBuyOrder({
+        tokenId,
+        size,
+        price,
+        clientOrderId: recordKey
+      })
+    );
+    const payloadWithNonce = {
+      ...payload,
+      nonce: coerceNonceValue(record.nonce)
+    };
+
+    let response: unknown;
+    try {
+      response = await withTimeout(
+        this.clob.createOrder(payloadWithNonce),
+        timeouts.submitTimeoutMs,
+        `ev_submit_${side}`
+      );
+    } catch (error) {
+      const failureAtMs = Date.now();
+      const incidentReason: IncidentReason = isTimeoutError(error) ? 'order_timeout' : 'order_failed';
+      const detail = isTimeoutError(error)
+        ? { phase: error.phase, timeoutMs: error.timeoutMs }
+        : { error: error instanceof Error ? error.message : String(error) };
+      this.markIdempotencyFailed(recordKey, failureAtMs);
+      this.incidentTracker?.record({
+        marketId: opportunity.marketId,
+        reason: incidentReason,
+        timestamp: failureAtMs,
+        opportunityId: opportunity.id,
+        detail
+      });
+      return {
+        status: 'failed',
+        reason: incidentReason,
+        idempotencyKey,
+        executionId,
+        state: 'failed'
+      };
+    }
+
+    const ackMs = Date.now();
+    let order = coerceOrderResponse(response);
+    const orderId = extractOrderId(order) ?? record.orderId;
+    trackedOrderIds.length = 0;
+    if (orderId) trackedOrderIds.push(orderId);
+    if (orderId && !extractOrderId(order)) {
+      order = { ...order, orderID: orderId };
+    }
+
+    this.saveIdempotencyRecord({
+      ...record,
+      orderId,
+      status: orderId ? 'submitted' : record.status,
+      updatedAt: ackMs
+    });
+
+    if (this.metrics) {
+      if (isDelayedOrderResponse(response)) {
+        this.metrics.recordDelayedAck(opportunity.marketId, ackMs);
+      }
+      this.metrics.recordLatency({
+        stage: 'acked',
+        opportunityId: opportunity.id,
+        marketId: opportunity.marketId,
+        timestampMs: ackMs,
+        latencyMs: ackMs - submitMs,
+        cumulativeMs: ackMs - opportunity.detectedAt
+      });
+    }
+
+    if (isDelayedOrderResponse(response)) {
+      this.markIdempotencyFailed(recordKey, ackMs);
+      this.incidentTracker?.record({
+        marketId: opportunity.marketId,
+        reason: 'order_delayed',
+        timestamp: ackMs,
+        opportunityId: opportunity.id,
+        detail: { order }
+      });
+      return {
+        status: 'failed',
+        reason: 'order_delayed',
+        yesOrder: side === 'yes' ? order : undefined,
+        noOrder: side === 'no' ? order : undefined,
+        idempotencyKey,
+        executionId,
+        state: 'failed'
+      };
+    }
+
+    if (isOrderFailure(response)) {
+      this.markIdempotencyFailed(recordKey, ackMs);
+      this.incidentTracker?.record({
+        marketId: opportunity.marketId,
+        reason: 'order_rejected',
+        timestamp: ackMs,
+        opportunityId: opportunity.id,
+        detail: { order }
+      });
+      return {
+        status: 'failed',
+        reason: 'order_rejected',
+        yesOrder: side === 'yes' ? order : undefined,
+        noOrder: side === 'no' ? order : undefined,
+        idempotencyKey,
+        executionId,
+        state: 'failed'
+      };
+    }
+
+    if (!requiresUserChannel) {
+      return {
+        status: 'submitted',
+        yesOrder: side === 'yes' ? order : undefined,
+        noOrder: side === 'no' ? order : undefined,
+        idempotencyKey,
+        executionId,
+        state: 'complete'
+      };
+    }
+
+    if (!orderId) {
+      const failureAtMs = Date.now();
+      this.markIdempotencyFailed(recordKey, failureAtMs);
+      this.incidentTracker?.record({
+        marketId: opportunity.marketId,
+        reason: 'order_failed',
+        timestamp: failureAtMs,
+        opportunityId: opportunity.id,
+        detail: { orderId, order }
+      });
+      return {
+        status: 'failed',
+        reason: 'order_failed',
+        yesOrder: side === 'yes' ? order : undefined,
+        noOrder: side === 'no' ? order : undefined,
+        idempotencyKey,
+        executionId,
+        state: 'failed'
+      };
+    }
+
+    const remainingFillTimeoutMs =
+      timeouts.fillTimeoutMs > 0 ? Math.max(0, timeouts.fillTimeoutMs - (Date.now() - ackMs)) : 0;
+
+    const outcome = await this.waitForFillOutcome(orderId, size, remainingFillTimeoutMs);
+    const fillMs = Math.max(ackMs, outcome.observedAtMs);
+
+    if (outcome.fullyFilled) {
+      if (this.metrics) {
+        this.metrics.recordFill(opportunity.marketId, fillMs);
+        this.metrics.recordLatency({
+          stage: 'filled',
+          opportunityId: opportunity.id,
+          marketId: opportunity.marketId,
+          timestampMs: fillMs,
+          latencyMs: fillMs - ackMs,
+          cumulativeMs: fillMs - opportunity.detectedAt
+        });
+        this.metrics.recordLatency({
+          stage: 'complete',
+          opportunityId: opportunity.id,
+          marketId: opportunity.marketId,
+          timestampMs: fillMs,
+          latencyMs: fillMs - opportunity.detectedAt,
+          cumulativeMs: fillMs - opportunity.detectedAt
+        });
+      }
+
+      this.saveIdempotencyRecord({
+        ...record,
+        orderId,
+        status: 'confirmed',
+        updatedAt: fillMs
+      });
+
+      return {
+        status: 'submitted',
+        yesOrder: side === 'yes' ? order : undefined,
+        noOrder: side === 'no' ? order : undefined,
+        idempotencyKey,
+        executionId,
+        state: 'complete'
+      };
+    }
+
+    const failureAtMs = Date.now();
+    const failureReason: IncidentReason = outcome.timedOut ? 'order_timeout' : 'order_failed';
+    this.markIdempotencyFailed(recordKey, failureAtMs);
+    this.incidentTracker?.record({
+      marketId: opportunity.marketId,
+      reason: failureReason,
+      timestamp: failureAtMs,
+      opportunityId: opportunity.id,
+      detail: { outcome, orderId }
+    });
+
+    return {
+      status: 'failed',
+      reason: failureReason,
+      yesOrder: side === 'yes' ? order : undefined,
+      noOrder: side === 'no' ? order : undefined,
+      idempotencyKey,
+      executionId,
+      state: outcome.timedOut ? 'timeout' : 'failed'
+    };
+  }
+
   private getIdempotencyRecord(key: string): IdempotencyRecord | undefined {
     const cached = this.idempotencyCache.get(key);
     if (cached) return cached;
@@ -1715,7 +2128,6 @@ export class ExecutionAgent {
 
 function applyMultiplier(timeoutMs: number, multiplier: number): number {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return timeoutMs;
-  if (!Number.isFinite(multiplier) || multiplier <= 0) return timeoutMs;
   const scaled = Math.floor(timeoutMs * multiplier);
   return Math.min(timeoutMs, Math.max(scaled, 1));
 }

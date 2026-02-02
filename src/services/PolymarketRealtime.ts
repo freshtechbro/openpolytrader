@@ -72,11 +72,20 @@ export class PolymarketRealtime extends EventEmitter {
     const url = this.config.url;
 
     await new Promise<void>((resolve, reject) => {
+      let opened = false;
+      let settled = false;
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        this.connecting = false;
+        fn();
+      };
       const ws = new WebSocket(url);
       this.ws = ws;
 
       ws.on('open', () => {
-        this.connecting = false;
+        opened = true;
+        settle(() => {
         this.reconnectAttempts = 0;
         this.connected = true;
         if (this.config.authMessage) this.captureSubscription(this.config.authMessage);
@@ -84,6 +93,7 @@ export class PolymarketRealtime extends EventEmitter {
         this.startHeartbeat();
         this.emit('open');
         resolve();
+        });
       });
 
       ws.on('message', (data: WebSocket.RawData) => {
@@ -95,26 +105,45 @@ export class PolymarketRealtime extends EventEmitter {
           this.handleParsedMessage(payload);
         } catch (error) {
           if (text.trim().toUpperCase() === 'PONG') {
+            this.lastMessageAtMs = Date.now();
             return;
           }
           this.emit('error', error);
         }
       });
 
+      ws.on('pong', () => {
+        this.lastMessageAtMs = Date.now();
+      });
+
       ws.on('close', (code: number, reason: Buffer) => {
         this.ws = null;
         this.connected = false;
+        this.connecting = false;
         this.stopHeartbeat();
         this.emit('close', code, reason.toString());
         if (this.shouldReconnect) {
           this.scheduleReconnect();
         }
+        if (!opened) {
+          settle(() => reject(new Error(`WebSocket closed before open: ${code}`)));
+        }
       });
 
       ws.on('error', (error: Error) => {
         this.connected = false;
+        this.stopHeartbeat();
         this.emit('error', error);
-        reject(error);
+        if (!opened) {
+          settle(() => reject(error));
+          this.ws = null;
+          return;
+        }
+        try {
+          ws.terminate();
+        } catch {
+          // ignore
+        }
       });
     });
   }
@@ -145,9 +174,15 @@ export class PolymarketRealtime extends EventEmitter {
   }
 
   unsubscribeMarkets(assetIds: string[]): void {
+    if (assetIds.length === 0) return;
     for (const id of assetIds) {
       this.subscribedAssetIds.delete(id);
     }
+    this.send({
+      type: 'market',
+      assets_ids: assetIds,
+      operation: 'unsubscribe'
+    });
   }
 
   getSubscribedAssetIds(): string[] {

@@ -374,6 +374,10 @@ function normalizeRequestForProvider(providerId: LLMProviderId, request: LLMRequ
       return chatToZenMessagesRequest(request, mappedModel);
     }
 
+    if (request.endpoint === 'messages') {
+      return messagesToChatRequest({ ...request, model: mappedModel }, mappedModel);
+    }
+
     return request.model === mappedModel ? request : { ...request, model: mappedModel };
   }
 
@@ -439,25 +443,37 @@ function convertRequestEndpoint(request: LLMRequest, endpoint: LLMEndpoint): LLM
 }
 
 const OPENROUTER_TO_ZEN_MODEL_ID: Record<string, string> = {
-  'x-ai/grok-code-fast-1': 'grok-code',
-  'z-ai/glm-4.7': 'glm-4.7-free',
+  'x-ai/grok-code-fast-1': 'glm-4.7',
+  'moonshotai/kimi-k2.5': 'kimi-k2.5',
+  'z-ai/glm-4.7': 'glm-4.7',
   'openai/gpt-5-nano': 'gpt-5-nano',
-  'minimax/minimax-m2.1': 'minimax-m2.1-free',
+  'minimax/minimax-m2.1': 'minimax-m2.1',
   'qwen/qwen3-coder': 'qwen3-coder'
 };
 
+const LEGACY_ZEN_MODEL_ALIASES: Record<string, string> = {
+  'grok-code': 'glm-4.7',
+  'glm-4.7-free': 'glm-4.7',
+  'minimax-m2.1-free': 'minimax-m2.1',
+  'kimi-k2.5-free': 'kimi-k2.5'
+};
+
+function normalizeZenModelId(model: string): string {
+  return LEGACY_ZEN_MODEL_ALIASES[model] ?? model;
+}
+
 function mapOpenRouterModelIdToZen(model: string): string {
-  if (!model.includes('/')) return model;
+  if (!model.includes('/')) return normalizeZenModelId(model);
 
   const mapped = OPENROUTER_TO_ZEN_MODEL_ID[model];
-  if (mapped) return mapped;
+  if (mapped) return normalizeZenModelId(mapped);
 
   const lastSlash = model.lastIndexOf('/');
   if (lastSlash >= 0 && lastSlash < model.length - 1) {
-    return model.slice(lastSlash + 1);
+    return normalizeZenModelId(model.slice(lastSlash + 1));
   }
 
-  return model;
+  return normalizeZenModelId(model);
 }
 
 function isGPT5FamilyModel(model: string): boolean {
@@ -469,7 +485,7 @@ function isClaudeModel(model: string): boolean {
 }
 
 function wantsZenMessagesEndpoint(model: string): boolean {
-  return isClaudeModel(model) || model.startsWith('minimax-');
+  return isClaudeModel(model);
 }
 
 function extractChatSystem(messages: LLMChatRequest['messages']): string | undefined {
@@ -605,19 +621,23 @@ function mapZenModelIdToOpenRouter(model: string): string {
   // If the caller already provided an OpenRouter-style model id, keep it unchanged.
   if (model.includes('/')) return model;
 
-  switch (model) {
+  const normalized = normalizeZenModelId(model);
+
+  switch (normalized) {
     case 'grok-code':
-      return 'x-ai/grok-code-fast-1';
-    case 'glm-4.7-free':
       return 'z-ai/glm-4.7';
+    case 'glm-4.7':
+      return 'z-ai/glm-4.7';
+    case 'kimi-k2.5':
+      return 'moonshotai/kimi-k2.5';
     case 'gpt-5-nano':
       return 'openai/gpt-5-nano';
-    case 'minimax-m2.1-free':
+    case 'minimax-m2.1':
       return 'minimax/minimax-m2.1';
     case 'qwen3-coder':
       return 'qwen/qwen3-coder';
     default:
-      return model;
+      return normalized;
   }
 }
 

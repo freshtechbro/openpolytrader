@@ -312,7 +312,7 @@ export function createOpsServer(
     
     return {
       ...configStore.snapshot(),
-      riskProfile: riskProfileState?.id ?? 'near_zero',
+      riskProfile: riskProfileState?.id ?? 'extra_high',
       riskProfileSource: riskProfileState?.source ?? 'defaults',
       tradingMode: tradingState?.mode ?? deps.tradingMode,
       tradingEnabled: tradingState?.enabled ?? deps.tradingEnabled,
@@ -323,7 +323,7 @@ export function createOpsServer(
 
   app.get('/config/risk-profiles', async () => {
     return {
-      activeProfile: riskProfileState?.id ?? 'near_zero',
+      activeProfile: riskProfileState?.id ?? 'extra_high',
       activeProfileSource: riskProfileState?.source ?? 'defaults',
       availableProfiles: RISK_PROFILE_IDS
     };

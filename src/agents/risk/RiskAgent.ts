@@ -14,7 +14,16 @@ export interface RiskDecision {
     maxByUnwindBudget: number;
     maxByDailyLoss: number;
     maxByExposure: number;
-    binding: 'trade_fraction' | 'depth' | 'unwind_budget' | 'daily_loss' | 'exposure';
+    maxByEvMarket: number;
+    maxByEvPortfolio: number;
+    binding:
+      | 'trade_fraction'
+      | 'depth'
+      | 'unwind_budget'
+      | 'daily_loss'
+      | 'exposure'
+      | 'ev_per_market'
+      | 'ev_portfolio';
   };
   worstCaseLoss?: number;
 }
@@ -23,6 +32,8 @@ export interface RiskAgentOptions {
   maxOpenInventorySeconds: number;
   fallbackTickSize: number;
   depthBufferMultiplier: number;
+  evMaxPerMarketNotional: number;
+  evMaxPortfolioNotional: number;
 }
 
 export class RiskAgent {
@@ -61,7 +72,10 @@ export class RiskAgent {
       return { approved: false, reason: 'daily_loss_limit' };
     }
 
-    if (snapshot.dailyPnL <= -this.config.maxDailyDrawdownFraction * snapshot.totalCapital) {
+    if (
+      this.config.maxDailyDrawdownFraction > 0 &&
+      snapshot.dailyPnL <= -this.config.maxDailyDrawdownFraction * snapshot.totalCapital
+    ) {
       return { approved: false, reason: 'daily_drawdown_limit' };
     }
 
@@ -108,24 +122,53 @@ export class RiskAgent {
 
     const maxSizeByExposure = exposureHeadroomNotional / costPerSet;
 
-    const positionSize = Math.min(
-      maxSizeByTradeFraction,
+    const isEv = opportunity.type === 'ev';
+    const totalExposureNotional = Object.values(snapshot.marketExposure).reduce(
+      (sum, value) => sum + Math.max(0, value),
+      0
+    );
+    const maxSizeByEvMarket =
+      isEv && this.options.evMaxPerMarketNotional > 0
+        ? this.options.evMaxPerMarketNotional / costPerSet
+        : Number.POSITIVE_INFINITY;
+    const maxSizeByEvPortfolio =
+      isEv && this.options.evMaxPortfolioNotional > 0
+        ? (this.options.evMaxPortfolioNotional - totalExposureNotional) / costPerSet
+        : Number.POSITIVE_INFINITY;
+
+    if (isEv && (maxSizeByEvMarket <= 0 || maxSizeByEvPortfolio <= 0)) {
+      return { approved: false, reason: 'ev_notional_cap' };
+    }
+
+    const hardCap = Math.min(
       maxSizeByDepth,
       maxSizeByUnwindBudget,
       maxSizeByDailyLoss,
-      maxSizeByExposure
+      maxSizeByExposure,
+      maxSizeByEvMarket,
+      maxSizeByEvPortfolio
     );
+
+    let positionSize = Math.min(maxSizeByTradeFraction, hardCap);
 
     if (positionSize <= 0) {
       return { approved: false, reason: 'position_size_zero' };
     }
 
+    const minOrderSize = Math.max(opportunity.minOrderSize, 0);
+    let reason = 'within_risk_limits';
+
+    if (minOrderSize > 0 && positionSize < minOrderSize) {
+      if (minOrderSize <= hardCap) {
+        positionSize = minOrderSize;
+        reason = 'min_order_size_bump';
+      } else {
+        return { approved: false, reason: 'below_min_order_size' };
+      }
+    }
+
     const positionNotional = positionSize * costPerSet;
     const worstCaseLoss = positionSize * lossPerSet;
-
-    if (positionSize < opportunity.minOrderSize) {
-      return { approved: false, reason: 'below_min_order_size' };
-    }
 
     const constraints = {
       maxByTradeFraction: maxSizeByTradeFraction,
@@ -133,18 +176,22 @@ export class RiskAgent {
       maxByUnwindBudget: maxSizeByUnwindBudget,
       maxByDailyLoss: maxSizeByDailyLoss,
       maxByExposure: maxSizeByExposure,
+      maxByEvMarket: maxSizeByEvMarket,
+      maxByEvPortfolio: maxSizeByEvPortfolio,
       binding: pickBindingConstraint({
         tradeFraction: maxSizeByTradeFraction,
         depth: maxSizeByDepth,
         unwindBudget: maxSizeByUnwindBudget,
         dailyLoss: maxSizeByDailyLoss,
-        exposure: maxSizeByExposure
-      })
+        exposure: maxSizeByExposure,
+        evMarket: maxSizeByEvMarket,
+        evPortfolio: maxSizeByEvPortfolio
+      }, reason === 'min_order_size_bump')
     } satisfies RiskDecision['constraints'];
 
     return {
       approved: true,
-      reason: 'within_risk_limits',
+      reason,
       positionSize,
       positionNotional,
       worstCaseLoss,
@@ -171,9 +218,14 @@ export class RiskAgent {
       constraints: deterministic.constraints ?? {}
     });
 
-    const adjustedSize = recommendation.clampedSize;
+    let adjustedSize = recommendation.clampedSize;
     if (!Number.isFinite(adjustedSize) || adjustedSize <= 0) {
       return deterministic;
+    }
+
+    const bumpedToMin = minSize > 0 && adjustedSize < minSize;
+    if (bumpedToMin) {
+      adjustedSize = minSize;
     }
 
     if (adjustedSize === deterministicSize) {
@@ -189,7 +241,7 @@ export class RiskAgent {
 
     return {
       ...deterministic,
-      reason: `llm_${recommendation.reason}`,
+      reason: bumpedToMin ? 'llm_min_order_size_bump' : `llm_${recommendation.reason}`,
       positionSize: adjustedSize,
       positionNotional,
       worstCaseLoss
@@ -197,20 +249,30 @@ export class RiskAgent {
   }
 }
 
-function pickBindingConstraint(values: {
-  tradeFraction: number;
-  depth: number;
-  unwindBudget: number;
-  dailyLoss: number;
-  exposure: number;
-}): NonNullable<RiskDecision['constraints']>['binding'] {
+function pickBindingConstraint(
+  values: {
+    tradeFraction: number;
+    depth: number;
+    unwindBudget: number;
+    dailyLoss: number;
+    exposure: number;
+    evMarket: number;
+    evPortfolio: number;
+  },
+  ignoreTradeFraction: boolean
+): NonNullable<RiskDecision['constraints']>['binding'] {
   const candidates: Array<[NonNullable<RiskDecision['constraints']>['binding'], number]> = [
-    ['trade_fraction', values.tradeFraction],
     ['depth', values.depth],
     ['unwind_budget', values.unwindBudget],
     ['daily_loss', values.dailyLoss],
-    ['exposure', values.exposure]
+    ['exposure', values.exposure],
+    ['ev_per_market', values.evMarket],
+    ['ev_portfolio', values.evPortfolio]
   ];
+
+  if (!ignoreTradeFraction) {
+    candidates.push(['trade_fraction', values.tradeFraction]);
+  }
 
   let binding: NonNullable<RiskDecision['constraints']>['binding'] = 'trade_fraction';
   let minValue = Number.POSITIVE_INFINITY;

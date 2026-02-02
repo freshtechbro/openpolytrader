@@ -5,6 +5,8 @@ export type MetricEventType =
   | 'health'
   | 'incident'
   | 'opportunity'
+  | 'ev_signal'
+  | 'web_search'
   | 'order_attempt'
   | 'order'
   | 'fill'
@@ -125,6 +127,8 @@ export class MetricsStore extends EventEmitter {
       health: 0,
       incident: 0,
       opportunity: 0,
+      ev_signal: 0,
+      web_search: 0,
       order_attempt: 0,
       order: 0,
       fill: 0,

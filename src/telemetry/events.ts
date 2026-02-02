@@ -38,6 +38,24 @@ export interface ExecutionLifecycleEvent {
   error?: string;
 }
 
+export interface EvSignalEvent {
+  marketId: string;
+  side?: 'yes' | 'no';
+  evNet?: number;
+  confidence?: number;
+  reason?: string | string[];
+}
+
+export interface WebSearchMetricEvent {
+  event: string;
+  provider?: 'exa' | 'firecrawl';
+  kind?: string;
+  marketId?: string;
+  confidence?: number;
+  count?: number;
+  error?: string;
+}
+
 export type SloName =
   | 'decision_latency'
   | 'book_freshness'

@@ -4,15 +4,23 @@ import type { MarketPair } from '../domain/market.js';
 import type { MetricsStore } from '../telemetry/metrics.js';
 import { PolymarketClob } from './PolymarketClob.js';
 
+export type MarketCatalogOrder = 'volume24hr' | 'newest';
+
 export interface MarketCatalogRefresherConfig {
   /** Refresh interval in ms (default: 300000 = 5 min) */
   refreshIntervalMs: number;
-  /** Max pairs to track (default: 40) */
+  /** Max pairs to track (default: 80) */
   maxPairs: number;
-  /** Min 24h volume USD (default: 50000) */
+  /** Min 24h volume USD (default: 1000) */
   minVolume24h: number;
   /** Max spread (default: 0.02) */
   maxSpread: number;
+  /** Gamma page size (default: 100) */
+  pageSize: number;
+  /** Gamma pagination cap (default: 5 pages) */
+  maxPages: number;
+  /** Gamma ordering mode (default: volume24hr) */
+  order: MarketCatalogOrder;
   /** Gamma API base URL */
   gammaApiBaseUrl: string;
   /** Request timeout in ms */
@@ -48,9 +56,12 @@ export interface RefreshResult {
 
 const DEFAULT_CONFIG: Omit<MarketCatalogRefresherConfig, 'gammaApiBaseUrl'> = {
   refreshIntervalMs: 300000,
-  maxPairs: 40,
-  minVolume24h: 50000,
+  maxPairs: 80,
+  minVolume24h: 1000,
   maxSpread: 0.02,
+  pageSize: 100,
+  maxPages: 5,
+  order: 'volume24hr',
   requestTimeoutMs: 10000
 };
 
@@ -64,6 +75,9 @@ export class MarketCatalogRefresher extends EventEmitter {
   private currentPairs: Map<string, MarketPair> = new Map();
   private intervalHandle: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private refreshInFlight = false;
+  private emptyRefreshBackoffUntil = 0;
+  private emptyRefreshLogUntil = 0;
 
   constructor(
     config: Partial<Omit<MarketCatalogRefresherConfig, 'gammaApiBaseUrl'>> & Pick<MarketCatalogRefresherConfig, 'gammaApiBaseUrl'>,
@@ -123,36 +137,50 @@ export class MarketCatalogRefresher extends EventEmitter {
   }
 
   async refresh(): Promise<RefreshResult> {
+    if (this.refreshInFlight) {
+      return {
+        discoveredPairs: [],
+        removedMarketIds: [],
+        totalPairs: this.currentPairs.size,
+        pagesScanned: 0,
+        durationMs: 0
+      };
+    }
+
+    const nowMs = Date.now();
+    if (nowMs < this.emptyRefreshBackoffUntil) {
+      return {
+        discoveredPairs: [],
+        removedMarketIds: [],
+        totalPairs: this.currentPairs.size,
+        pagesScanned: 0,
+        durationMs: 0
+      };
+    }
+
+    this.refreshInFlight = true;
     const startMs = Date.now();
     const previousMarketIds = new Set(this.currentPairs.keys());
 
     try {
-      const markets = await this.fetchLiquidMarkets();
-      const validPairs: MarketPair[] = [];
-      const pagesScanned = 1;
-
-      for (const market of markets) {
-        if (validPairs.length >= this.config.maxPairs) break;
-
-        const conditionId = extractConditionId(market);
-        if (conditionId && this.currentPairs.has(conditionId)) {
-          validPairs.push(this.currentPairs.get(conditionId)!);
-          continue;
-        }
-
-        const pair = await this.validateAndConvertMarket(market);
-        if (pair) {
-          validPairs.push(pair);
-        }
-      }
+      const { validPairs, pagesScanned } = await this.collectValidPairs();
 
       if (validPairs.length === 0 && previousMarketIds.size > 0) {
         const durationMs = Date.now() - startMs;
-        this.metrics?.record({
-          type: 'error',
-          timestamp: Date.now(),
-          data: { message: 'market_catalog_refresh_empty', previousPairs: previousMarketIds.size }
-        });
+        const backoffMs = this.getEmptyRefreshBackoffMs();
+        if (Date.now() >= this.emptyRefreshLogUntil) {
+          this.metrics?.record({
+            type: 'error',
+            timestamp: Date.now(),
+            data: {
+              message: 'market_catalog_refresh_empty',
+              previousPairs: previousMarketIds.size,
+              backoffMs
+            }
+          });
+          this.emptyRefreshLogUntil = Date.now() + backoffMs;
+        }
+        this.emptyRefreshBackoffUntil = Date.now() + backoffMs;
         return {
           discoveredPairs: [],
           removedMarketIds: [],
@@ -161,6 +189,9 @@ export class MarketCatalogRefresher extends EventEmitter {
           durationMs
         };
       }
+
+      this.emptyRefreshBackoffUntil = 0;
+      this.emptyRefreshLogUntil = 0;
 
       const newMarketIds = new Set(validPairs.map((p) => p.marketId));
       const discoveredPairs = validPairs.filter((p) => !previousMarketIds.has(p.marketId));
@@ -210,16 +241,86 @@ export class MarketCatalogRefresher extends EventEmitter {
         pagesScanned: 0,
         durationMs: Date.now() - startMs
       };
+    } finally {
+      this.refreshInFlight = false;
     }
   }
 
-  private async fetchLiquidMarkets(): Promise<GammaMarket[]> {
+  private async collectValidPairs(): Promise<{ validPairs: MarketPair[]; pagesScanned: number }> {
+    const validPairs: MarketPair[] = [];
+    let pagesScanned = 0;
+    let offset = 0;
+    let cursor: string | null = null;
+
+    const pageSize = Math.max(1, this.config.pageSize);
+    const maxPages = Math.max(1, this.config.maxPages);
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const { markets, nextCursor } = await this.fetchMarketPage({
+        limit: pageSize,
+        offset,
+        cursor
+      });
+
+      pagesScanned += 1;
+
+      if (markets.length === 0) break;
+
+      for (const market of markets) {
+        if (validPairs.length >= this.config.maxPairs) break;
+
+        const conditionId = extractConditionId(market);
+        if (conditionId && this.currentPairs.has(conditionId)) {
+          validPairs.push(this.currentPairs.get(conditionId)!);
+          continue;
+        }
+
+        const pair = await this.validateAndConvertMarket(market);
+        if (pair) {
+          validPairs.push(pair);
+        }
+      }
+
+      if (validPairs.length >= this.config.maxPairs) break;
+
+      if (nextCursor) {
+        if (nextCursor === cursor) break;
+        cursor = nextCursor;
+        offset = 0;
+        continue;
+      }
+
+      if (markets.length < pageSize) break;
+      offset += pageSize;
+    }
+
+    return { validPairs, pagesScanned };
+  }
+
+  private resolveOrderParams(): { order: string; ascending: boolean } {
+    if (this.config.order === 'newest') {
+      return { order: 'id', ascending: false };
+    }
+    return { order: 'volume24hr', ascending: false };
+  }
+
+  private async fetchMarketPage(params: {
+    limit: number;
+    offset: number;
+    cursor: string | null;
+  }): Promise<{ markets: GammaMarket[]; nextCursor: string | null }> {
     const url = new URL('/markets', this.config.gammaApiBaseUrl);
-    url.searchParams.set('limit', String(this.config.maxPairs * 2));
-    url.searchParams.set('order', 'volume24hr');
-    url.searchParams.set('ascending', 'false');
+    const { order, ascending } = this.resolveOrderParams();
+    url.searchParams.set('limit', String(params.limit));
+    url.searchParams.set('order', order);
+    url.searchParams.set('ascending', String(ascending));
     url.searchParams.set('active', 'true');
     url.searchParams.set('closed', 'false');
+    if (params.cursor) {
+      url.searchParams.set('cursor', params.cursor);
+    } else {
+      url.searchParams.set('offset', String(params.offset));
+    }
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
@@ -238,10 +339,16 @@ export class MarketCatalogRefresher extends EventEmitter {
         throw new Error(`Gamma API fetch failed (${response.status}): ${text.slice(0, 200)}`);
       }
 
-      const data = (await response.json()) as GammaMarket[] | { data?: GammaMarket[] };
-      if (Array.isArray(data)) return data;
-      if (data && Array.isArray(data.data)) return data.data;
-      return [];
+      const data = (await response.json()) as
+        | GammaMarket[]
+        | { data?: GammaMarket[]; next_cursor?: string | null; nextCursor?: string | null; cursor?: string | null };
+      if (Array.isArray(data)) {
+        return { markets: data, nextCursor: null };
+      }
+      if (data && Array.isArray(data.data)) {
+        return { markets: data.data, nextCursor: extractNextCursor(data) };
+      }
+      return { markets: [], nextCursor: null };
     } finally {
       clearTimeout(timeoutId);
     }
@@ -284,6 +391,10 @@ export class MarketCatalogRefresher extends EventEmitter {
     } catch {
       return null;
     }
+  }
+
+  private getEmptyRefreshBackoffMs(): number {
+    return Math.min(Math.max(this.config.refreshIntervalMs, 60000), 600000);
   }
 
   private extractTokenIds(market: GammaMarket): { yesTokenId: string; noTokenId: string } | null {
@@ -365,4 +476,15 @@ function coerceNumber(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function extractNextCursor(value: {
+  next_cursor?: string | null;
+  nextCursor?: string | null;
+  cursor?: string | null;
+}): string | null {
+  if (typeof value.next_cursor === 'string' && value.next_cursor.length > 0) return value.next_cursor;
+  if (typeof value.nextCursor === 'string' && value.nextCursor.length > 0) return value.nextCursor;
+  if (typeof value.cursor === 'string' && value.cursor.length > 0) return value.cursor;
+  return null;
 }

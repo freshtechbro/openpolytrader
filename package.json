@@ -6,6 +6,8 @@
   "main": "dist/main.js",
   "scripts": {
     "dev": "tsx src/main.ts",
+    "dev:ops": "bash scripts/dev-up.sh",
+    "dev:ops:down": "bash scripts/dev-down.sh",
     "dev:live": "docker compose up -d && npm --prefix dashboard run dev",
     "dev:live:down": "docker compose down",
     "build": "tsc -p tsconfig.json",

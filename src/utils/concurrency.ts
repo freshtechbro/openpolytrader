@@ -1,36 +1,29 @@
 export async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  fn: (item: T, index: number) => Promise<R>
+  items: T[],
+  maxConcurrency: number,
+  worker: (item: T, index: number) => Promise<R>
 ): Promise<R[]> {
-  const bounded = Math.max(Math.floor(concurrency), 1);
   if (items.length === 0) return [];
-  if (bounded === 1) {
-    const out: R[] = [];
-    for (let i = 0; i < items.length; i += 1) {
-      out.push(await fn(items[i], i));
-    }
-    return out;
-  }
+  return runWithConcurrency(items, maxConcurrency, worker);
+}
 
+export async function runWithConcurrency<T, R>(
+  items: T[],
+  maxConcurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const concurrency = Math.max(1, Math.floor(maxConcurrency));
   const results: R[] = new Array(items.length);
   let nextIndex = 0;
 
-  const worker = async () => {
-    for (;;) {
-      const current = nextIndex;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
       nextIndex += 1;
-      if (current >= items.length) return;
-      results[current] = await fn(items[current], current);
+      results[currentIndex] = await worker(items[currentIndex], currentIndex);
     }
-  };
+  });
 
-  const workers: Promise<void>[] = [];
-  for (let i = 0; i < Math.min(bounded, items.length); i += 1) {
-    workers.push(worker());
-  }
-
-  await Promise.all(workers);
+  await Promise.all(runners);
   return results;
 }
-

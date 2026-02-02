@@ -61,7 +61,7 @@ export class PolymarketDataApi {
     const path = `${this.positionsPath}?${query.toString()}`;
     const response = await this.request<unknown>('GET', path);
     if (!Array.isArray(response)) return [];
-    return response.map((entry) => normalizeVenuePosition(entry));
+    return response.map((entry) => normalizeVenuePosition(entry)).filter((entry): entry is VenuePosition => entry !== null);
   }
 
   private async request<T>(method: string, path: string): Promise<T> {
@@ -80,17 +80,22 @@ export class PolymarketDataApi {
       try {
         const response = await fetch(url, { method, headers, signal: controller.signal });
         const text = await response.text();
-        const parsed = text.length > 0 ? JSON.parse(text) : null;
+        const parsedResult = safeParseJson(text);
 
         if (!response.ok) {
           throw new DataApiError(
             `Polymarket Data API error ${response.status} for ${method} ${path}`,
             response.status,
-            parsed
+            parsedResult.failed ? { raw: text } : parsedResult.parsed
           );
         }
 
-        return parsed as T;
+        if (parsedResult.failed) {
+          const snippet = text.slice(0, 200);
+          throw new Error(`Polymarket Data API invalid JSON for ${method} ${path}: ${snippet}`);
+        }
+
+        return parsedResult.parsed as T;
       } finally {
         clearTimeout(timeout);
       }
@@ -109,7 +114,7 @@ export class DataApiError extends Error {
   }
 }
 
-function normalizeVenuePosition(raw: unknown): VenuePosition {
+function normalizeVenuePosition(raw: unknown): VenuePosition | null {
   const payload = raw as Record<string, unknown>;
   const tokenId =
     typeof payload?.asset === 'string'
@@ -119,6 +124,8 @@ function normalizeVenuePosition(raw: unknown): VenuePosition {
         : typeof payload?.assetId === 'string'
           ? payload.assetId
           : '';
+
+  if (!tokenId) return null;
 
   return {
     tokenId,
@@ -141,4 +148,15 @@ function parseNumber(value: unknown): number | undefined {
     return Number.isFinite(parsed) ? parsed : undefined;
   }
   return undefined;
+}
+
+function safeParseJson(text: string): { parsed: unknown; failed: boolean } {
+  if (!text || text.trim().length === 0) {
+    return { parsed: null, failed: false };
+  }
+  try {
+    return { parsed: JSON.parse(text), failed: false };
+  } catch {
+    return { parsed: null, failed: true };
+  }
 }

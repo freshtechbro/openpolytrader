@@ -45,18 +45,47 @@ const POLICY_FIELDS: ConfigField[] = [
   { key: 'maxEdge', label: 'Max Edge', type: 'number', min: 0.0001, max: 1, step: 0.0001, unit: 'fraction' },
   { key: 'depthHeadroomFraction', label: 'Depth Headroom', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
   { key: 'maxSpread', label: 'Max Spread', type: 'number', min: 0, max: 1, step: 0.001, unit: 'fraction' },
-  { key: 'orderbookFreshnessMs', label: 'Orderbook Freshness', type: 'number', min: 10, max: 15000, step: 10, unit: 'ms', integer: true },
+  {
+    key: 'orderbookFreshnessMs',
+    label: 'Orderbook Freshness',
+    description: 'Alias of Max Book Staleness (must match).',
+    type: 'number',
+    min: 10,
+    max: 15000,
+    step: 10,
+    unit: 'ms',
+    integer: true
+  },
   { key: 'topOfBookStabilityMs', label: 'Top Of Book Stability', type: 'number', min: 10, max: 10000, step: 10, unit: 'ms', integer: true },
   { key: 'maxOpenInventorySeconds', label: 'Max Open Inventory', type: 'number', min: 0, max: 600, step: 1, unit: 's', integer: true },
   { key: 'rejectDelayed', label: 'Reject Delayed', type: 'boolean' },
   { key: 'strategyMode', label: 'Strategy Mode', type: 'enum', options: ['near_zero_risk', 'standard'] },
+  { key: 'signalMode', label: 'Signal Mode', type: 'enum', options: ['near_zero', 'ev', 'both'] },
   { key: 'requireFreshBook', label: 'Require Fresh Book', type: 'boolean' },
   { key: 'maxBookStalenessMs', label: 'Max Book Staleness', type: 'number', min: 100, max: 15000, step: 10, unit: 'ms', integer: true },
   { key: 'maxDecisionLatencyMs', label: 'Max Decision Latency', type: 'number', min: 50, max: 1000, step: 10, unit: 'ms', integer: true },
   { key: 'maxDelayedAckRate', label: 'Max Delayed Ack Rate', type: 'number', min: 0, max: 1, step: 0.001, unit: 'fraction' },
   { key: 'minPairedFillRate', label: 'Min Paired Fill Rate', type: 'number', min: 0, max: 1, step: 0.001, unit: 'fraction' },
-  { key: 'minEdgeTicks', label: 'Min Edge Ticks', type: 'number', min: 1, max: 20, step: 1, unit: 'ticks', integer: true },
-  { key: 'depthBufferMultiplier', label: 'Depth Buffer Multiplier', type: 'number', min: 1, max: 10, step: 0.1 },
+  {
+    key: 'minEdgeTicks',
+    label: 'Min Edge Ticks',
+    description: '0 disables the min-tick edge requirement.',
+    type: 'number',
+    min: 0,
+    max: 20,
+    step: 1,
+    unit: 'ticks',
+    integer: true
+  },
+  {
+    key: 'depthBufferMultiplier',
+    label: 'Depth Buffer Multiplier',
+    description: '0 disables the extra depth buffer requirement.',
+    type: 'number',
+    min: 0,
+    max: 10,
+    step: 0.1
+  },
   { key: 'entrySlippageToleranceBps', label: 'Entry Slippage', type: 'number', min: 1, max: 200, step: 1, unit: 'bps', integer: true },
   { key: 'minDepthLevels', label: 'Min Depth Levels', type: 'number', min: 1, max: 10, step: 1, unit: 'levels', integer: true },
   { key: 'maxOrdersPerMinute', label: 'Max Orders Per Minute', type: 'number', min: 1, max: 10000, step: 1, unit: 'count', integer: true },
@@ -67,10 +96,39 @@ const POLICY_FIELDS: ConfigField[] = [
   { key: 'maxLegSkewMs', label: 'Max Leg Skew', type: 'number', min: 1, max: 1000, step: 1, unit: 'ms', integer: true },
   { key: 'submitTimeoutMs', label: 'Submit Timeout', type: 'number', min: 0, max: 60000, step: 10, unit: 'ms', integer: true },
   { key: 'ackTimeoutMs', label: 'Ack Timeout', type: 'number', min: 0, max: 60000, step: 10, unit: 'ms', integer: true },
-  { key: 'fillTimeoutMs', label: 'Fill Timeout', type: 'number', min: 0, max: 120000, step: 10, unit: 'ms', integer: true },
+  {
+    key: 'fillTimeoutMs',
+    label: 'Fill Timeout',
+    description: 'Near-zero risk requires > 0 to wait for user fills; 0 skips fill waiting.',
+    type: 'number',
+    min: 0,
+    max: 120000,
+    step: 10,
+    unit: 'ms',
+    integer: true
+  },
   { key: 'cancelTimeoutMs', label: 'Cancel Timeout', type: 'number', min: 0, max: 60000, step: 10, unit: 'ms', integer: true },
   { key: 'fallbackTickSize', label: 'Fallback Tick Size', type: 'number', min: 0.0001, max: 1, step: 0.0001, unit: 'price' },
-  { key: 'fallbackMinOrderSize', label: 'Fallback Min Order Size', type: 'number', min: 0.0001, max: 1000, step: 0.0001, unit: 'shares' }
+  { key: 'fallbackMinOrderSize', label: 'Fallback Min Order Size', type: 'number', min: 0.0001, max: 1000, step: 0.0001, unit: 'shares' },
+  { key: 'evEdgeRequired', label: 'EV Edge Required', type: 'number', min: 0, max: 1, step: 0.0001, unit: 'fraction' },
+  { key: 'evFeeBps', label: 'EV Fee', type: 'number', min: 0, max: 10000, step: 1, unit: 'bps', integer: true },
+  { key: 'evConfidenceMin', label: 'EV Confidence Min', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
+  { key: 'evMaxPerMarketNotional', label: 'EV Max Per Market', type: 'number', min: 0, max: 100000, step: 1, unit: 'usd' },
+  { key: 'evMaxPortfolioNotional', label: 'EV Max Portfolio', type: 'number', min: 0, max: 100000, step: 1, unit: 'usd' },
+  { key: 'evCooldownSeconds', label: 'EV Cooldown', type: 'number', min: 0, max: 86400, step: 1, unit: 's', integer: true },
+  { key: 'evModelMode', label: 'EV Model Mode', type: 'enum', options: ['baseline', 'hybrid', 'llm_only'] },
+  { key: 'evModelRefreshMinutes', label: 'EV Model Refresh', type: 'number', min: 1, max: 1440, step: 1, unit: 'min', integer: true },
+  { key: 'evCalibrationMethod', label: 'EV Calibration', type: 'enum', options: ['sigmoid', 'isotonic', 'temperature'] },
+  { key: 'evModelConfidenceFloor', label: 'EV Model Confidence Floor', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
+  { key: 'evWebSearchExaEnabled', label: 'EV Web Search Exa Enabled', type: 'boolean' },
+  { key: 'evWebSearchFirecrawlEnabled', label: 'EV Web Search Firecrawl Enabled', type: 'boolean' },
+  { key: 'evWebSearchPrimary', label: 'EV Web Search Primary', type: 'enum', options: ['exa', 'firecrawl'] },
+  { key: 'evWebSearchLookbackDays', label: 'EV Web Search Lookback', type: 'number', min: 1, max: 365, step: 1, unit: 'days', integer: true },
+  { key: 'evWebSearchMaxResults', label: 'EV Web Search Max Results', type: 'number', min: 1, max: 50, step: 1, unit: 'count', integer: true },
+  { key: 'evWebSearchCacheTtlSeconds', label: 'EV Web Search Cache TTL', type: 'number', min: 60, max: 86400, step: 60, unit: 's', integer: true },
+  { key: 'evWebSearchMaxConcurrency', label: 'EV Web Search Max Concurrency', type: 'number', min: 1, max: 20, step: 1, unit: 'count', integer: true },
+  { key: 'evWebSearchFirecrawlMaxDepth', label: 'EV Firecrawl Max Depth', type: 'number', min: 1, max: 10, step: 1, unit: 'depth', integer: true },
+  { key: 'evWebSearchFirecrawlMaxPages', label: 'EV Firecrawl Max Pages', type: 'number', min: 1, max: 100, step: 1, unit: 'pages', integer: true }
 ];
 
 const RISK_FIELDS: ConfigField[] = [
@@ -90,7 +148,7 @@ const RISK_FIELDS: ConfigField[] = [
 ];
 
 export const CONFIG_SCHEMA: ConfigSchema = {
-  version: '1.0.0',
+  version: '1.2.0',
   sections: [
     { key: 'policy', label: 'Trade Policy', fields: POLICY_FIELDS },
     { key: 'risk', label: 'Risk Controls', fields: RISK_FIELDS }

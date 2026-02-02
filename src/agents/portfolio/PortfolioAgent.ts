@@ -519,7 +519,7 @@ export class PortfolioAgent {
         {
           role: 'developer',
           content:
-            'Return JSON only, with shape: {"anomaly":boolean,"severity":"low"|"medium"|"high","reason":string|null,"confidence":number}. No prose.'
+            'Return JSON only, with shape: {"anomaly":boolean,"severity":"low"|"medium"|"high","reason":string|null,"confidence":number}. Use only the inputs. Only flag anomaly=true when evidence is strong; otherwise set anomaly=false and reason=null. Confidence must be between 0 and 1. No prose.'
         },
         { role: 'user', content: JSON.stringify(promptEnvelope) }
       ]

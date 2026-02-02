@@ -130,7 +130,9 @@ export const LearningInsightSchema = z
     signal: z.enum(['high_confidence', 'medium_confidence', 'low_confidence', 'neutral']),
     value: z.number().min(0).max(1),
     ttl_ms: z.number().int().positive(),
-    confidence: z.number().min(0).max(1)
+    confidence: z.number().min(0).max(1),
+    source: z.enum(['learning', 'web_search']).optional(),
+    kind: z.enum(['outcome_summary', 'web_signal']).optional()
   })
   .strict();
 

@@ -78,7 +78,7 @@ export class RiskAdvisor {
         {
           role: 'developer',
           content:
-            'Return JSON only, with shape: {"recommended_size":number,"reason":string,"confidence":number}. No prose. You MUST be conservative.'
+            'Return JSON only, with shape: {"recommended_size":number,"reason":string,"confidence":number}. Use only the provided inputs. Be conservative: recommended_size must be within [min_size, deterministic_size] and default to deterministic_size when uncertain. If constraints conflict or data is missing, return recommended_size=deterministic_size, confidence=0, reason="insufficient_data". Confidence must be between 0 and 1. No prose.'
         },
         { role: 'user', content: JSON.stringify(promptEnvelope) }
       ]

@@ -20,11 +20,11 @@ const riskProfileSchema = z.preprocess((value) => {
     const normalized = value.trim().toLowerCase();
     if (normalized === '') return undefined;
     const canonical = normalized.replace(/-/g, '_');
-    if (canonical === 'default') return 'near_zero';
+    if (canonical === 'default') return 'extra_high';
     return canonical;
   }
   return value;
-}, z.enum(['near_zero', 'moderate', 'high', 'extra_high']).default('near_zero'));
+}, z.enum(['near_zero', 'moderate', 'high', 'extra_high']).default('extra_high'));
 
 const llmEndpointSchema = z.preprocess((value) => {
   if (typeof value !== 'string') return value;
@@ -37,6 +37,15 @@ const llmEndpointSchema = z.preprocess((value) => {
   if (normalized === 'responses') return 'responses';
   return value;
 }, z.enum(['chat.completions', 'messages', 'responses']).optional());
+
+const marketCatalogOrderSchema = z.preprocess((value) => {
+  if (typeof value !== 'string') return value;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '') return undefined;
+  if (normalized === 'volume' || normalized === 'volume24hr') return 'volume24hr';
+  if (normalized === 'newest' || normalized === 'recent' || normalized === 'latest') return 'newest';
+  return value;
+}, z.enum(['volume24hr', 'newest']).default('volume24hr'));
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -53,6 +62,11 @@ const envSchema = z.object({
   OPS_RECONCILIATION_INTERVAL_MS: z.coerce.number().int().min(0).default(300000),
   OPS_RECONCILIATION_AFTER_INCIDENT_DELAY_MS: z.coerce.number().int().min(0).default(0),
   OPS_RECONCILIATION_POSITION_SIZE_TOLERANCE: z.coerce.number().min(0).default(0.000001),
+  OPS_BOOK_REFRESH_INTERVAL_MS: z.coerce.number().int().min(0).default(5000),
+  OPS_BOOK_REFRESH_STALE_MS: z.coerce.number().int().min(0).default(10000),
+  OPS_BOOK_STALE_QUARANTINE_THRESHOLD: z.coerce.number().int().min(1).default(3),
+  OPS_BOOK_STALE_QUARANTINE_WINDOW_MS: z.coerce.number().int().min(1000).default(300000),
+  OPS_BOOK_STALE_QUARANTINE_COOLDOWN_MS: z.coerce.number().int().min(0).default(0),
   METRICS_MAX_EVENTS: z.coerce.number().int().positive().default(1000),
   INCIDENTS_MAX_EVENTS: z.coerce.number().int().positive().default(1000),
   ALLOWLIST_AUTO_RESUME: envBoolean(true),
@@ -81,7 +95,11 @@ const envSchema = z.object({
   POLYMARKET_WS_RECONNECT_JITTER_PCT: z.coerce.number().min(0).max(1).default(0.2),
   TOTAL_CAPITAL: z.coerce.number().int().positive().default(1000),
   MARKET_CATALOG_PATH: z.string().optional(),
-  MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS: z.coerce.number().int().min(1).max(2000).default(40),
+  MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS: z.coerce.number().int().min(1).max(2000).default(80),
+  MARKET_CATALOG_MIN_VOLUME_24H: z.coerce.number().min(0).default(1000),
+  MARKET_CATALOG_PAGE_SIZE: z.coerce.number().int().min(1).max(500).default(100),
+  MARKET_CATALOG_MAX_PAGES: z.coerce.number().int().min(1).max(50).default(5),
+  MARKET_CATALOG_ORDER: marketCatalogOrderSchema,
   GAMMA_API_BASE_URL: z.string().default('https://gamma-api.polymarket.com'),
   TRADING_ENABLED: envBoolean(true),
   TRADING_MODE: z.enum(['off', 'shadow', 'paper', 'live']).default('shadow'),
@@ -90,6 +108,24 @@ const envSchema = z.object({
   RISK_PROFILE_ACTIVE_PATH: z.string().optional(),
   MAX_CONCURRENT_MARKETS: z.coerce.number().int().positive().default(3),
   MAX_CAPITAL_IN_FLIGHT: z.coerce.number().int().positive().default(1000),
+
+  // EV web search (direct API)
+  EXA_API_KEY: z.string().optional(),
+  EXA_BASE_URL: z.string().default('https://api.exa.ai'),
+  EXA_SEARCH_PATH: z.string().default('/search'),
+  EXA_CONTENTS_PATH: z.string().default('/contents'),
+  FIRECRAWL_API_KEY: z.string().optional(),
+  FIRECRAWL_BASE_URL: z.string().default('https://api.firecrawl.dev'),
+  FIRECRAWL_SEARCH_PATH: z.string().default('/v2/search'),
+  FIRECRAWL_SCRAPE_PATH: z.string().default('/v2/scrape'),
+  FIRECRAWL_CRAWL_PATH: z.string().default('/v2/crawl'),
+  FIRECRAWL_CRAWL_ENABLED: envBoolean(false),
+  EV_WEBSEARCH_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
+  EV_WEBSEARCH_REQUESTS_PER_MINUTE: z.coerce.number().int().positive().default(30),
+  EV_WEBSEARCH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60000),
+  EV_WEBSEARCH_MAX_CONTENT_BYTES: z.coerce.number().int().positive().default(500000),
+  EV_WEBSEARCH_DOMAIN_ALLOWLIST: z.string().optional(),
+  EV_WEBSEARCH_DOMAIN_DENYLIST: z.string().optional(),
 
   // LLM (advisory-only; enabled by default, but runtime requires a key)
   LLM_ENABLED: envBoolean(true),
@@ -113,21 +149,21 @@ const envSchema = z.object({
   LLM_CB_HALF_OPEN_SUCCESSES: z.coerce.number().int().positive().default(2),
 
   LLM_EXECUTION_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
-  LLM_EXECUTION_MODEL: z.string().default('grok-code'),
+  LLM_EXECUTION_MODEL: z.string().default('kimi-k2.5'),
   LLM_EXECUTION_MODE: z.enum(['disabled', 'shadow', 'advisory']).default('advisory'),
   LLM_EXECUTION_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
   LLM_EXECUTION_MODEL_BACKUP: z.string().optional(),
   LLM_EXECUTION_ENDPOINT_BACKUP: llmEndpointSchema,
 
   LLM_RISK_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
-  LLM_RISK_MODEL: z.string().default('minimax-m2.1-free'),
+  LLM_RISK_MODEL: z.string().default('minimax-m2.1'),
   LLM_RISK_MODE: z.enum(['disabled', 'shadow', 'advisory']).default('advisory'),
   LLM_RISK_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
   LLM_RISK_MODEL_BACKUP: z.string().optional(),
   LLM_RISK_ENDPOINT_BACKUP: llmEndpointSchema,
 
   LLM_SCANNER_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
-  LLM_SCANNER_MODEL: z.string().default('minimax-m2.1-free'),
+  LLM_SCANNER_MODEL: z.string().default('glm-4.7'),
   LLM_SCANNER_MODE: z.enum(['disabled', 'shadow', 'advisory']).default('advisory'),
   LLM_SCANNER_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
   LLM_SCANNER_SCORE_TOP_N: z.coerce.number().int().min(0).default(20),
@@ -137,28 +173,28 @@ const envSchema = z.object({
   LLM_SCANNER_ENDPOINT_BACKUP: llmEndpointSchema,
 
   LLM_LEARNING_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
-  LLM_LEARNING_MODEL: z.string().default('minimax-m2.1-free'),
+  LLM_LEARNING_MODEL: z.string().default('qwen3-coder'),
   LLM_LEARNING_MODE: z.enum(['disabled', 'active']).default('active'),
   LLM_LEARNING_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   LLM_LEARNING_MODEL_BACKUP: z.string().optional(),
   LLM_LEARNING_ENDPOINT_BACKUP: llmEndpointSchema,
 
   LLM_PORTFOLIO_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
-  LLM_PORTFOLIO_MODEL: z.string().default('minimax-m2.1-free'),
+  LLM_PORTFOLIO_MODEL: z.string().default('minimax-m2.1'),
   LLM_PORTFOLIO_MODE: z.enum(['disabled', 'advisory']).default('advisory'),
   LLM_PORTFOLIO_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   LLM_PORTFOLIO_MODEL_BACKUP: z.string().optional(),
   LLM_PORTFOLIO_ENDPOINT_BACKUP: llmEndpointSchema,
 
   LLM_MARKETDATA_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
-  LLM_MARKETDATA_MODEL: z.string().default('minimax-m2.1-free'),
+  LLM_MARKETDATA_MODEL: z.string().default('glm-4.7'),
   LLM_MARKETDATA_MODE: z.enum(['disabled', 'advisory']).default('advisory'),
   LLM_MARKETDATA_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   LLM_MARKETDATA_MODEL_BACKUP: z.string().optional(),
   LLM_MARKETDATA_ENDPOINT_BACKUP: llmEndpointSchema,
 
   LLM_OPS_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
-  LLM_OPS_MODEL: z.string().default('grok-code'),
+  LLM_OPS_MODEL: z.string().default('glm-4.7'),
   LLM_OPS_MODE: z.enum(['disabled', 'advisory']).default('advisory'),
   LLM_OPS_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
   LLM_OPS_MODEL_BACKUP: z.string().optional(),

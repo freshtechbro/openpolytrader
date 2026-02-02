@@ -9,6 +9,11 @@ export interface InfraConfigSnapshot {
     reconciliationIntervalMs: number;
     reconciliationAfterIncidentDelayMs: number;
     reconciliationPositionSizeTolerance: number;
+    bookRefreshIntervalMs: number;
+    bookRefreshStaleMs: number;
+    bookStaleQuarantineThreshold: number;
+    bookStaleQuarantineWindowMs: number;
+    bookStaleQuarantineCooldownMs: number;
     metricsMaxEvents: number;
     incidentsMaxEvents: number;
   };
@@ -57,6 +62,11 @@ export function getInfraConfigSnapshot(env: Env): InfraConfigSnapshot {
       reconciliationIntervalMs: env.OPS_RECONCILIATION_INTERVAL_MS,
       reconciliationAfterIncidentDelayMs: env.OPS_RECONCILIATION_AFTER_INCIDENT_DELAY_MS,
       reconciliationPositionSizeTolerance: env.OPS_RECONCILIATION_POSITION_SIZE_TOLERANCE,
+      bookRefreshIntervalMs: env.OPS_BOOK_REFRESH_INTERVAL_MS,
+      bookRefreshStaleMs: env.OPS_BOOK_REFRESH_STALE_MS,
+      bookStaleQuarantineThreshold: env.OPS_BOOK_STALE_QUARANTINE_THRESHOLD,
+      bookStaleQuarantineWindowMs: env.OPS_BOOK_STALE_QUARANTINE_WINDOW_MS,
+      bookStaleQuarantineCooldownMs: env.OPS_BOOK_STALE_QUARANTINE_COOLDOWN_MS,
       metricsMaxEvents: env.METRICS_MAX_EVENTS,
       incidentsMaxEvents: env.INCIDENTS_MAX_EVENTS
     },

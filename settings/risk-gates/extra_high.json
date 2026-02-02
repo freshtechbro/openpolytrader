@@ -1,11 +1,11 @@
 {
   "policy": {
-    "edgeRequired": 0.01,
+    "edgeRequired": 0.0001,
     "maxEdge": 0.1,
     "depthHeadroomFraction": 0.4,
     "maxSpread": 0.1,
     "orderbookFreshnessMs": 15000,
-    "topOfBookStabilityMs": 100,
+    "topOfBookStabilityMs": 10,
     "maxOpenInventorySeconds": 8,
     "rejectDelayed": true,
     "strategyMode": "standard",
@@ -14,7 +14,7 @@
     "maxDecisionLatencyMs": 800,
     "maxDelayedAckRate": 0.01,
     "minPairedFillRate": 0.985,
-    "minEdgeTicks": 1,
+    "minEdgeTicks": 0,
     "depthBufferMultiplier": 1,
     "entrySlippageToleranceBps": 150,
     "minDepthLevels": 1,
@@ -23,12 +23,12 @@
     "orderVelocityWindowMs": 60000,
     "orderToTradeWindowMs": 600000,
     "priceBandBps": 1500,
-    "maxLegSkewMs": 400,
+    "maxLegSkewMs": 1000,
     "submitTimeoutMs": 4000,
     "ackTimeoutMs": 5000,
     "fillTimeoutMs": 10000,
     "cancelTimeoutMs": 4000,
-    "fallbackTickSize": 0.01,
+    "fallbackTickSize": 0.001,
     "fallbackMinOrderSize": 0.001
   },
   "risk": {

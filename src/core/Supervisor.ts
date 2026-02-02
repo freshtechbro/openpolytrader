@@ -5,7 +5,7 @@ import type { MarketPair } from '../domain/market.js';
 import { opportunityId, type ArbitrageOpportunity } from '../domain/opportunity.js';
 import { depthAtTopLevels } from '../domain/orderbook.js';
 import type { OrderBookState } from '../domain/orderbook.js';
-import { evaluateGates } from '../domain/gates.js';
+import { evaluateEvGates, evaluateGates } from '../domain/gates.js';
 import { MarketDataAgent, type MarketUpdateEvent } from '../agents/market-data/MarketDataAgent.js';
 import { ScannerAgent } from '../agents/scanner/ScannerAgent.js';
 import { RiskAgent } from '../agents/risk/RiskAgent.js';
@@ -25,6 +25,7 @@ import type { LLMConfig as AppLLMConfig } from '../config/llm.js';
 import type { LLMCallResult, LLMAgentId, LLMRequest } from '../services/llm/types.js';
 import type { ExecutionAdvisor } from '../agents/execution/ExecutionAdvisor.js';
 import type { RiskAdvisor } from '../agents/risk/RiskAdvisor.js';
+import type { SignalAggregatorAgent } from '../agents/signal/SignalAggregatorAgent.js';
 
 export interface SupervisorConfig {
   marketPairs: MarketPair[];
@@ -92,6 +93,7 @@ export interface SupervisorDeps {
   };
   executionAdvisor?: ExecutionAdvisor;
   riskAdvisor?: RiskAdvisor;
+  signalAggregator?: SignalAggregatorAgent;
 }
 
 export class Supervisor {
@@ -149,11 +151,17 @@ export class Supervisor {
           }
         : undefined
     });
-    this.risk = new RiskAgent(config.riskConfig, {
-      maxOpenInventorySeconds: config.policy.maxOpenInventorySeconds,
-      fallbackTickSize: config.policy.fallbackTickSize,
-      depthBufferMultiplier: config.policy.depthBufferMultiplier
-    }, { advisor: deps.riskAdvisor });
+    this.risk = new RiskAgent(
+      config.riskConfig,
+      {
+        maxOpenInventorySeconds: config.policy.maxOpenInventorySeconds,
+        fallbackTickSize: config.policy.fallbackTickSize,
+        depthBufferMultiplier: config.policy.depthBufferMultiplier,
+        evMaxPerMarketNotional: config.policy.evMaxPerMarketNotional,
+        evMaxPortfolioNotional: config.policy.evMaxPortfolioNotional
+      },
+      { advisor: deps.riskAdvisor }
+    );
     this.marketCircuitBreakers = new CircuitBreakerRegistry(
       {
         failureThreshold: config.riskConfig.marketCircuitFailureThreshold,
@@ -203,6 +211,7 @@ export class Supervisor {
     }
 
     this.startBookRefresh();
+    this.deps.signalAggregator?.start();
 
     this.marketUpdatedHandler = (event) => void this.handleMarketUpdated(event as MarketUpdateEvent);
     messageBus.on('market:updated', this.marketUpdatedHandler);
@@ -245,6 +254,7 @@ export class Supervisor {
     this.started = false;
 
     this.scanner.stop();
+    this.deps.signalAggregator?.stop();
 
     if (this.reconciliationInterval) {
       clearInterval(this.reconciliationInterval);
@@ -569,13 +579,45 @@ export class Supervisor {
         return;
       }
 
-      const gateDecision = evaluateGates({
-        yesBook,
-        noBook,
-        policy: this.config.policy,
-        nowMs: now,
-        desiredSize: payload.size
-      });
+      const isEv = payload.opportunity.type === 'ev';
+      if (isEv && !payload.opportunity.side) {
+        this.deps.metrics.record({
+          type: 'gate_rejection',
+          timestamp: now,
+          data: {
+            opportunityId: payload.opportunity.id,
+            marketId,
+            reasons: ['ev_missing_side'],
+            gateDecision: { passed: false, reasons: ['ev_missing_side'] }
+          }
+        });
+        return;
+      }
+
+      const gateDecision = isEv
+        ? evaluateEvGates({
+            yesBook,
+            noBook,
+            policy: this.config.policy,
+            nowMs: now,
+            desiredSize: payload.size,
+            side: payload.opportunity.side as 'yes' | 'no',
+            evEdge:
+              typeof payload.opportunity.evNet === 'number'
+                ? payload.opportunity.evNet
+                : typeof payload.opportunity.evRaw === 'number'
+                  ? payload.opportunity.evRaw
+                  : 0,
+            confidence:
+              typeof payload.opportunity.modelConfidence === 'number' ? payload.opportunity.modelConfidence : 0
+          })
+        : evaluateGates({
+            yesBook,
+            noBook,
+            policy: this.config.policy,
+            nowMs: now,
+            desiredSize: payload.size
+          });
 
       if (!gateDecision.passed) {
         this.deps.metrics.record({
@@ -685,10 +727,13 @@ export class Supervisor {
     this.risk.updateConfig(risk, {
       maxOpenInventorySeconds: policy.maxOpenInventorySeconds,
       fallbackTickSize: policy.fallbackTickSize,
-      depthBufferMultiplier: policy.depthBufferMultiplier
+      depthBufferMultiplier: policy.depthBufferMultiplier,
+      evMaxPerMarketNotional: policy.evMaxPerMarketNotional,
+      evMaxPortfolioNotional: policy.evMaxPortfolioNotional
     });
     this.execution.updatePolicy(policy);
     this.execution.updateRiskConfig(risk);
+    this.deps.signalAggregator?.updatePolicy(policy);
     this.marketCircuitBreakers.updateConfig({
       failureThreshold: risk.marketCircuitFailureThreshold,
       cooldownMs: risk.marketCooldownSeconds * 1000,
@@ -913,6 +958,7 @@ export class Supervisor {
 
     const newTokenIds = collectTokenIds(pairs);
     this.marketData.updateSubscriptions(newTokenIds);
+    this.deps.signalAggregator?.updateMarketPairs(pairs);
 
     this.deps.metrics.record({
       type: 'info',

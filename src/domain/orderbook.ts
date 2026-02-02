@@ -23,6 +23,17 @@ export interface OrderBookState extends OrderBookSnapshot {
   bestAsk?: OrderBookLevel;
 }
 
+export interface OrderBookDelta {
+  side: 'bid' | 'ask';
+  price: number;
+  size: number;
+  receivedAtMs: number;
+  exchangeTimestamp?: string;
+  hash?: string;
+  tickSize?: number;
+  minOrderSize?: number;
+}
+
 export function coercePositiveNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
     return value;
@@ -142,4 +153,53 @@ export function isAlignedToTick(price: number, tickSize: number): boolean {
   if (tickSize <= 0) return false;
   const remainder = price % tickSize;
   return remainder < 1e-9 || Math.abs(remainder - tickSize) < 1e-9;
+}
+
+export function applyOrderBookDelta(book: OrderBookState, delta: OrderBookDelta): OrderBookState {
+  const bids = [...book.bids];
+  const asks = [...book.asks];
+  const levels = delta.side === 'bid' ? bids : asks;
+
+  const index = levels.findIndex((level) => level.price === delta.price);
+  if (delta.size <= 0) {
+    if (index >= 0) levels.splice(index, 1);
+  } else if (index >= 0) {
+    levels[index] = { price: delta.price, size: delta.size };
+  } else {
+    levels.push({ price: delta.price, size: delta.size });
+  }
+
+  levels.sort((a, b) => (delta.side === 'bid' ? b.price - a.price : a.price - b.price));
+
+  const bestBid = bids[0];
+  const bestAsk = asks[0];
+  const previousBestBid = book.bestBid;
+  const previousBestAsk = book.bestAsk;
+  const isStable =
+    previousBestBid?.price === bestBid?.price &&
+    previousBestBid?.size === bestBid?.size &&
+    previousBestAsk?.price === bestAsk?.price &&
+    previousBestAsk?.size === bestAsk?.size;
+  const stableSinceMs = isStable ? book.stableSinceMs : delta.receivedAtMs;
+
+  const nextTickSize =
+    typeof delta.tickSize === 'number' && delta.tickSize > 0 ? delta.tickSize : book.tickSize;
+  const nextMinOrderSize =
+    typeof delta.minOrderSize === 'number' && delta.minOrderSize > 0
+      ? delta.minOrderSize
+      : book.minOrderSize;
+
+  return {
+    ...book,
+    bids,
+    asks,
+    bestBid,
+    bestAsk,
+    tickSize: nextTickSize,
+    minOrderSize: nextMinOrderSize,
+    exchangeTimestamp: delta.exchangeTimestamp ?? book.exchangeTimestamp,
+    hash: delta.hash ?? book.hash,
+    lastUpdateMs: delta.receivedAtMs,
+    stableSinceMs
+  };
 }

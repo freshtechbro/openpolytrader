@@ -1,4 +1,4 @@
-import type { TradePolicy } from './policy.js';
+import { isNearZeroRiskMode, type TradePolicy } from './policy.js';
 import type { RiskConfig } from './risk.js';
 import { assertSectionValues, getConfigSection } from './schema.js';
 
@@ -17,4 +17,35 @@ export function validateP0Config(policy: TradePolicy, risk: RiskConfig): void {
       `Invalid config: edgeRequired=${policy.edgeRequired} (must be > 0 and < maxEdge ${policy.maxEdge})`
     );
   }
+
+  if (policy.orderbookFreshnessMs !== policy.maxBookStalenessMs) {
+    throw new Error(
+      `Invalid config: orderbookFreshnessMs (${policy.orderbookFreshnessMs}) must match maxBookStalenessMs (${policy.maxBookStalenessMs})`
+    );
+  }
+
+  if (isNearZeroRiskMode(policy) && policy.fillTimeoutMs <= 0) {
+    throw new Error('Invalid config: fillTimeoutMs must be > 0 in near_zero_risk mode');
+  }
+
+  if (policy.evEdgeRequired <= 0) {
+    throw new Error(`Invalid config: evEdgeRequired=${policy.evEdgeRequired} (must be > 0)`);
+  }
+
+  if (policy.evMaxPerMarketNotional > 0 && policy.evMaxPortfolioNotional > 0) {
+    if (policy.evMaxPerMarketNotional > policy.evMaxPortfolioNotional) {
+      throw new Error(
+        `Invalid config: evMaxPerMarketNotional (${policy.evMaxPerMarketNotional}) cannot exceed evMaxPortfolioNotional (${policy.evMaxPortfolioNotional})`
+      );
+    }
+  }
+
+  if (policy.evWebSearchPrimary === 'exa' && !policy.evWebSearchExaEnabled) {
+    throw new Error('Invalid config: evWebSearchPrimary=exa requires evWebSearchExaEnabled');
+  }
+
+  if (policy.evWebSearchPrimary === 'firecrawl' && !policy.evWebSearchFirecrawlEnabled) {
+    throw new Error('Invalid config: evWebSearchPrimary=firecrawl requires evWebSearchFirecrawlEnabled');
+  }
+
 }

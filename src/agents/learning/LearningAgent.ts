@@ -295,10 +295,10 @@ export class LearningAgent {
 
     const model = llm.config.agents.LearningAgent.model;
     const instruction =
-      'Return JSON only, with shape: {"insights":[{"market_id":string,"signal":"high_confidence"|"medium_confidence"|"low_confidence"|"neutral","value":number,"ttl_ms":number,"confidence":number}]}. No prose.';
+      'Return JSON only, with shape: {"insights":[{"market_id":string,"signal":"high_confidence"|"medium_confidence"|"low_confidence"|"neutral","value":number,"ttl_ms":number,"confidence":number}]}. Use only the inputs. Include only markets with clear evidence; otherwise return an empty insights array. ttl_ms must be between 30000 and window_ms. Confidence must be between 0 and 1. No prose.';
 
     const request: LLMRequest =
-      model.startsWith('minimax-') || model.startsWith('claude-')
+      model.startsWith('claude-')
         ? {
             endpoint: 'messages',
             model,
@@ -330,7 +330,14 @@ export class LearningAgent {
       : ({ success: false } as const);
 
     const insightPayload = validated.success
-      ? { insights: validated.data.insights, generatedAtMs: nowMs }
+      ? {
+          insights: validated.data.insights.map((insight) => ({
+            ...insight,
+            source: 'learning' as const,
+            kind: 'outcome_summary' as const
+          })),
+          generatedAtMs: nowMs
+        }
       : null;
 
     if (insightPayload) {
