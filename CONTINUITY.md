@@ -37,8 +37,11 @@ State:
     - Added book freshness quarantine handling and expanded market data/risk/execution coverage (see `src/agents/ops/bookFreshnessQuarantine.ts`, `tests/unit/book-freshness-quarantine.test.ts`).
     - Split changes into commits: `feat(core)`, `test`, `docs`, `chore` (continuity ledger).
     - Ran `npm run test` (pass).
+    - Checked `/decisions`: no agent decisions in the last 20 minutes; latest is ScannerAgent at 2026-02-02 12:42:42 CST.
+    - Traced latest ScannerAgent decision: EV opportunity detected and EV gates passed (`ev_selected`), but RiskAgent rejected with `unwind_loss_bps_exceeded`, so no execution.
+    - Updated `extra_high` risk profile `unwindSlippageToleranceBps` to 2000 and schema max to 2000 to allow 20% loss-per-attempt cases.
   - Now:
-    - Ready for user follow-up (push, tag, or further changes).
+    - Confirm whether to commit the risk tolerance changes.
   - Next:
     - Verify doc deletions are intentional; restore any required references. Outcome: docs cleanup is accurate; files: `docs/*.md`.
     - Re-run core tests after commit to confirm stability. Outcome: clean test run; files: `tests/unit/*.test.ts`, `vitest.config.ts`.
