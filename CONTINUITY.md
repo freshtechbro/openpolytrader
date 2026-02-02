@@ -35,8 +35,10 @@ State:
     - Pulled live `/decisions` summary from Ops API (current window contains only the ScannerAgent decision).
     - Implemented EV-signal pipeline and websearch reliability updates with new tests and supporting docs (see `src/agents/signal/`, `src/services/websearch/`, `tests/unit/*websearch*`).
     - Added book freshness quarantine handling and expanded market data/risk/execution coverage (see `src/agents/ops/bookFreshnessQuarantine.ts`, `tests/unit/book-freshness-quarantine.test.ts`).
+    - Split changes into commits: `feat(core)`, `test`, `docs`, `chore` (continuity ledger).
+    - Ran `npm run test` (pass).
   - Now:
-    - Split changes into multiple Conventional Commits (feature, tests, docs/chore) and stage accordingly.
+    - Ready for user follow-up (push, tag, or further changes).
   - Next:
     - Verify doc deletions are intentional; restore any required references. Outcome: docs cleanup is accurate; files: `docs/*.md`.
     - Re-run core tests after commit to confirm stability. Outcome: clean test run; files: `tests/unit/*.test.ts`, `vitest.config.ts`.
