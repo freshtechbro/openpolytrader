@@ -22,3 +22,7 @@ data/market-catalog.json
 # Local artifacts
 tmp/
 data/*.bak-*
+
+# Agent continuity ledgers (kept local, never committed)
+CONTINUITY.md
+sub_continuity.md
