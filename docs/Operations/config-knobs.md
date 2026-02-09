@@ -18,10 +18,11 @@ These are edited via `PATCH /config/policy` and `PATCH /config/risk` and rendere
 ### `policy` (TradePolicy)
 
 - Edge + spread + book quality: `edgeRequired`, `maxEdge`, `maxSpread`, `requireFreshBook`, `orderbookFreshnessMs`, `maxBookStalenessMs`, `topOfBookStabilityMs`, `maxLegSkewMs`
-  - `orderbookFreshnessMs` is a legacy alias; it must match `maxBookStalenessMs` to avoid silent overrides.
+  - `orderbookFreshnessMs` is a legacy alias; it must match `maxBookStalenessMs` and validation fails if they differ.
 - Inventory + strategy: `strategyMode`, `maxOpenInventorySeconds`
-- Signals + EV: `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional`, `evCooldownSeconds`, `evModelMode`, `evModelRefreshMinutes`, `evCalibrationMethod`, `evModelConfidenceFloor`, `evWebSearchExaEnabled`, `evWebSearchFirecrawlEnabled`, `evWebSearchPrimary`, `evWebSearchLookbackDays`, `evWebSearchMaxResults`, `evWebSearchCacheTtlSeconds`, `evWebSearchMaxConcurrency`, `evWebSearchFirecrawlMaxDepth`, `evWebSearchFirecrawlMaxPages`
+- Signals + EV: `signalMode`, `nearZeroFeeBps`, `evEdgeRequired`, `evFeeBps`, `evMaxEdge`, `evConfidenceMin`, `evConfidenceMinFloor`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional`, `evCooldownSeconds`, `evModelMode`, `evModelRefreshMinutes`, `evCalibrationMethod`, `evModelConfidenceFloor`, `evWebSearchExaEnabled`, `evWebSearchFirecrawlEnabled`, `evWebSearchPrimary`, `evWebSearchLookbackDays`, `evWebSearchMaxResults`, `evWebSearchCacheTtlSeconds`, `evWebSearchMaxConcurrency`, `evWebSearchFirecrawlMaxDepth`, `evWebSearchFirecrawlMaxPages`
   - `signalMode=near_zero` disables EV signals; `signalMode=ev` disables near-zero arbitrage.
+  - `nearZeroFeeBps` is used by near-zero runtime gating (`evaluateGatesWithFees`) to enforce net-edge profitability after taker fees.
 - Execution safety gates: `rejectDelayed`, `maxDecisionLatencyMs`, `maxDelayedAckRate`, `minPairedFillRate`, `minEdgeTicks`
 - Depth/slippage gates: `depthHeadroomFraction`, `depthBufferMultiplier`, `minDepthLevels`, `entrySlippageToleranceBps`, `priceBandBps`
   - `depthBufferMultiplier=0` disables the extra depth buffer requirement.
@@ -59,8 +60,8 @@ Use `.env.example` for the full list; the most operationally relevant groups are
 - Telemetry persistence: `EVENT_STORE_PATH`, `EVENT_STORE_METRICS_RETENTION_DAYS`, `EVENT_STORE_METRICS_PRUNE_INTERVAL_MS`
 - Polymarket endpoints + rate limiting: `POLYMARKET_CLOB_*`, `POLYMARKET_WS_*`, `POLYMARKET_USER_WS_URL`
 - Polymarket auth derivation: `POLYMARKET_L1_PRIVATE_KEY`, `POLYMARKET_L1_NONCE` (optional; derive API creds at boot)
-- Market catalog filters: `MARKET_CATALOG_PATH`, `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS`, `MARKET_CATALOG_MIN_VOLUME_24H`, `MARKET_CATALOG_PAGE_SIZE`, `MARKET_CATALOG_MAX_PAGES`, `MARKET_CATALOG_ORDER`
-- EV web search (direct API): `EXA_*`, `FIRECRAWL_*`, `EV_WEBSEARCH_*`
+- Market catalog filters: `MARKET_CATALOG_PATH`, `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS`, `MARKET_CATALOG_MIN_VOLUME_24H`, `MARKET_CATALOG_MAX_SPREAD`, `MARKET_CATALOG_PAGE_SIZE`, `MARKET_CATALOG_MAX_PAGES`, `MARKET_CATALOG_ORDER`, `MARKET_CATALOG_EXPLORATION_*`
+- EV web search (direct API): `EXA_*` (including `EXA_COOLDOWN_MS`, `EXA_COOLDOWN_FAILURE_THRESHOLD`), `FIRECRAWL_*`, `EV_WEBSEARCH_*`
 - RPC providers + wait defaults: `*_RPC_URL`, `*_WS_URL`, `*_RPC_RPS`, `RPC_RATE_LIMIT_WINDOW_MS`, `RPC_WAIT_CONFIRMATIONS`, `RPC_WAIT_TIMEOUT_MS`, `RPC_CIRCUIT_*`
 - Live trading credentials: `ALCHEMY_API_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_PASSPHRASE`, `POLYMARKET_POSITIONS_USER`
 
@@ -68,3 +69,23 @@ Use `.env.example` for the full list; the most operationally relevant groups are
 
 - Liveness: `GET /health/live` (used by Docker healthcheck)
 - Readiness: `GET /health/ready` (for orchestrators; returns `503` when degraded)
+
+## Low-Risk Rollout Guidance
+
+- Catalog spread correctness:
+  - `MARKET_CATALOG_MAX_SPREAD` default is `0.02`.
+  - Recommended starting range: `0.015` to `0.03`.
+- Dual-pass catalog discovery:
+  - Default is enabled with bounded exploration:
+    - `MARKET_CATALOG_EXPLORATION_ENABLED=true`
+    - `MARKET_CATALOG_EXPLORATION_MAX_PAIRS=30`
+    - `MARKET_CATALOG_EXPLORATION_MAX_PAGES=3`
+    - `MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H=1000`
+  - Keep `MARKET_CATALOG_PAGE_SIZE=100` unless Gamma paging behavior requires adjustment.
+- Exa cooldown controls:
+  - `EXA_COOLDOWN_MS` controls auth/billing backoff window after `401/402`.
+  - `EXA_COOLDOWN_FAILURE_THRESHOLD` controls consecutive `401/402` count required before cooldown starts.
+- Metrics to watch during rollout:
+  - Catalog funnel and source split: `info` events with `message=market_catalog_funnel` and `message=market_catalog_refreshed` (`discoveredCore`, `discoveredExploration`).
+  - Exa cooldown events: `web_search` events `provider_cooldown_started`, `provider_cooldown_skip`, `provider_cooldown_recovered`.
+  - Active-pair filtering in websearch: `web_search` event `active_pair_skip_allowlist`.

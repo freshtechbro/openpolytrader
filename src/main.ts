@@ -418,6 +418,8 @@ if (env.EXA_API_KEY) {
     maxContentBytes: env.EV_WEBSEARCH_MAX_CONTENT_BYTES,
     searchPath: env.EXA_SEARCH_PATH,
     contentsPath: env.EXA_CONTENTS_PATH,
+    cooldownMs: env.EXA_COOLDOWN_MS,
+    cooldownFailureThreshold: env.EXA_COOLDOWN_FAILURE_THRESHOLD,
     cache: webSearchCache,
     metrics
   });
@@ -463,6 +465,7 @@ const signalAggregator =
     ? new SignalAggregatorAgent({
         policy,
         marketPairs,
+        allowlist,
         clob,
         exa: exaClient,
         firecrawl: firecrawlClient,
@@ -612,10 +615,14 @@ catalogRefresher = new MarketCatalogRefresher(
     refreshIntervalMs: refreshSettings.catalogRefreshMs,
     maxPairs,
     minVolume24h: env.MARKET_CATALOG_MIN_VOLUME_24H,
-    maxSpread: 0.02,
+    maxSpread: env.MARKET_CATALOG_MAX_SPREAD,
     pageSize: env.MARKET_CATALOG_PAGE_SIZE,
     maxPages: env.MARKET_CATALOG_MAX_PAGES,
     order: env.MARKET_CATALOG_ORDER,
+    explorationEnabled: env.MARKET_CATALOG_EXPLORATION_ENABLED,
+    explorationMaxPairs: env.MARKET_CATALOG_EXPLORATION_MAX_PAIRS,
+    explorationMinVolume24h: env.MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H,
+    explorationMaxPages: env.MARKET_CATALOG_EXPLORATION_MAX_PAGES,
     gammaApiBaseUrl: env.GAMMA_API_BASE_URL
   },
   clob,

@@ -190,16 +190,30 @@ export function evaluateEvGates(inputs: EvGateInputs): GateDecision {
     }
   }
 
+  const evMaxEdge = Number.isFinite(policy.evMaxEdge) ? policy.evMaxEdge : policy.maxEdge;
+  const confidenceFloor = Number.isFinite(policy.evConfidenceMinFloor)
+    ? Math.max(0, Math.min(policy.evConfidenceMinFloor, policy.evConfidenceMin))
+    : policy.evConfidenceMin;
+  const confidenceSpan =
+    Number.isFinite(evMaxEdge) && evMaxEdge > policy.evEdgeRequired
+      ? evMaxEdge - policy.evEdgeRequired
+      : 0;
+  const confidenceRatio =
+    Number.isFinite(evEdge) && confidenceSpan > 0
+      ? Math.max(0, Math.min(1, (evEdge - policy.evEdgeRequired) / confidenceSpan))
+      : 0;
+  const effectiveConfidenceMin =
+    policy.evConfidenceMin - confidenceRatio * (policy.evConfidenceMin - confidenceFloor);
   if (Number.isFinite(evEdge)) {
     if (evEdge < policy.evEdgeRequired) {
       reasons.push('ev_edge_below_threshold');
     }
-    if (evEdge > policy.maxEdge) {
+    if (evEdge > evMaxEdge) {
       reasons.push('ev_edge_above_max');
     }
   }
 
-  if (Number.isFinite(confidence) && confidence < policy.evConfidenceMin) {
+  if (Number.isFinite(confidence) && confidence < effectiveConfidenceMin) {
     reasons.push('ev_confidence_below_min');
   }
 

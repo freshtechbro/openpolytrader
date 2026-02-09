@@ -16,7 +16,9 @@ const BASE_EXA = {
   retryMaxDelayMs: 1,
   maxContentBytes: 1000,
   searchPath: '/search',
-  contentsPath: '/contents'
+  contentsPath: '/contents',
+  cooldownMs: 60000,
+  cooldownFailureThreshold: 1
 };
 
 const BASE_FIRECRAWL = {
@@ -178,6 +180,107 @@ describe('ExaClient', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const event = metrics.recent('web_search', 1)[0];
     expect(event?.data?.event).toBe('request_ok');
+  });
+
+  it('starts cooldown on auth/billing failures and skips requests during cooldown', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 402,
+        text: async () => JSON.stringify({ error: 'payment_required' })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ results: [{ url: 'https://example.com' }] })
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const metrics = new MetricsStore(100);
+    const client = new ExaClient({ ...BASE_EXA, cooldownMs: 60000, cooldownFailureThreshold: 1, cache, metrics });
+
+    await expect(
+      client.search('market news', {
+        lookbackDays: 7,
+        maxResults: 5,
+        cacheTtlSeconds: 0
+      })
+    ).rejects.toBeInstanceOf(ExaApiError);
+
+    const skipped = await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 5,
+      cacheTtlSeconds: 0
+    });
+
+    expect(skipped).toEqual([]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    const events = metrics.recent('web_search', 10);
+    expect(events.some((event) => event.data?.event === 'provider_cooldown_started')).toBe(true);
+    expect(events.some((event) => event.data?.event === 'provider_cooldown_skip')).toBe(true);
+
+    vi.useRealTimers();
+  });
+
+  it('resumes requests after cooldown expiry', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    vi.setSystemTime(now);
+
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: async () => JSON.stringify({ error: 'unauthorized' })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ results: [{ url: 'https://example.com', title: 'Recovered' }] })
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const metrics = new MetricsStore(100);
+    const client = new ExaClient({ ...BASE_EXA, cooldownMs: 1000, cooldownFailureThreshold: 1, cache, metrics });
+
+    await expect(
+      client.search('market news', {
+        lookbackDays: 7,
+        maxResults: 5,
+        cacheTtlSeconds: 0
+      })
+    ).rejects.toBeInstanceOf(ExaApiError);
+
+    const skipped = await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 5,
+      cacheTtlSeconds: 0
+    });
+    expect(skipped).toEqual([]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(now + 1001);
+    const recovered = await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 5,
+      cacheTtlSeconds: 0
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(recovered.length).toBe(1);
+    const events = metrics.recent('web_search', 20);
+    expect(events.some((event) => event.data?.event === 'provider_cooldown_recovered')).toBe(true);
+
+    vi.useRealTimers();
   });
 
   it('truncates contents and caches by url', async () => {

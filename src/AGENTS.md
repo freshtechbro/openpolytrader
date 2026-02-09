@@ -9,20 +9,21 @@ TypeScript backend implementing agent-based arbitrage trading system with event-
 ```
 src/
 ├── agents/           # Trading logic agents
-│   ├── execution/    # Order execution state machine (HOTSPOT: 1557 lines)
-│   ├── portfolio/    # Position/PnL management (531 lines)
+│   ├── execution/    # Order execution state machine (HOTSPOT: 2229 lines)
+│   ├── portfolio/    # Position/PnL management (638 lines)
 │   ├── scanner/      # Opportunity detection
 │   ├── risk/         # Risk gate evaluation
 │   ├── ops/          # Ops API agent
 │   ├── market-data/  # Market data processing
-│   └── learning/     # Trade telemetry (write-only)
+│   ├── signal/       # Signal aggregation and web search insights
+│   └── learning/     # Trade telemetry + advisory insights
 ├── core/             # Infrastructure
-│   ├── Supervisor.ts # Agent orchestration (545 lines)
+│   ├── Supervisor.ts # Agent orchestration (1007 lines)
 │   ├── MessageBus.ts # Typed event-driven communication
 │   └── EventStore.ts # SQLite event sourcing
-├── domain/           # Business logic (14 files)
-├── services/         # External integrations (8 files)
-├── config/           # Environment, policy, risk (12 files)
+├── domain/           # Business logic (15 files + AGENTS.md)
+├── services/         # External integrations (13 files + AGENTS.md)
+├── config/           # Environment, policy, risk (14 files)
 ├── venues/           # Exchange adapters
 ├── telemetry/        # Metrics, SLO monitoring
 ├── security/         # Auth utilities
@@ -49,7 +50,7 @@ ScannerAgent → RiskAgent → ExecutionAgent → PortfolioAgent
   opportunity  gates         orders          positions
 ```
 
-Events: `market:updated` → `opportunity:detected` → `risk:approved` → `execution_lifecycle` → `execution:fill`
+Events: `market:updated` → `opportunity:detected` → `risk:approved` → `execution:outcome` (bus) + `execution_lifecycle` (metrics)
 
 ## Domain Layer
 
@@ -85,7 +86,7 @@ Events: `market:updated` → `opportunity:detected` → `risk:approved` → `exe
 
 ## Execution State Machine
 
-States: `idle` → `submitting` → `yes_pending` → `both_acked` → `yes_filled` → `both_filled` → `complete`
+States: `idle` → `submitting` → `yes_pending`/`no_pending`/`both_pending` → `yes_acked`/`no_acked`/`both_acked` → `yes_filled`/`no_filled`/`both_filled` → `complete`
 
 Recovery: `partial_fill` → `unwinding` → `unwind_complete`/`unwind_failed`
 
@@ -100,7 +101,7 @@ Use `getRequiredAction()` for next step in state machine.
 - Pure functions for calculations
 - Event-sourced state changes (not direct mutation)
 - Explicit failure reasons in arrays
-- No Zod schemas in domain; type guards for validation
+- Minimize runtime schema use in domain; Zod is currently used for LLM payload validation in `src/domain/llm.ts`
 
 ## Live Dev
 

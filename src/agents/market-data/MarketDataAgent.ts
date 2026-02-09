@@ -5,6 +5,7 @@ import { PolymarketRealtime } from '../../services/PolymarketRealtime.js';
 import {
   applyOrderBookDelta,
   coercePositiveNumber,
+  isAlignedToTick,
   normalizeOrderBook,
   type OrderBookDelta,
   type OrderBookState
@@ -168,8 +169,8 @@ export class MarketDataAgent {
     this.config.tokenIds = tokenIds;
 
     if (this.realtime) {
-      if (toSubscribe.length > 0) this.realtime.subscribeMarkets(toSubscribe);
       if (toUnsubscribe.length > 0) this.realtime.unsubscribeMarkets(toUnsubscribe);
+      if (toSubscribe.length > 0) this.realtime.subscribeMarkets(toSubscribe);
     }
 
     for (const tokenId of toUnsubscribe) {
@@ -311,6 +312,27 @@ export class MarketDataAgent {
     this.orderbooks.set(tokenId, next);
     messageBus.emit('market:updated', { tokenId, book: next } satisfies MarketUpdateEvent);
 
+    const bestAsk = next.bestAsk?.price;
+    const bestBid = next.bestBid?.price;
+    if (next.tickSize > 0) {
+      const askAligned = bestAsk === undefined || isAlignedToTick(bestAsk, next.tickSize);
+      const bidAligned = bestBid === undefined || isAlignedToTick(bestBid, next.tickSize);
+      if (!askAligned || !bidAligned) {
+        this.metrics?.record({
+          type: 'info',
+          timestamp: receivedAtMs,
+          data: {
+            message: 'tick_misaligned',
+            tokenId,
+            tickSize: next.tickSize,
+            bestAsk,
+            bestBid
+          }
+        });
+        this.scheduleSnapshotResync(tokenId, 'tick_misaligned', receivedAtMs);
+      }
+    }
+
     void this.maybeDetectOutlier(tokenId, next, receivedAtMs);
   }
 
@@ -445,13 +467,17 @@ export class MarketDataAgent {
     }
 
     const exchangeTimestamp = coerceTimestampString(payload.timestamp ?? payload.ts);
+    const tickSize = coercePositiveNumber(payload.tick_size ?? payload.tickSize) ?? undefined;
+    const minOrderSize = coercePositiveNumber(payload.min_order_size ?? payload.minOrderSize) ?? undefined;
     if (bid) {
       this.applyDelta(tokenId, {
         side: 'bid',
         price: bid.price,
         size: bid.size,
         receivedAtMs: Date.now(),
-        exchangeTimestamp
+        exchangeTimestamp,
+        tickSize,
+        minOrderSize
       });
     }
     if (ask) {
@@ -460,7 +486,9 @@ export class MarketDataAgent {
         price: ask.price,
         size: ask.size,
         receivedAtMs: Date.now(),
-        exchangeTimestamp
+        exchangeTimestamp,
+        tickSize,
+        minOrderSize
       });
     }
   }
@@ -482,6 +510,27 @@ export class MarketDataAgent {
     const next = applyOrderBookDelta(book, delta);
     this.orderbooks.set(tokenId, next);
     messageBus.emit('market:updated', { tokenId, book: next } satisfies MarketUpdateEvent);
+
+    const bestAsk = next.bestAsk?.price;
+    const bestBid = next.bestBid?.price;
+    if (next.tickSize > 0) {
+      const askAligned = bestAsk === undefined || isAlignedToTick(bestAsk, next.tickSize);
+      const bidAligned = bestBid === undefined || isAlignedToTick(bestBid, next.tickSize);
+      if (!askAligned || !bidAligned) {
+        this.metrics?.record({
+          type: 'info',
+          timestamp: delta.receivedAtMs,
+          data: {
+            message: 'tick_misaligned',
+            tokenId,
+            tickSize: next.tickSize,
+            bestAsk,
+            bestBid
+          }
+        });
+        this.scheduleSnapshotResync(tokenId, 'tick_misaligned', delta.receivedAtMs);
+      }
+    }
   }
 
   private scheduleSnapshotResync(tokenId: string, reason: string, nowMs = Date.now()): void {

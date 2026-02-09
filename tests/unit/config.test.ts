@@ -24,6 +24,38 @@ describe('config env + store', () => {
     expect(env.ALLOWLIST_AUTO_RESUME).toBe(true);
   });
 
+  it('loads defaults for catalog and Exa cooldown knobs', () => {
+    const env = loadEnv({});
+
+    expect(env.MARKET_CATALOG_MAX_SPREAD).toBe(0.02);
+    expect(env.MARKET_CATALOG_EXPLORATION_ENABLED).toBe(true);
+    expect(env.MARKET_CATALOG_EXPLORATION_MAX_PAIRS).toBe(30);
+    expect(env.MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H).toBe(1000);
+    expect(env.MARKET_CATALOG_EXPLORATION_MAX_PAGES).toBe(3);
+    expect(env.EXA_COOLDOWN_MS).toBe(300000);
+    expect(env.EXA_COOLDOWN_FAILURE_THRESHOLD).toBe(1);
+  });
+
+  it('parses catalog and Exa cooldown overrides', () => {
+    const env = loadEnv({
+      MARKET_CATALOG_MAX_SPREAD: '0.015',
+      MARKET_CATALOG_EXPLORATION_ENABLED: 'true',
+      MARKET_CATALOG_EXPLORATION_MAX_PAIRS: '12',
+      MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H: '250',
+      MARKET_CATALOG_EXPLORATION_MAX_PAGES: '3',
+      EXA_COOLDOWN_MS: '45000',
+      EXA_COOLDOWN_FAILURE_THRESHOLD: '2'
+    });
+
+    expect(env.MARKET_CATALOG_MAX_SPREAD).toBe(0.015);
+    expect(env.MARKET_CATALOG_EXPLORATION_ENABLED).toBe(true);
+    expect(env.MARKET_CATALOG_EXPLORATION_MAX_PAIRS).toBe(12);
+    expect(env.MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H).toBe(250);
+    expect(env.MARKET_CATALOG_EXPLORATION_MAX_PAGES).toBe(3);
+    expect(env.EXA_COOLDOWN_MS).toBe(45000);
+    expect(env.EXA_COOLDOWN_FAILURE_THRESHOLD).toBe(2);
+  });
+
   it('parses boolean env vars from strings', () => {
     const env = loadEnv({
       TRADING_ENABLED: 'false',

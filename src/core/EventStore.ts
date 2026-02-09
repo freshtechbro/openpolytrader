@@ -100,37 +100,31 @@ CREATE INDEX IF NOT EXISTS idx_idempotency_updated_at ON idempotency (updated_at
 `;
 
 export class EventStore {
-  private db: Database.Database;
-  private insertMetric: Database.Statement;
-  private insertDecision: Database.Statement;
-  private selectLatestEventByType: Database.Statement;
+  private db!: Database.Database;
+  private insertMetric!: Database.Statement;
+  private insertDecision!: Database.Statement;
+  private selectLatestEventByType!: Database.Statement;
+  private readonly dbPath: string;
 
   constructor(options: EventStoreOptions) {
-    const resolved = resolve(options.dbPath);
-    mkdirSync(dirname(resolved), { recursive: true });
-    this.db = new Database(resolved);
-    this.db.exec(SCHEMA_SQL);
-    this.insertMetric = this.db.prepare('INSERT INTO metrics (ts, type, data) VALUES (?, ?, ?)');
-    this.insertDecision = this.db.prepare(
-      'INSERT INTO decisions (id, opportunity_id, ts, agent, decision_json, reasoning_json) VALUES (?, ?, ?, ?, ?, ?)'
-    );
-    this.selectLatestEventByType = this.db.prepare(
-      'SELECT id, ts, type, payload, metadata FROM events WHERE type = ? ORDER BY ts DESC LIMIT 1'
-    );
+    this.dbPath = resolve(options.dbPath);
+    mkdirSync(dirname(this.dbPath), { recursive: true });
+    this.openDatabase();
   }
 
   append(event: StoredEvent): void {
-    const stmt = this.db.prepare(
-      'INSERT INTO events (id, ts, type, payload, metadata) VALUES (?, ?, ?, ?, ?)'
-    );
-
-    stmt.run(
-      event.id,
-      event.timestamp,
-      event.type,
-      JSON.stringify(event.payload),
-      JSON.stringify(event.metadata ?? {})
-    );
+    this.runWrite(() => {
+      const stmt = this.db.prepare(
+        'INSERT INTO events (id, ts, type, payload, metadata) VALUES (?, ?, ?, ?, ?)'
+      );
+      stmt.run(
+        event.id,
+        event.timestamp,
+        event.type,
+        JSON.stringify(event.payload),
+        JSON.stringify(event.metadata ?? {})
+      );
+    });
   }
 
   listSince(timestamp: number): StoredEvent[] {
@@ -250,34 +244,40 @@ export class EventStore {
   }
 
   upsertIdempotencyRecord(record: IdempotencyRecord): void {
-    const stmt = this.db.prepare(
-      `INSERT INTO idempotency (key, nonce, status, order_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET
-         nonce=excluded.nonce,
-         status=excluded.status,
-         order_id=excluded.order_id,
-         updated_at=excluded.updated_at`
-    );
+    this.runWrite(() => {
+      const stmt = this.db.prepare(
+        `INSERT INTO idempotency (key, nonce, status, order_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET
+           nonce=excluded.nonce,
+           status=excluded.status,
+           order_id=excluded.order_id,
+           updated_at=excluded.updated_at`
+      );
 
-    stmt.run(
-      record.key,
-      record.nonce,
-      record.status,
-      record.orderId ?? null,
-      record.createdAt,
-      record.updatedAt
-    );
+      stmt.run(
+        record.key,
+        record.nonce,
+        record.status,
+        record.orderId ?? null,
+        record.createdAt,
+        record.updatedAt
+      );
+    });
   }
 
   pruneIdempotencyRecords(beforeMs: number): number {
-    const stmt = this.db.prepare('DELETE FROM idempotency WHERE updated_at < ?');
-    const result = stmt.run(beforeMs);
-    return result.changes;
+    return this.runWrite(() => {
+      const stmt = this.db.prepare('DELETE FROM idempotency WHERE updated_at < ?');
+      const result = stmt.run(beforeMs);
+      return result.changes;
+    });
   }
 
   persistMetric(event: MetricEvent): void {
-    this.insertMetric.run(event.timestamp, event.type, JSON.stringify(event.data));
+    this.runWrite(() => {
+      this.insertMetric.run(event.timestamp, event.type, JSON.stringify(event.data));
+    });
   }
 
   queryMetrics(type: MetricEventType, windowMs: number, nowMs = Date.now()): MetricEvent[] {
@@ -312,9 +312,11 @@ export class EventStore {
   }
 
   pruneMetrics(beforeMs: number): number {
-    const stmt = this.db.prepare('DELETE FROM metrics WHERE ts < ?');
-    const result = stmt.run(beforeMs);
-    return result.changes;
+    return this.runWrite(() => {
+      const stmt = this.db.prepare('DELETE FROM metrics WHERE ts < ?');
+      const result = stmt.run(beforeMs);
+      return result.changes;
+    });
   }
 
   persistDecision(record: {
@@ -325,14 +327,16 @@ export class EventStore {
     decisionJson: unknown;
     reasoningJson: unknown;
   }): void {
-    this.insertDecision.run(
-      record.id,
-      record.subjectId,
-      record.timestampMs,
-      record.agent,
-      JSON.stringify(record.decisionJson),
-      JSON.stringify(record.reasoningJson)
-    );
+    this.runWrite(() => {
+      this.insertDecision.run(
+        record.id,
+        record.subjectId,
+        record.timestampMs,
+        record.agent,
+        JSON.stringify(record.decisionJson),
+        JSON.stringify(record.reasoningJson)
+      );
+    });
   }
 
   listDecisions(filter: {
@@ -396,4 +400,47 @@ export class EventStore {
   close(): void {
     this.db.close();
   }
+
+  private openDatabase(): void {
+    this.db = new Database(this.dbPath);
+    this.db.exec(SCHEMA_SQL);
+    this.prepareStatements();
+  }
+
+  private prepareStatements(): void {
+    this.insertMetric = this.db.prepare('INSERT INTO metrics (ts, type, data) VALUES (?, ?, ?)');
+    this.insertDecision = this.db.prepare(
+      'INSERT INTO decisions (id, opportunity_id, ts, agent, decision_json, reasoning_json) VALUES (?, ?, ?, ?, ?, ?)'
+    );
+    this.selectLatestEventByType = this.db.prepare(
+      'SELECT id, ts, type, payload, metadata FROM events WHERE type = ? ORDER BY ts DESC LIMIT 1'
+    );
+  }
+
+  private runWrite<T>(operation: () => T): T {
+    try {
+      return operation();
+    } catch (error) {
+      if (!isReadonlyDatabaseMovedError(error)) {
+        throw error;
+      }
+      this.reopenAfterDatabaseMove();
+      return operation();
+    }
+  }
+
+  private reopenAfterDatabaseMove(): void {
+    try {
+      this.db.close();
+    } catch {
+      // Intentionally ignore close failures during recovery.
+    }
+    this.openDatabase();
+  }
+}
+
+function isReadonlyDatabaseMovedError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === 'SQLITE_READONLY_DBMOVED';
 }

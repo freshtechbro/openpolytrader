@@ -56,6 +56,7 @@ describe('MarketCatalogRefresher', () => {
         maxPairs: 10,
         minVolume24h: 50000,
         maxSpread: 0.02,
+        explorationEnabled: false,
         gammaApiBaseUrl: 'https://gamma-api.example.com'
       },
       mockClob as unknown as PolymarketClob,
@@ -266,6 +267,213 @@ describe('MarketCatalogRefresher', () => {
       expect(url.searchParams.get('ascending')).toBe('false');
     });
 
+    it('fills remaining slots with bounded exploration pass', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 3,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          pageSize: 2,
+          maxPages: 1,
+          order: 'volume24hr',
+          explorationEnabled: true,
+          explorationMaxPairs: 2,
+          explorationMinVolume24h: 0,
+          explorationMaxPages: 1,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const coreMarket = createGammaMarket({
+        condition_id: 'core-1',
+        clobTokenIds: ['yes-core-1', 'no-core-1'],
+        volume24hr: 100000
+      });
+      const coreRejected = createGammaMarket({
+        condition_id: 'core-reject',
+        clobTokenIds: ['yes-core-reject', 'no-core-reject'],
+        volume24hr: 100
+      });
+      const exploreA = createGammaMarket({
+        condition_id: 'explore-1',
+        clobTokenIds: ['yes-explore-1', 'no-explore-1'],
+        volume24hr: 200
+      });
+      const exploreB = createGammaMarket({
+        condition_id: 'explore-2',
+        clobTokenIds: ['yes-explore-2', 'no-explore-2'],
+        volume24hr: 300
+      });
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve([coreMarket, coreRejected])
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve([exploreA, exploreB])
+        });
+
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(3);
+      expect(refresher.getPairs().map((pair) => pair.marketId)).toEqual([
+        'core-1',
+        'explore-1',
+        'explore-2'
+      ]);
+
+      const firstUrl = new URL(fetchMock.mock.calls[0][0] as string);
+      const secondUrl = new URL(fetchMock.mock.calls[1][0] as string);
+      expect(firstUrl.searchParams.get('order')).toBe('volume24hr');
+      expect(secondUrl.searchParams.get('order')).toBe('id');
+    });
+
+    it('does not exceed explorationMaxPairs cap', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 5,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          pageSize: 3,
+          maxPages: 1,
+          order: 'volume24hr',
+          explorationEnabled: true,
+          explorationMaxPairs: 1,
+          explorationMinVolume24h: 0,
+          explorationMaxPages: 1,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const coreMarket = createGammaMarket({
+        condition_id: 'core-1',
+        clobTokenIds: ['yes-core-1', 'no-core-1'],
+        volume24hr: 100000
+      });
+      const coreRejected = createGammaMarket({
+        condition_id: 'core-reject',
+        clobTokenIds: ['yes-core-reject', 'no-core-reject'],
+        volume24hr: 10
+      });
+      const exploreA = createGammaMarket({
+        condition_id: 'explore-1',
+        clobTokenIds: ['yes-explore-1', 'no-explore-1'],
+        volume24hr: 100
+      });
+      const exploreB = createGammaMarket({
+        condition_id: 'explore-2',
+        clobTokenIds: ['yes-explore-2', 'no-explore-2'],
+        volume24hr: 100
+      });
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve([coreMarket, coreRejected])
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve([exploreA, exploreB])
+        });
+
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(2);
+      expect(refresher.getPairs().map((pair) => pair.marketId)).toEqual(['core-1', 'explore-1']);
+    });
+
+    it('records funnel and source-specific discovery metrics', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 3,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          pageSize: 2,
+          maxPages: 1,
+          order: 'volume24hr',
+          explorationEnabled: true,
+          explorationMaxPairs: 2,
+          explorationMinVolume24h: 0,
+          explorationMaxPages: 1,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve([
+              createGammaMarket({
+                condition_id: 'core-1',
+                clobTokenIds: ['yes-core-1', 'no-core-1'],
+                volume24hr: 100000
+              }),
+              createGammaMarket({
+                condition_id: 'core-reject',
+                clobTokenIds: ['yes-core-reject', 'no-core-reject'],
+                volume24hr: 10
+              })
+            ])
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve([
+              createGammaMarket({
+                condition_id: 'explore-1',
+                clobTokenIds: ['yes-explore-1', 'no-explore-1'],
+                volume24hr: 100
+              }),
+              createGammaMarket({
+                condition_id: 'explore-2',
+                clobTokenIds: ['yes-explore-2', 'no-explore-2'],
+                volume24hr: 200
+              })
+            ])
+        });
+
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      await refresher.refresh();
+
+      expect(mockMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          data: expect.objectContaining({
+            message: 'market_catalog_funnel',
+            coreAccepted: 1,
+            explorationAccepted: 2
+          })
+        })
+      );
+      expect(mockMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'info',
+          data: expect.objectContaining({
+            message: 'market_catalog_refreshed',
+            discoveredCore: 1,
+            discoveredExploration: 2
+          })
+        })
+      );
+    });
+
     it('uses cursor pagination when provided', async () => {
       refresher = new MarketCatalogRefresher(
         {
@@ -275,6 +483,7 @@ describe('MarketCatalogRefresher', () => {
           maxSpread: 0.02,
           pageSize: 1,
           maxPages: 2,
+          explorationEnabled: false,
           gammaApiBaseUrl: 'https://gamma-api.example.com'
         },
         mockClob as unknown as PolymarketClob,
@@ -944,6 +1153,38 @@ describe('MarketCatalogRefresher', () => {
           asks: []
         })
       ).toBe(true);
+    });
+
+    it('uses best levels for spread checks across mixed ordering (pass)', () => {
+      const { hasAcceptableSpread } = refresher as unknown as {
+        hasAcceptableSpread: (book: {
+          bids?: Array<{ price: string | number }>;
+          asks?: Array<{ price: string | number }>;
+        }) => boolean;
+      };
+
+      expect(
+        hasAcceptableSpread.call(refresher, {
+          bids: [{ price: '0.10' }, { price: '0.49' }],
+          asks: [{ price: '0.90' }, { price: '0.50' }]
+        })
+      ).toBe(true);
+    });
+
+    it('uses best levels for spread checks across mixed ordering (reject)', () => {
+      const { hasAcceptableSpread } = refresher as unknown as {
+        hasAcceptableSpread: (book: {
+          bids?: Array<{ price: string | number }>;
+          asks?: Array<{ price: string | number }>;
+        }) => boolean;
+      };
+
+      expect(
+        hasAcceptableSpread.call(refresher, {
+          bids: [{ price: '0.15' }, { price: '0.20' }],
+          asks: [{ price: '0.80' }, { price: '0.23' }]
+        })
+      ).toBe(false);
     });
 
     it('handles empty response', async () => {

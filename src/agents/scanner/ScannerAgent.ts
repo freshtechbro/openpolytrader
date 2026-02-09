@@ -1,7 +1,8 @@
 import type { TradePolicy } from '../../config/policy.js';
 import type { TradingMode } from '../../config/env.js';
 import { MarketAllowlist } from '../../domain/allowlist.js';
-import { evaluateEvGates, evaluateGates } from '../../domain/gates.js';
+import { evaluateEvGates, evaluateGatesWithFees } from '../../domain/gates.js';
+import { createUniformTakerFeeModel } from '../../domain/feeModel.js';
 import { type MarketPair } from '../../domain/market.js';
 import { type OrderBookState } from '../../domain/orderbook.js';
 import { ArbitrageOpportunity, evOpportunityId, opportunityId } from '../../domain/opportunity.js';
@@ -15,6 +16,9 @@ import { logLLMDecision } from '../../services/llm/LLMDecisionLogger.js';
 import { safeParseJSON } from '../../utils/serialization.js';
 import { mapWithConcurrency } from '../../utils/concurrency.js';
 import { clamp01 } from '../../utils/math.js';
+import { normalizeReasonKey, shouldEmitScopedReason } from '../../utils/eventDedupe.js';
+
+const REJECTION_EMISSION_COOLDOWN_MS = 3000;
 
 export interface ScannerAgentConfig {
   tradingMode?: TradingMode;
@@ -38,6 +42,9 @@ export class ScannerAgent {
   private shadowScoringInFlight = false;
   private lastShadowScoringStartAtMs = 0;
   private lastEvOpportunityAt = new Map<string, number>();
+  private gateRejectionEmissionState = new Map<string, { reasonKey: string; timestampMs: number }>();
+  private evSignalEmissionState = new Map<string, { reasonKey: string; timestampMs: number }>();
+  private nearZeroFeeModel = createUniformTakerFeeModel(0);
 
   constructor(
     private policy: TradePolicy,
@@ -48,6 +55,7 @@ export class ScannerAgent {
     this.metrics = config?.metrics;
     this.store = config?.eventStore;
     this.llm = config?.llm;
+    this.nearZeroFeeModel = createUniformTakerFeeModel(this.policy.nearZeroFeeBps);
 
     this.insightHandler = (payload) => {
       const parsed = payload as { insights?: Array<{ market_id: string; signal: string; value: number; ttl_ms: number; confidence: number }> };
@@ -73,6 +81,11 @@ export class ScannerAgent {
 
   updateTradingMode(mode: TradingMode): void {
     this.tradingMode = mode;
+  }
+
+  updatePolicy(next: TradePolicy): void {
+    this.policy = next;
+    this.nearZeroFeeModel = createUniformTakerFeeModel(next.nearZeroFeeBps);
   }
 
   async prioritizeOpportunities(
@@ -259,25 +272,38 @@ export class ScannerAgent {
 
     let nearZeroOpportunity: ArbitrageOpportunity | null = null;
     if (allowNearZero) {
-      const gateDecision = evaluateGates({
+      const gateDecision = evaluateGatesWithFees({
         yesBook,
         noBook,
         policy: this.policy,
-        nowMs
+        nowMs,
+        venue: 'polymarket',
+        feeModel: this.nearZeroFeeModel
       });
 
       if (!gateDecision.passed) {
-        const gateOpportunityId = buildGateOpportunityId(pair, yesBook, noBook, nowMs);
-        this.metrics?.record({
-          type: 'gate_rejection',
-          timestamp: nowMs,
-          data: {
-            opportunityId: gateOpportunityId,
-            marketId: pair.marketId,
-            reasons: gateDecision.reasons,
-            gateDecision
-          }
-        });
+        const reasonKey = normalizeReasonKey(gateDecision.reasons);
+        if (
+          shouldEmitScopedReason(
+            this.gateRejectionEmissionState,
+            pair.marketId,
+            reasonKey,
+            nowMs,
+            REJECTION_EMISSION_COOLDOWN_MS
+          )
+        ) {
+          const gateOpportunityId = buildGateOpportunityId(pair, yesBook, noBook, nowMs);
+          this.metrics?.record({
+            type: 'gate_rejection',
+            timestamp: nowMs,
+            data: {
+              opportunityId: gateOpportunityId,
+              marketId: pair.marketId,
+              reasons: gateDecision.reasons,
+              gateDecision
+            }
+          });
+        }
       } else {
         const bestYes = yesBook.bestAsk!;
         const bestNo = noBook.bestAsk!;
@@ -352,11 +378,22 @@ export class ScannerAgent {
     const pSignal = signalAllowed ? clamp01(insight!.value) : undefined;
 
     if (this.policy.evModelMode === 'llm_only' && pSignal === undefined) {
-      this.metrics?.record({
-        type: 'ev_signal',
-        timestamp: nowMs,
-        data: { marketId: pair.marketId, reason: 'ev_missing_signal' }
-      });
+      const reason = 'ev_missing_signal';
+      if (
+        shouldEmitScopedReason(
+          this.evSignalEmissionState,
+          `${pair.marketId}:na`,
+          reason,
+          nowMs,
+          REJECTION_EMISSION_COOLDOWN_MS
+        )
+      ) {
+        this.metrics?.record({
+          type: 'ev_signal',
+          timestamp: nowMs,
+          data: { marketId: pair.marketId, reason }
+        });
+      }
       return null;
     }
 
@@ -378,11 +415,22 @@ export class ScannerAgent {
 
     const lastEvAt = this.lastEvOpportunityAt.get(pair.marketId) ?? 0;
     if (this.policy.evCooldownSeconds > 0 && nowMs - lastEvAt < this.policy.evCooldownSeconds * 1000) {
-      this.metrics?.record({
-        type: 'ev_signal',
-        timestamp: nowMs,
-        data: { marketId: pair.marketId, side, evNet, confidence: modelConfidence, reason: 'ev_cooldown' }
-      });
+      const reason = 'ev_cooldown';
+      if (
+        shouldEmitScopedReason(
+          this.evSignalEmissionState,
+          `${pair.marketId}:${side}`,
+          reason,
+          nowMs,
+          REJECTION_EMISSION_COOLDOWN_MS
+        )
+      ) {
+        this.metrics?.record({
+          type: 'ev_signal',
+          timestamp: nowMs,
+          data: { marketId: pair.marketId, side, evNet, confidence: modelConfidence, reason }
+        });
+      }
       return null;
     }
 
@@ -397,11 +445,22 @@ export class ScannerAgent {
     });
 
     if (!gateDecision.passed) {
-      this.metrics?.record({
-        type: 'ev_signal',
-        timestamp: nowMs,
-        data: { marketId: pair.marketId, side, evNet, confidence: modelConfidence, reason: gateDecision.reasons }
-      });
+      const reasonKey = normalizeReasonKey(gateDecision.reasons);
+      if (
+        shouldEmitScopedReason(
+          this.evSignalEmissionState,
+          `${pair.marketId}:${side}`,
+          reasonKey,
+          nowMs,
+          REJECTION_EMISSION_COOLDOWN_MS
+        )
+      ) {
+        this.metrics?.record({
+          type: 'ev_signal',
+          timestamp: nowMs,
+          data: { marketId: pair.marketId, side, evNet, confidence: modelConfidence, reason: gateDecision.reasons }
+        });
+      }
       return null;
     }
 

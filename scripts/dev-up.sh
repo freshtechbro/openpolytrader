@@ -41,8 +41,8 @@ start_dashboard() {
     return
   fi
 
-  nohup VITE_OPS_BASE_URL="$OPS_BASE_URL" VITE_OPS_API_TOKEN="$TOKEN" \
-    npm --prefix dashboard run dev -- --host 0.0.0.0 --port "$DASHBOARD_PORT" --strictPort \
+  VITE_OPS_BASE_URL="$OPS_BASE_URL" VITE_OPS_API_TOKEN="$TOKEN" \
+    nohup npm --prefix dashboard run dev -- --host 0.0.0.0 --port "$DASHBOARD_PORT" --strictPort \
     > "$ROOT_DIR/tmp/dashboard.log" 2>&1 &
   echo $! > "$DASHBOARD_PID_FILE"
   echo "Dashboard started (pid $(cat "$DASHBOARD_PID_FILE"))."

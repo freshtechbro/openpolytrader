@@ -2,14 +2,14 @@
 
 ## Overview
 
-Vitest for backend (95% coverage), Playwright for dashboard e2e.
+Vitest for backend (95% lines/functions/statements, 94% branches), Playwright for dashboard e2e.
 
 ## Structure
 
 ```
 tests/
-├── unit/           # 38 test files
-└── integration/    # 3 test files
+├── unit/           # 78 test files
+└── integration/    # 4 test files
 
 dashboard/tests/
 └── e2e/            # Playwright specs (*.spec.ts)
@@ -25,11 +25,15 @@ Local `AGENTS.md` files refine these rules:
 
 ## Coverage Requirements
 
-**95% threshold** on lines, functions, statements, branches.
+Thresholds from `vitest.config.ts`:
+- lines: 95%
+- functions: 95%
+- statements: 95%
+- branches: 94%
 
 Excluded from coverage:
 - `src/main.ts` (entry point)
-- External service mocks
+- See `vitest.config.ts` for the full exclusion list (includes selected services, agents, and domain files)
 
 ## Naming
 
@@ -91,9 +95,9 @@ afterEach(() => {
 
 | File | Lines | Coverage |
 |------|-------|----------|
-| `execution.test.ts` | 1616 | ExecutionAgent state machine |
+| `execution.test.ts` | 2843 | ExecutionAgent state machine |
 | `portfolio.test.ts` | 1178 | PortfolioAgent reconciliation |
-| `gates.test.ts` | 402 | Risk gates |
+| `gates.test.ts` | 600 | Risk gates |
 
 ## Anti-Patterns
 

@@ -61,7 +61,6 @@ These keys are intentionally left blank in `.env.example` / `dashboard/.env.exam
 - `OPS_ALERT_WEBHOOK_URL`: create an incoming webhook in your alerting system (Slack/Discord/PagerDuty/etc) and paste the webhook URL (treat as a secret if it embeds tokens).
 - `POLYMARKET_POSITIONS_USER`: the `0x...` wallet address whose positions are reconciled via the Polymarket Data API (must match the account used for live trading).
 - `QUICKNODE_RPC_URL`: create a Polygon (mainnet) HTTP endpoint in QuickNode and paste the endpoint URL (optional; used as an RPC fallback in Phase 1).
-- `MARKET_CATALOG_PATH`: local absolute/relative path to a market catalog JSON file (optional; see `docs/Development/market-catalog.md`).
 - `KALSHI_API_KEY_ID` / `KALSHI_PRIVATE_KEY_PEM` / `KALSHI_PRIVATE_KEY_PATH`: only required when Phase 2 cross-venue/Kalshi integration is enabled; obtain from Kalshi developer credentials and provide either PEM inline or a filesystem path to the PEM file.
 
 Required for live trading (`TRADING_ENABLED=true` and `TRADING_MODE=live`):

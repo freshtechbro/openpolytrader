@@ -1,6 +1,7 @@
 export interface TradePolicy {
   edgeRequired: number;
   maxEdge: number;
+  evMaxEdge: number;
   depthHeadroomFraction: number;
   maxSpread: number;
   orderbookFreshnessMs: number;
@@ -30,9 +31,11 @@ export interface TradePolicy {
   cancelTimeoutMs: number;
   fallbackTickSize: number;
   fallbackMinOrderSize: number;
+  nearZeroFeeBps: number;
   evEdgeRequired: number;
   evFeeBps: number;
   evConfidenceMin: number;
+  evConfidenceMinFloor: number;
   evMaxPerMarketNotional: number;
   evMaxPortfolioNotional: number;
   evCooldownSeconds: number;
@@ -55,6 +58,7 @@ export interface TradePolicy {
 export const DEFAULT_TRADE_POLICY: TradePolicy = {
   edgeRequired: 0.03,
   maxEdge: 0.05,
+  evMaxEdge: 0.05,
   depthHeadroomFraction: 0.25,
   maxSpread: 0.05,
   orderbookFreshnessMs: 15000,
@@ -84,9 +88,11 @@ export const DEFAULT_TRADE_POLICY: TradePolicy = {
   cancelTimeoutMs: 2000,
   fallbackTickSize: 0.01,
   fallbackMinOrderSize: 0.001,
+  nearZeroFeeBps: 0,
   evEdgeRequired: 0.01,
   evFeeBps: 0,
   evConfidenceMin: 0.6,
+  evConfidenceMinFloor: 0.4,
   evMaxPerMarketNotional: 100,
   evMaxPortfolioNotional: 300,
   evCooldownSeconds: 120,

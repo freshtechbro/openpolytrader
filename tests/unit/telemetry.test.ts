@@ -38,6 +38,17 @@ describe('MetricsStore', () => {
     expect(snapshot.counts.web_search).toBe(1);
   });
 
+  it('tracks rollout guardrail events under existing metric types', () => {
+    const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    store.record({ type: 'info', timestamp: 1, data: { message: 'market_catalog_funnel' } });
+    store.record({ type: 'web_search', timestamp: 2, data: { event: 'provider_cooldown_skip' } });
+    store.record({ type: 'web_search', timestamp: 3, data: { event: 'active_pair_skip_allowlist' } });
+
+    const snapshot = store.snapshot();
+    expect(snapshot.counts.info).toBe(1);
+    expect(snapshot.counts.web_search).toBe(2);
+  });
+
   it('filters recent events by type', () => {
     const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
     store.record({ type: 'info', timestamp: 10, data: {} });

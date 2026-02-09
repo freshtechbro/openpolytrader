@@ -14,6 +14,7 @@ Required for live trading (`TRADING_ENABLED=true` and `TRADING_MODE=live`):
 - `POLYMARKET_API_KEY`
 - `POLYMARKET_API_SECRET`
 - `POLYMARKET_PASSPHRASE`
+- `POLYMARKET_POSITIONS_USER`
 
 Optional alerts:
 - `OPS_ALERT_WEBHOOK_URL` (treat as secret if it embeds tokens)

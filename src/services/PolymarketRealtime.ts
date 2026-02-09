@@ -178,11 +178,10 @@ export class PolymarketRealtime extends EventEmitter {
     for (const id of assetIds) {
       this.subscribedAssetIds.delete(id);
     }
-    this.send({
-      type: 'market',
-      assets_ids: assetIds,
-      operation: 'unsubscribe'
-    });
+
+    // Market channel does not reliably support incremental unsubscribe payloads.
+    // Force a clean reconnect so resubscribeAfterReconnect applies the new set.
+    this.restartForMarketSubscriptionUpdate();
   }
 
   getSubscribedAssetIds(): string[] {
@@ -262,6 +261,23 @@ export class PolymarketRealtime extends EventEmitter {
         this.connect().catch((error) => this.emit('error', error));
       }
     }, delay);
+  }
+
+  private restartForMarketSubscriptionUpdate(): void {
+    if (!this.ws) return;
+    if (this.ws.readyState === WebSocket.CLOSING || this.ws.readyState === WebSocket.CLOSED) {
+      return;
+    }
+
+    try {
+      this.ws.close();
+    } catch {
+      try {
+        this.ws.terminate();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private resubscribeAfterReconnect(): void {

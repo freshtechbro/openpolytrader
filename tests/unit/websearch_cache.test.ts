@@ -15,7 +15,9 @@ const BASE_EXA = {
   retryMaxDelayMs: 1,
   maxContentBytes: 1000,
   searchPath: '/search',
-  contentsPath: '/contents'
+  contentsPath: '/contents',
+  cooldownMs: 60000,
+  cooldownFailureThreshold: 1
 };
 
 const BASE_FIRECRAWL = {

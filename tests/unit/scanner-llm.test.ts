@@ -186,3 +186,310 @@ describe('ScannerAgent LLM prioritization', () => {
     vi.useRealTimers();
   });
 });
+
+describe('ScannerAgent fee-aware near-zero gating', () => {
+  function createBook(tokenId: string, bestBid: number, bestAsk: number, nowMs: number) {
+    return {
+      tokenId,
+      bids: [{ price: bestBid, size: 100 }],
+      asks: [{ price: bestAsk, size: 100 }],
+      tickSize: 0.01,
+      minOrderSize: 1,
+      lastUpdateMs: nowMs,
+      stableSinceMs: nowMs - 1000,
+      bestBid: { price: bestBid, size: 100 },
+      bestAsk: { price: bestAsk, size: 100 }
+    };
+  }
+
+  it('rejects near-zero opportunities when fees reduce edge below threshold', () => {
+    const nowMs = Date.now();
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      signalMode: 'near_zero' as const,
+      nearZeroFeeBps: 100,
+      minDepthLevels: 1,
+      depthHeadroomFraction: 1,
+      depthBufferMultiplier: 0,
+      minEdgeTicks: 0,
+      entrySlippageToleranceBps: 1000
+    };
+    const allowlist = new MarketAllowlist({ autoResume: true });
+    allowlist.seed(['market-1']);
+    const metrics = new MetricsStore(100);
+    const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics });
+
+    const opportunity = agent.scanPair(
+      { marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' },
+      new Map([
+        ['yes-1', createBook('yes-1', 0.47, 0.48, nowMs)],
+        ['no-1', createBook('no-1', 0.48, 0.49, nowMs)]
+      ]),
+      nowMs
+    );
+
+    expect(opportunity).toBeNull();
+    const rejection = metrics.recent('gate_rejection', 1)[0];
+    expect(rejection?.data?.reasons).toContain('edge_below_threshold_after_fees');
+
+    agent.stop();
+  });
+
+  it('preserves existing behavior when nearZeroFeeBps is zero', () => {
+    const nowMs = Date.now();
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      signalMode: 'near_zero' as const,
+      nearZeroFeeBps: 0,
+      minDepthLevels: 1,
+      depthHeadroomFraction: 1,
+      depthBufferMultiplier: 0,
+      minEdgeTicks: 0,
+      entrySlippageToleranceBps: 1000
+    };
+    const allowlist = new MarketAllowlist({ autoResume: true });
+    allowlist.seed(['market-1']);
+    const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper' });
+
+    const opportunity = agent.scanPair(
+      { marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' },
+      new Map([
+        ['yes-1', createBook('yes-1', 0.47, 0.48, nowMs)],
+        ['no-1', createBook('no-1', 0.48, 0.49, nowMs)]
+      ]),
+      nowMs
+    );
+
+    expect(opportunity).not.toBeNull();
+    expect(opportunity?.edge).toBeCloseTo(0.03, 6);
+
+    agent.stop();
+  });
+});
+
+describe('ScannerAgent telemetry dedupe', () => {
+  function createBook(tokenId: string, bestBid: number, bestAsk: number, nowMs: number) {
+    return {
+      tokenId,
+      bids: [{ price: bestBid, size: 100 }],
+      asks: [{ price: bestAsk, size: 100 }],
+      tickSize: 0.01,
+      minOrderSize: 1,
+      lastUpdateMs: nowMs,
+      stableSinceMs: nowMs - 1000,
+      bestBid: { price: bestBid, size: 100 },
+      bestAsk: { price: bestAsk, size: 100 }
+    };
+  }
+
+  it('suppresses repeated near-zero gate rejections within cooldown and emits again after cooldown', () => {
+    vi.useFakeTimers();
+    try {
+      const nowMs = Date.now();
+      const policy = {
+        ...DEFAULT_TRADE_POLICY,
+        signalMode: 'near_zero' as const,
+        nearZeroFeeBps: 100,
+        minDepthLevels: 1,
+        depthHeadroomFraction: 1,
+        depthBufferMultiplier: 0,
+        minEdgeTicks: 0,
+        entrySlippageToleranceBps: 1000
+      };
+      const allowlist = new MarketAllowlist({ autoResume: true });
+      allowlist.seed(['market-1']);
+      const metrics = new MetricsStore(100);
+      const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics });
+      const books = new Map([
+        ['yes-1', createBook('yes-1', 0.47, 0.48, nowMs)],
+        ['no-1', createBook('no-1', 0.48, 0.49, nowMs)]
+      ]);
+
+      agent.scanPair({ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }, books, nowMs);
+      agent.scanPair({ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }, books, nowMs + 1000);
+      expect(metrics.recent('gate_rejection', 10)).toHaveLength(1);
+
+      agent.scanPair({ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }, books, nowMs + 3500);
+      expect(metrics.recent('gate_rejection', 10)).toHaveLength(2);
+
+      agent.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('suppresses near-zero rejections when only transient reasons change within cooldown', () => {
+    vi.useFakeTimers();
+    try {
+      const nowMs = Date.now();
+      const policy = {
+        ...DEFAULT_TRADE_POLICY,
+        signalMode: 'near_zero' as const,
+        nearZeroFeeBps: 0,
+        minDepthLevels: 1,
+        depthHeadroomFraction: 1,
+        depthBufferMultiplier: 0,
+        minEdgeTicks: 0,
+        entrySlippageToleranceBps: 1000
+      };
+      const allowlist = new MarketAllowlist({ autoResume: true });
+      allowlist.seed(['market-1']);
+      const metrics = new MetricsStore(100);
+      const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics });
+      const stableBooks = new Map([
+        ['yes-1', createBook('yes-1', 0.54, 0.55, nowMs)],
+        ['no-1', createBook('no-1', 0.46, 0.47, nowMs)]
+      ]);
+      const unstableBooks = new Map([
+        ['yes-1', { ...createBook('yes-1', 0.54, 0.55, nowMs + 1000), stableSinceMs: nowMs + 990 }],
+        ['no-1', { ...createBook('no-1', 0.46, 0.47, nowMs + 1000), stableSinceMs: nowMs + 990 }]
+      ]);
+
+      agent.scanPair({ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }, stableBooks, nowMs);
+      agent.scanPair(
+        { marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' },
+        unstableBooks,
+        nowMs + 1000
+      );
+
+      const events = metrics.recent('gate_rejection', 10);
+      expect(events).toHaveLength(1);
+      expect((events[0].data as { reasons: string[] }).reasons).toContain('edge_below_threshold');
+
+      agent.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('emits near-zero gate rejections immediately when rejection reason changes', () => {
+    vi.useFakeTimers();
+    try {
+      const nowMs = Date.now();
+      const policy = {
+        ...DEFAULT_TRADE_POLICY,
+        signalMode: 'near_zero' as const,
+        nearZeroFeeBps: 100,
+        minDepthLevels: 1,
+        depthHeadroomFraction: 1,
+        depthBufferMultiplier: 0,
+        minEdgeTicks: 0,
+        entrySlippageToleranceBps: 1000
+      };
+      const allowlist = new MarketAllowlist({ autoResume: true });
+      allowlist.seed(['market-1']);
+      const metrics = new MetricsStore(100);
+      const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics });
+      const lowEdgeBooks = new Map([
+        ['yes-1', createBook('yes-1', 0.47, 0.48, nowMs)],
+        ['no-1', createBook('no-1', 0.48, 0.49, nowMs)]
+      ]);
+      const invalidAskBooks = new Map([
+        ['yes-1', createBook('yes-1', 0.47, 0, nowMs + 1000)],
+        ['no-1', createBook('no-1', 0.48, 0.49, nowMs + 1000)]
+      ]);
+
+      agent.scanPair({ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }, lowEdgeBooks, nowMs);
+      agent.scanPair(
+        { marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' },
+        invalidAskBooks,
+        nowMs + 1000
+      );
+
+      const events = metrics.recent('gate_rejection', 10);
+      expect(events).toHaveLength(2);
+      expect((events[0].data as { reasons: string[] }).reasons).toContain('edge_below_threshold_after_fees');
+      expect((events[1].data as { reasons: string[] }).reasons).toContain('yes_best_ask_invalid');
+
+      agent.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('suppresses repeated ev_missing_signal events within cooldown', () => {
+    vi.useFakeTimers();
+    try {
+      const nowMs = Date.now();
+      const policy = {
+        ...DEFAULT_TRADE_POLICY,
+        signalMode: 'ev' as const,
+        evModelMode: 'llm_only' as const,
+        minDepthLevels: 1,
+        depthHeadroomFraction: 1,
+        depthBufferMultiplier: 0,
+        minEdgeTicks: 0,
+        entrySlippageToleranceBps: 0
+      };
+      const allowlist = new MarketAllowlist({ autoResume: true });
+      allowlist.seed(['market-1']);
+      const metrics = new MetricsStore(100);
+      const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics });
+      const books = new Map([
+        ['yes-1', createBook('yes-1', 0.44, 0.45, nowMs)],
+        ['no-1', createBook('no-1', 0.44, 0.45, nowMs)]
+      ]);
+
+      agent.scanPair({ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }, books, nowMs);
+      agent.scanPair({ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }, books, nowMs + 1000);
+
+      const missingSignalEvents = metrics.recent('ev_signal', 10).filter((event) => {
+        const data = event.data as { reason?: unknown };
+        return data.reason === 'ev_missing_signal';
+      });
+      expect(missingSignalEvents).toHaveLength(1);
+
+      agent.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('suppresses repeated ev_cooldown events within cooldown window', () => {
+    vi.useFakeTimers();
+    try {
+      const nowMs = Date.now();
+      const policy = {
+        ...DEFAULT_TRADE_POLICY,
+        signalMode: 'ev' as const,
+        evModelMode: 'baseline' as const,
+        evEdgeRequired: 0,
+        evConfidenceMin: 0,
+        evCooldownSeconds: 120,
+        minDepthLevels: 1,
+        depthHeadroomFraction: 1,
+        depthBufferMultiplier: 0,
+        minEdgeTicks: 0,
+        entrySlippageToleranceBps: 0
+      };
+      const allowlist = new MarketAllowlist({ autoResume: true });
+      allowlist.seed(['market-1']);
+      const metrics = new MetricsStore(100);
+      const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics });
+      const books = new Map([
+        ['yes-1', createBook('yes-1', 0.44, 0.45, nowMs)],
+        ['no-1', createBook('no-1', 0.44, 0.45, nowMs)]
+      ]);
+
+      const selected = agent.scanPair(
+        { marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' },
+        books,
+        nowMs
+      );
+      expect(selected?.type).toBe('ev');
+
+      agent.scanPair({ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }, books, nowMs + 1000);
+      agent.scanPair({ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }, books, nowMs + 2000);
+
+      const cooldownEvents = metrics.recent('ev_signal', 10).filter((event) => {
+        const data = event.data as { reason?: unknown };
+        return data.reason === 'ev_cooldown';
+      });
+      expect(cooldownEvents).toHaveLength(1);
+
+      agent.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

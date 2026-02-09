@@ -21,6 +21,14 @@ export interface MarketCatalogRefresherConfig {
   maxPages: number;
   /** Gamma ordering mode (default: volume24hr) */
   order: MarketCatalogOrder;
+  /** Enable bounded second pass to discover newer markets */
+  explorationEnabled: boolean;
+  /** Max number of exploration pairs to add per refresh */
+  explorationMaxPairs: number;
+  /** Min 24h volume USD for exploration pass */
+  explorationMinVolume24h: number;
+  /** Gamma pagination cap for exploration pass */
+  explorationMaxPages: number;
   /** Gamma API base URL */
   gammaApiBaseUrl: string;
   /** Request timeout in ms */
@@ -62,8 +70,29 @@ const DEFAULT_CONFIG: Omit<MarketCatalogRefresherConfig, 'gammaApiBaseUrl'> = {
   pageSize: 100,
   maxPages: 5,
   order: 'volume24hr',
+  explorationEnabled: true,
+  explorationMaxPairs: 30,
+  explorationMinVolume24h: 1000,
+  explorationMaxPages: 3,
   requestTimeoutMs: 10000
 };
+
+interface CatalogPassSummary {
+  pagesScanned: number;
+  candidates: number;
+  accepted: number;
+}
+
+interface CatalogCollectResult {
+  validPairs: MarketPair[];
+  pagesScanned: number;
+  coreMarketIds: Set<string>;
+  explorationMarketIds: Set<string>;
+  funnel: {
+    core: CatalogPassSummary;
+    exploration: CatalogPassSummary;
+  };
+}
 
 /**
  * Emits 'refresh' with { pairs, result } and 'error' on failure.
@@ -163,7 +192,8 @@ export class MarketCatalogRefresher extends EventEmitter {
     const previousMarketIds = new Set(this.currentPairs.keys());
 
     try {
-      const { validPairs, pagesScanned } = await this.collectValidPairs();
+      const { validPairs, pagesScanned, coreMarketIds, explorationMarketIds, funnel } =
+        await this.collectValidPairs();
 
       if (validPairs.length === 0 && previousMarketIds.size > 0) {
         const durationMs = Date.now() - startMs;
@@ -214,10 +244,33 @@ export class MarketCatalogRefresher extends EventEmitter {
         type: 'info',
         timestamp: Date.now(),
         data: {
+          message: 'market_catalog_funnel',
+          corePagesScanned: funnel.core.pagesScanned,
+          coreCandidates: funnel.core.candidates,
+          coreAccepted: funnel.core.accepted,
+          explorationPagesScanned: funnel.exploration.pagesScanned,
+          explorationCandidates: funnel.exploration.candidates,
+          explorationAccepted: funnel.exploration.accepted
+        }
+      });
+
+      const discoveredCore = discoveredPairs.filter((pair) => coreMarketIds.has(pair.marketId)).length;
+      const discoveredExploration = discoveredPairs.filter((pair) =>
+        explorationMarketIds.has(pair.marketId)
+      ).length;
+
+      this.metrics?.record({
+        type: 'info',
+        timestamp: Date.now(),
+        data: {
           message: 'market_catalog_refreshed',
           totalPairs: result.totalPairs,
           discovered: discoveredPairs.length,
+          discoveredCore,
+          discoveredExploration,
           removed: removedMarketIds.length,
+          coreTotal: coreMarketIds.size,
+          explorationTotal: explorationMarketIds.size,
           durationMs: result.durationMs
         }
       });
@@ -246,42 +299,111 @@ export class MarketCatalogRefresher extends EventEmitter {
     }
   }
 
-  private async collectValidPairs(): Promise<{ validPairs: MarketPair[]; pagesScanned: number }> {
+  private async collectValidPairs(): Promise<CatalogCollectResult> {
+    const maxPairs = Math.max(1, this.config.maxPairs);
+    const corePass = await this.collectPass({
+      order: this.config.order,
+      minVolume24h: this.config.minVolume24h,
+      maxPages: Math.max(1, this.config.maxPages),
+      targetPairs: maxPairs,
+      seenMarketIds: new Set<string>()
+    });
+
+    const validPairs = [...corePass.validPairs];
+    const coreMarketIds = new Set(corePass.validPairs.map((pair) => pair.marketId));
+    const explorationMarketIds = new Set<string>();
+    let pagesScanned = corePass.pagesScanned;
+    const funnel = {
+      core: {
+        pagesScanned: corePass.pagesScanned,
+        candidates: corePass.candidates,
+        accepted: corePass.validPairs.length
+      },
+      exploration: {
+        pagesScanned: 0,
+        candidates: 0,
+        accepted: 0
+      }
+    };
+
+    const explorationEnabled = this.config.explorationEnabled;
+    const explorationCap = Math.max(0, this.config.explorationMaxPairs);
+    if (explorationEnabled && validPairs.length < maxPairs && explorationCap > 0) {
+      const remainingSlots = maxPairs - validPairs.length;
+      const targetPairs = Math.min(remainingSlots, explorationCap);
+      if (targetPairs > 0) {
+        const explorationPass = await this.collectPass({
+          order: 'newest',
+          minVolume24h: this.config.explorationMinVolume24h,
+          maxPages: Math.max(1, this.config.explorationMaxPages),
+          targetPairs,
+          seenMarketIds: new Set(validPairs.map((pair) => pair.marketId))
+        });
+
+        pagesScanned += explorationPass.pagesScanned;
+        for (const pair of explorationPass.validPairs) {
+          validPairs.push(pair);
+          explorationMarketIds.add(pair.marketId);
+        }
+        funnel.exploration.pagesScanned = explorationPass.pagesScanned;
+        funnel.exploration.candidates = explorationPass.candidates;
+        funnel.exploration.accepted = explorationPass.validPairs.length;
+      }
+    }
+
+    return { validPairs, pagesScanned, coreMarketIds, explorationMarketIds, funnel };
+  }
+
+  private async collectPass(params: {
+    order: MarketCatalogOrder;
+    minVolume24h: number;
+    maxPages: number;
+    targetPairs: number;
+    seenMarketIds: Set<string>;
+  }): Promise<{ validPairs: MarketPair[]; pagesScanned: number; candidates: number }> {
     const validPairs: MarketPair[] = [];
     let pagesScanned = 0;
+    let candidates = 0;
     let offset = 0;
     let cursor: string | null = null;
 
     const pageSize = Math.max(1, this.config.pageSize);
-    const maxPages = Math.max(1, this.config.maxPages);
+    const maxPages = Math.max(1, params.maxPages);
 
     for (let page = 0; page < maxPages; page += 1) {
       const { markets, nextCursor } = await this.fetchMarketPage({
         limit: pageSize,
         offset,
-        cursor
+        cursor,
+        order: params.order
       });
 
       pagesScanned += 1;
 
       if (markets.length === 0) break;
+      candidates += markets.length;
 
       for (const market of markets) {
-        if (validPairs.length >= this.config.maxPairs) break;
+        if (validPairs.length >= params.targetPairs) break;
 
         const conditionId = extractConditionId(market);
+        if (conditionId && params.seenMarketIds.has(conditionId)) {
+          continue;
+        }
         if (conditionId && this.currentPairs.has(conditionId)) {
           validPairs.push(this.currentPairs.get(conditionId)!);
+          params.seenMarketIds.add(conditionId);
           continue;
         }
 
-        const pair = await this.validateAndConvertMarket(market);
+        const pair = await this.validateAndConvertMarket(market, params.minVolume24h);
         if (pair) {
           validPairs.push(pair);
+          params.seenMarketIds.add(pair.marketId);
         }
       }
 
-      if (validPairs.length >= this.config.maxPairs) break;
+      if (validPairs.length >= params.targetPairs) break;
 
       if (nextCursor) {
         if (nextCursor === cursor) break;
@@ -294,11 +416,11 @@ export class MarketCatalogRefresher extends EventEmitter {
       offset += pageSize;
     }
 
-    return { validPairs, pagesScanned };
+    return { validPairs, pagesScanned, candidates };
   }
 
-  private resolveOrderParams(): { order: string; ascending: boolean } {
-    if (this.config.order === 'newest') {
+  private resolveOrderParams(orderMode: MarketCatalogOrder): { order: string; ascending: boolean } {
+    if (orderMode === 'newest') {
       return { order: 'id', ascending: false };
     }
     return { order: 'volume24hr', ascending: false };
@@ -308,9 +430,10 @@ export class MarketCatalogRefresher extends EventEmitter {
     limit: number;
     offset: number;
     cursor: string | null;
+    order: MarketCatalogOrder;
   }): Promise<{ markets: GammaMarket[]; nextCursor: string | null }> {
     const url = new URL('/markets', this.config.gammaApiBaseUrl);
-    const { order, ascending } = this.resolveOrderParams();
+    const { order, ascending } = this.resolveOrderParams(params.order);
     url.searchParams.set('limit', String(params.limit));
     url.searchParams.set('order', order);
     url.searchParams.set('ascending', String(ascending));
@@ -354,7 +477,10 @@ export class MarketCatalogRefresher extends EventEmitter {
     }
   }
 
-  private async validateAndConvertMarket(market: GammaMarket): Promise<MarketPair | null> {
+  private async validateAndConvertMarket(
+    market: GammaMarket,
+    minVolume24h = this.config.minVolume24h
+  ): Promise<MarketPair | null> {
     const conditionId = extractConditionId(market);
     if (!conditionId) return null;
     if (!market.active) return null;
@@ -368,7 +494,7 @@ export class MarketCatalogRefresher extends EventEmitter {
     const volume24h = coerceNumber(
       market.volume24hr ?? market.volume24hrClob ?? market.volumeNum ?? market.volume ?? 0
     );
-    if (volume24h < this.config.minVolume24h) return null;
+    if (volume24h < minVolume24h) return null;
 
     const tokenIds = this.extractTokenIds(market);
     if (!tokenIds) return null;
@@ -438,8 +564,8 @@ export class MarketCatalogRefresher extends EventEmitter {
     if (!Array.isArray(book.bids) || book.bids.length === 0) return true;
     if (!Array.isArray(book.asks) || book.asks.length === 0) return true;
 
-    const bestBid = parseFloat(String(book.bids[0].price));
-    const bestAsk = parseFloat(String(book.asks[0].price));
+    const bestBid = findBestPrice(book.bids, Math.max);
+    const bestAsk = findBestPrice(book.asks, Math.min);
 
     if (!Number.isFinite(bestBid) || !Number.isFinite(bestAsk)) return true;
 
@@ -476,6 +602,19 @@ function coerceNumber(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function findBestPrice(
+  levels: Array<{ price: string | number }>,
+  reducer: (a: number, b: number) => number
+): number {
+  let best: number | null = null;
+  for (const level of levels) {
+    const price = Number(level.price);
+    if (!Number.isFinite(price)) continue;
+    best = best === null ? price : reducer(best, price);
+  }
+  return best ?? Number.NaN;
 }
 
 function extractNextCursor(value: {

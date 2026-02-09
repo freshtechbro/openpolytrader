@@ -16,12 +16,14 @@ const basePolicy = {
   signalMode: 'ev' as const,
   evEdgeRequired: 0,
   evConfidenceMin: 0.4,
+  evConfidenceMinFloor: 0.3,
   evModelConfidenceFloor: 0.4,
   evModelMode: 'hybrid' as const,
   entrySlippageToleranceBps: 0,
   evCooldownSeconds: 0,
   evFeeBps: 0,
   maxEdge: 1,
+  evMaxEdge: 1,
   minEdgeTicks: 0
 };
 

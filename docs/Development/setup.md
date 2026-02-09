@@ -34,13 +34,13 @@ npm install
 npm run dev
 ```
 
-## Live (Docker backend + dashboard)
+## Live (Docker backend + local dashboard dev server)
 
 ```bash
 npm run dev:live
 ```
 
-Requires Docker running. Stop the container with:
+Requires Docker running. This command starts the backend container and runs dashboard Vite locally. Stop the container with:
 
 ```bash
 npm run dev:live:down

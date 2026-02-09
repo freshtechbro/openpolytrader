@@ -10,7 +10,7 @@ React 18 + Vite ops dashboard for monitoring trading system.
 dashboard/
 ├── src/
 │   ├── components/   # Reusable UI (6 files)
-│   ├── pages/        # Route views (5 files)
+│   ├── pages/        # View pages (6 files)
 │   ├── hooks/        # Custom hooks
 │   ├── lib/          # Utilities (opsClient, config)
 │   └── styles/       # CSS (tokens.css, app.css)
@@ -43,13 +43,16 @@ Local `AGENTS.md` files refine these rules:
 
 ## Pages
 
-| Page | Route | Content | Notes |
-|------|-------|---------|-------|
-| Overview | `/` | System metrics, health | |
-| Markets | `/markets` | Market allowlist | |
-| Incidents | `/incidents` | Failure log | |
-| Positions | `/positions` | Portfolio state | |
-| RiskGates | `/risk` | Gate status/config | 500+ lines - complexity hotspot |
+| Page | View Key | Content | Notes |
+|------|----------|---------|-------|
+| Overview | `overview` | System metrics, health | |
+| Markets | `markets` | Market allowlist | |
+| Incidents | `incidents` | Failure log | |
+| Positions | `positions` | Portfolio state | |
+| RiskGates | `risk-gates` | Gate status/config | 500+ lines - complexity hotspot |
+| Decisions | `decisions` | Decision stream and outcomes | |
+
+Navigation is currently in-app state switching (`useState`), not URL routing.
 
 ## Patterns
 
@@ -61,7 +64,8 @@ Local `AGENTS.md` files refine these rules:
 ### Real-time Updates
 - `useEventStream` hook for SSE
 - Backend pushes via `/stream`
-- Events: `health`, `incident`, `order`
+- Commonly handled events: `health`, `incident`, `allowlist_updated`, `info`, `risk`, `order`, `fill`
+- Stream subscription also includes telemetry/ops events such as `execution_lifecycle`, `gate_rejection`, and `slo_violation`
 
 ### Styling
 - CSS variables in `tokens.css`
@@ -77,7 +81,7 @@ fetch(`${BASE_URL}/endpoint`, {
 })
 ```
 
-Token: `VITE_OPS_API_TOKEN` env var
+Env vars: `VITE_OPS_API_TOKEN`, `VITE_OPS_BASE_URL`
 
 ## Commands
 
@@ -87,7 +91,7 @@ npm run build    # Production
 npm run test:e2e # Playwright
 
 # Live (from repo root)
-npm run dev:live      # Docker backend + dashboard dev server
+npm run dev:live      # Docker backend + local dashboard dev server
 npm run dev:live:down # Stop Docker backend
 ```
 

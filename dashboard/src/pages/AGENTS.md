@@ -8,7 +8,7 @@ Applies to `dashboard/src/pages/`.
 
 ## Rules
 - Use `opsClient` for API calls; avoid direct `fetch` usage.
-- Keep forms schema-driven and validate inputs before PATCH/POST.
+- Keep forms schema-driven; rely on server-side schema validation for PATCH/POST and add client-side validation where practical.
 - Preserve loading/error states for all network calls.
 
 ## Tests

@@ -17,3 +17,13 @@ export class FeeModel {
     return grossEdge - fee * 2;
   }
 }
+
+export function createUniformTakerFeeModel(feeBps: number): FeeModel {
+  const normalized = Math.max(0, Number.isFinite(feeBps) ? feeBps : 0);
+  return new FeeModel({
+    takerFeeBps: {
+      polymarket: normalized,
+      kalshi: normalized
+    }
+  });
+}

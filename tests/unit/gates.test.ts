@@ -545,7 +545,7 @@ describe('evaluateEvGates', () => {
     const result = evaluateEvGates({
       yesBook,
       noBook,
-      policy: { ...DEFAULT_TRADE_POLICY, evEdgeRequired: 0, maxEdge: 0.05 },
+      policy: { ...DEFAULT_TRADE_POLICY, evEdgeRequired: 0, evMaxEdge: 0.05 },
       nowMs: now,
       side: 'yes',
       evEdge: 0.2,

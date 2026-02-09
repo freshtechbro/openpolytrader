@@ -5,7 +5,8 @@ import type { MarketPair } from '../domain/market.js';
 import { opportunityId, type ArbitrageOpportunity } from '../domain/opportunity.js';
 import { depthAtTopLevels } from '../domain/orderbook.js';
 import type { OrderBookState } from '../domain/orderbook.js';
-import { evaluateEvGates, evaluateGates } from '../domain/gates.js';
+import { evaluateEvGates, evaluateGatesWithFees } from '../domain/gates.js';
+import { createUniformTakerFeeModel } from '../domain/feeModel.js';
 import { MarketDataAgent, type MarketUpdateEvent } from '../agents/market-data/MarketDataAgent.js';
 import { ScannerAgent } from '../agents/scanner/ScannerAgent.js';
 import { RiskAgent } from '../agents/risk/RiskAgent.js';
@@ -26,6 +27,9 @@ import type { LLMCallResult, LLMAgentId, LLMRequest } from '../services/llm/type
 import type { ExecutionAdvisor } from '../agents/execution/ExecutionAdvisor.js';
 import type { RiskAdvisor } from '../agents/risk/RiskAdvisor.js';
 import type { SignalAggregatorAgent } from '../agents/signal/SignalAggregatorAgent.js';
+import { normalizeReasonKey, shouldEmitScopedReason } from '../utils/eventDedupe.js';
+
+const GATE_REJECTION_EMISSION_COOLDOWN_MS = 3000;
 
 export interface SupervisorConfig {
   marketPairs: MarketPair[];
@@ -111,6 +115,8 @@ export class Supervisor {
   private bookRefreshInterval: ReturnType<typeof setInterval> | null = null;
   private bookRefreshInFlight = false;
   private started = false;
+  private nearZeroFeeModel = createUniformTakerFeeModel(0);
+  private gateRejectionEmissionState = new Map<string, { reasonKey: string; timestampMs: number }>();
   private metricIncidentHandler: ((event: MetricEvent) => void) | null = null;
   private marketUpdatedHandler: ((payload: unknown) => void) | null = null;
   private opportunityDetectedHandler: ((payload: unknown) => void) | null = null;
@@ -120,6 +126,7 @@ export class Supervisor {
     private config: SupervisorConfig,
     private deps: SupervisorDeps
   ) {
+    this.nearZeroFeeModel = createUniformTakerFeeModel(config.policy.nearZeroFeeBps);
     this.marketData = new MarketDataAgent(
       {
         tokenIds: collectTokenIds(config.marketPairs),
@@ -495,16 +502,7 @@ export class Supervisor {
     const marketId = payload.opportunity.marketId;
 
     if (this.marketCircuitBreakers.isOpen(marketId)) {
-      this.deps.metrics.record({
-        type: 'gate_rejection',
-        timestamp: now,
-        data: {
-          opportunityId: payload.opportunity.id,
-          marketId,
-          reasons: ['circuit_breaker'],
-          gateDecision: { passed: false, reasons: ['circuit_breaker'] }
-        }
-      });
+      this.recordGateRejection(now, payload.opportunity.id, marketId, ['circuit_breaker']);
       this.deps.incidentTracker.record({
         marketId,
         reason: 'circuit_breaker',
@@ -517,46 +515,19 @@ export class Supervisor {
 
     const maxConcurrentMarkets = this.config.maxConcurrentMarkets ?? 0;
     if (maxConcurrentMarkets > 0 && this.inFlightMarkets.size >= maxConcurrentMarkets) {
-      this.deps.metrics.record({
-        type: 'gate_rejection',
-        timestamp: now,
-        data: {
-          opportunityId: payload.opportunity.id,
-          marketId,
-          reasons: ['max_concurrent_markets'],
-          gateDecision: { passed: false, reasons: ['max_concurrent_markets'] }
-        }
-      });
+      this.recordGateRejection(now, payload.opportunity.id, marketId, ['max_concurrent_markets']);
       return;
     }
 
     const requiredCapital = Math.max(0, payload.size * payload.opportunity.costPerSet);
     const maxCapitalInFlight = this.config.maxCapitalInFlight ?? 0;
     if (maxCapitalInFlight > 0 && requiredCapital > 0 && this.capitalInFlight + requiredCapital > maxCapitalInFlight) {
-      this.deps.metrics.record({
-        type: 'gate_rejection',
-        timestamp: now,
-        data: {
-          opportunityId: payload.opportunity.id,
-          marketId,
-          reasons: ['capital_in_flight'],
-          gateDecision: { passed: false, reasons: ['capital_in_flight'] }
-        }
-      });
+      this.recordGateRejection(now, payload.opportunity.id, marketId, ['capital_in_flight']);
       return;
     }
 
     if (this.inFlightMarkets.has(marketId)) {
-      this.deps.metrics.record({
-        type: 'gate_rejection',
-        timestamp: now,
-        data: {
-          opportunityId: payload.opportunity.id,
-          marketId,
-          reasons: ['market_in_flight'],
-          gateDecision: { passed: false, reasons: ['market_in_flight'] }
-        }
-      });
+      this.recordGateRejection(now, payload.opportunity.id, marketId, ['market_in_flight']);
       return;
     }
 
@@ -566,31 +537,13 @@ export class Supervisor {
       const yesBook = this.marketData.getOrderBook(payload.opportunity.yesTokenId);
       const noBook = this.marketData.getOrderBook(payload.opportunity.noTokenId);
       if (!yesBook || !noBook) {
-        this.deps.metrics.record({
-          type: 'gate_rejection',
-          timestamp: now,
-          data: {
-            opportunityId: payload.opportunity.id,
-            marketId: payload.opportunity.marketId,
-            reasons: ['missing_orderbook'],
-            gateDecision: { passed: false, reasons: ['missing_orderbook'] }
-          }
-        });
+        this.recordGateRejection(now, payload.opportunity.id, marketId, ['missing_orderbook']);
         return;
       }
 
       const isEv = payload.opportunity.type === 'ev';
       if (isEv && !payload.opportunity.side) {
-        this.deps.metrics.record({
-          type: 'gate_rejection',
-          timestamp: now,
-          data: {
-            opportunityId: payload.opportunity.id,
-            marketId,
-            reasons: ['ev_missing_side'],
-            gateDecision: { passed: false, reasons: ['ev_missing_side'] }
-          }
-        });
+        this.recordGateRejection(now, payload.opportunity.id, marketId, ['ev_missing_side']);
         return;
       }
 
@@ -611,25 +564,18 @@ export class Supervisor {
             confidence:
               typeof payload.opportunity.modelConfidence === 'number' ? payload.opportunity.modelConfidence : 0
           })
-        : evaluateGates({
+        : evaluateGatesWithFees({
             yesBook,
             noBook,
             policy: this.config.policy,
             nowMs: now,
-            desiredSize: payload.size
+            desiredSize: payload.size,
+            venue: 'polymarket',
+            feeModel: this.nearZeroFeeModel
           });
 
       if (!gateDecision.passed) {
-        this.deps.metrics.record({
-          type: 'gate_rejection',
-          timestamp: now,
-          data: {
-            opportunityId: payload.opportunity.id,
-            marketId,
-            reasons: gateDecision.reasons,
-            gateDecision
-          }
-        });
+        this.recordGateRejection(now, payload.opportunity.id, marketId, gateDecision.reasons, gateDecision);
         return;
       }
 
@@ -687,6 +633,38 @@ export class Supervisor {
     }
   }
 
+  private recordGateRejection(
+    nowMs: number,
+    opportunityId: string,
+    marketId: string,
+    reasons: string[],
+    gateDecision?: { passed: boolean; reasons: string[] }
+  ): void {
+    const reasonKey = normalizeReasonKey(reasons);
+    if (
+      !shouldEmitScopedReason(
+        this.gateRejectionEmissionState,
+        marketId,
+        reasonKey,
+        nowMs,
+        GATE_REJECTION_EMISSION_COOLDOWN_MS
+      )
+    ) {
+      return;
+    }
+
+    this.deps.metrics.record({
+      type: 'gate_rejection',
+      timestamp: nowMs,
+      data: {
+        opportunityId,
+        marketId,
+        reasons,
+        gateDecision: gateDecision ?? { passed: false, reasons }
+      }
+    });
+  }
+
   private buildPairIndex(): void {
     for (const pair of this.config.marketPairs) {
       const yes = this.tokenToPairs.get(pair.yesTokenId) ?? [];
@@ -724,6 +702,8 @@ export class Supervisor {
   updatePolicyAndRisk(policy: TradePolicy, risk: RiskConfig): void {
     this.config.policy = policy;
     this.config.riskConfig = risk;
+    this.nearZeroFeeModel = createUniformTakerFeeModel(policy.nearZeroFeeBps);
+    this.scanner.updatePolicy(policy);
     this.risk.updateConfig(risk, {
       maxOpenInventorySeconds: policy.maxOpenInventorySeconds,
       fallbackTickSize: policy.fallbackTickSize,

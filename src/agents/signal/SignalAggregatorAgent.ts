@@ -1,4 +1,5 @@
 import type { TradePolicy } from '../../config/policy.js';
+import type { MarketAllowlist } from '../../domain/allowlist.js';
 import type { MarketPair } from '../../domain/market.js';
 import { messageBus } from '../../core/MessageBus.js';
 import { LearningInsightEventSchema } from '../../domain/llm.js';
@@ -11,6 +12,7 @@ import { runWithConcurrency } from '../../utils/concurrency.js';
 export interface SignalAggregatorConfig {
   policy: TradePolicy;
   marketPairs: MarketPair[];
+  allowlist?: Pick<MarketAllowlist, 'isAllowed'>;
   clob: PolymarketClob;
   exa?: WebSearchClient;
   firecrawl?: WebSearchClient;
@@ -22,6 +24,7 @@ export interface SignalAggregatorConfig {
 export class SignalAggregatorAgent {
   private policy: TradePolicy;
   private marketPairs: MarketPair[];
+  private readonly allowlist?: Pick<MarketAllowlist, 'isAllowed'>;
   private readonly clob: PolymarketClob;
   private readonly exa?: WebSearchClient;
   private readonly firecrawl?: WebSearchClient;
@@ -37,6 +40,7 @@ export class SignalAggregatorAgent {
   constructor(config: SignalAggregatorConfig) {
     this.policy = config.policy;
     this.marketPairs = config.marketPairs;
+    this.allowlist = config.allowlist;
     this.clob = config.clob;
     this.exa = config.exa;
     this.firecrawl = config.firecrawl;
@@ -111,12 +115,29 @@ export class SignalAggregatorAgent {
 
     try {
       const nowMs = Date.now();
+      let skippedByAllowlist = 0;
       const pending = this.marketPairs.filter((pair) => {
+        if (this.allowlist && !this.allowlist.isAllowed(pair.marketId, nowMs)) {
+          skippedByAllowlist += 1;
+          return false;
+        }
         const cached = this.insightCache.get(pair.marketId);
         return !(cached && nowMs < cached.expiresAtMs);
       });
 
-      if (pending.length === 0) return;
+      if (skippedByAllowlist > 0) {
+        this.recordMetric('active_pair_skip_allowlist', {
+          skipped: skippedByAllowlist,
+          totalPairs: this.marketPairs.length
+        });
+      }
+
+      if (pending.length === 0) {
+        this.recordMetric('active_pair_skip_no_pending', {
+          totalPairs: this.marketPairs.length
+        });
+        return;
+      }
 
       const maxConcurrency = Math.max(1, Math.floor(this.policy.evWebSearchMaxConcurrency));
       await runWithConcurrency(pending, maxConcurrency, async (pair) => {

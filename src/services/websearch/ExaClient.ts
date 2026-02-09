@@ -16,6 +16,8 @@ export interface ExaClientConfig {
   maxContentBytes: number;
   searchPath: string;
   contentsPath: string;
+  cooldownMs: number;
+  cooldownFailureThreshold: number;
   cache: WebSearchCache;
   metrics?: MetricsStore;
 }
@@ -29,8 +31,12 @@ export class ExaClient implements WebSearchClient {
   private readonly maxContentBytes: number;
   private readonly searchPath: string;
   private readonly contentsPath: string;
+  private readonly cooldownMs: number;
+  private readonly cooldownFailureThreshold: number;
   private readonly cache: WebSearchCache;
   private readonly metrics?: MetricsStore;
+  private cooldownUntilMs = 0;
+  private consecutiveAuthFailures = 0;
 
   constructor(config: ExaClientConfig) {
     this.baseUrl = config.baseUrl;
@@ -46,6 +52,8 @@ export class ExaClient implements WebSearchClient {
     this.maxContentBytes = Math.max(config.maxContentBytes, 1);
     this.searchPath = config.searchPath;
     this.contentsPath = config.contentsPath;
+    this.cooldownMs = Math.max(0, Math.floor(config.cooldownMs));
+    this.cooldownFailureThreshold = Math.max(1, Math.floor(config.cooldownFailureThreshold));
     this.cache = config.cache;
     this.metrics = config.metrics;
   }
@@ -70,6 +78,15 @@ export class ExaClient implements WebSearchClient {
     if (cached) {
       this.recordMetric('search_cache_hit', { provider: 'exa' });
       return cached;
+    }
+
+    if (this.isInCooldown(nowMs)) {
+      this.recordMetric('provider_cooldown_skip', {
+        provider: 'exa',
+        kind: 'search',
+        remainingMs: Math.max(0, this.cooldownUntilMs - nowMs)
+      });
+      return [];
     }
 
     const start = new Date(nowMs - lookbackDays * 86400000).toISOString();
@@ -116,6 +133,17 @@ export class ExaClient implements WebSearchClient {
       return cached;
     }
 
+    if (this.isInCooldown(nowMs)) {
+      this.recordMetric('provider_cooldown_skip', {
+        provider: 'exa',
+        kind: 'contents',
+        remainingMs: Math.max(0, this.cooldownUntilMs - nowMs),
+        cached: cached.length,
+        uncached: uncached.length
+      });
+      return cached;
+    }
+
     const payload = { urls: uncached, text: true };
     const response = await this.request<unknown>('POST', this.contentsPath, payload, 'contents');
     const contents = normalizeContentResults(response, this.maxContentBytes);
@@ -158,6 +186,9 @@ export class ExaClient implements WebSearchClient {
 
         if (!response.ok) {
           this.recordMetric('request_failed', { provider: 'exa', kind, status: response.status });
+          if (response.status === 401 || response.status === 402) {
+            this.handleAuthFailure(kind, response.status, Date.now());
+          }
           throw new ExaApiError(
             `Exa API error ${response.status} for ${method} ${path}`,
             response.status,
@@ -171,12 +202,56 @@ export class ExaClient implements WebSearchClient {
         }
 
         const latencyMs = Date.now() - startedAtMs;
+        this.handleSuccess(kind, Date.now());
         this.recordMetric('request_ok', { provider: 'exa', kind, latencyMs });
         return parsedResult.parsed as T;
       } finally {
         clearTimeout(timeout);
       }
     });
+  }
+
+  private handleAuthFailure(kind: 'search' | 'contents', status: number, nowMs: number): void {
+    this.consecutiveAuthFailures += 1;
+    if (this.cooldownMs <= 0) return;
+    if (this.consecutiveAuthFailures < this.cooldownFailureThreshold) return;
+
+    const wasCoolingDown = this.isInCooldown(nowMs);
+    const nextCooldownUntil = nowMs + this.cooldownMs;
+    const previousUntil = this.cooldownUntilMs;
+    this.cooldownUntilMs = Math.max(this.cooldownUntilMs, nextCooldownUntil);
+
+    if (!wasCoolingDown || this.cooldownUntilMs > previousUntil) {
+      this.recordMetric('provider_cooldown_started', {
+        provider: 'exa',
+        kind,
+        status,
+        cooldownMs: this.cooldownMs,
+        failureCount: this.consecutiveAuthFailures
+      });
+    }
+  }
+
+  private handleSuccess(kind: 'search' | 'contents', nowMs: number): void {
+    const shouldRecordRecovery =
+      this.cooldownUntilMs > 0 &&
+      nowMs >= this.cooldownUntilMs &&
+      this.consecutiveAuthFailures >= this.cooldownFailureThreshold;
+
+    this.consecutiveAuthFailures = 0;
+    this.cooldownUntilMs = 0;
+
+    if (shouldRecordRecovery) {
+      this.recordMetric('provider_cooldown_recovered', {
+        provider: 'exa',
+        kind
+      });
+    }
+  }
+
+  private isInCooldown(nowMs: number): boolean {
+    if (this.cooldownMs <= 0) return false;
+    return nowMs < this.cooldownUntilMs;
   }
 
   private recordMetric(event: string, data: Record<string, unknown>): void {

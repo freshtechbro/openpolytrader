@@ -14,9 +14,9 @@ High-frequency arbitrage bot for Polymarket CLOB on Polygon POS, designed for $1
 - Run 24/7 with high uptime and auto-recover from crashes without corrupting state
 
 ### System Constraints
-- **Capital**: $1000 starting, deploy up to 80% per opportunity
+- **Capital**: $1000 starting; position sizing is risk-profile-driven (near-zero defaults to 10% target/10% max, aggressive profiles can be higher)
 - **Latency**: Polygon block time 2s >> RPC latency, optimize at application layer
-- **Rate Limits**: CLOB API 3,500 req/10s burst, 9,000 req/10s overall
+- **Rate Limits**: CLOB client request budget is env-configurable (defaults: 300 req/s with a 1s window)
 - **Cost**: $39/month infrastructure (3.9% of monthly capital)
 - **Language**: TypeScript/Node.js (ecosystem > raw speed)
 - **Storage**: SQLite (event sourcing, state persistence)
@@ -26,7 +26,7 @@ High-frequency arbitrage bot for Polymarket CLOB on Polygon POS, designed for $1
 ## Architecture Principles
 
 1. **Latency Hierarchy**: Polygon block time (2s) >> network latency (50-100ms) >> application latency (1-10ms)
-2. **Separation of Concerns**: Market data via CLOB WebSocket, execution via CLOB API, settlement via Polygon RPC
+2. **Separation of Concerns**: Market data via CLOB WebSocket, execution via CLOB API, optional chain reads/ops checks via Polygon RPC
 3. **Event-Driven**: All agents communicate via typed event bus
 4. **State Persistence**: Every decision and state change logged to SQLite
 5. **Idempotency**: All operations idempotent, replay-safe on crash recovery
@@ -96,9 +96,9 @@ flowchart TD
 │  │ Polymarket   │  │   Alchemy     │  │ QuickNode    │      │
 │  │ CLOB WebSocket│  │  Polygon RPC │  │  (fallback)  │      │
 │  │              │  │              │  │              │      │
-│  │ - Market data│  │ - Settlement │  │ - Backup RPC │      │
-│  │ - Orderbook  │  │ - Contracts  │  │ - Failover   │      │
-│  │ - Trades     │  │ - Events     │  │              │      │
+│  │ - Market data│  │ - Chain reads│  │ - Backup RPC │      │
+│  │ - Orderbook  │  │ - Allowances │  │ - Failover   │      │
+│  │ - Trades     │  │ - Diagnostics│  │              │      │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
 └─────────┼──────────────────┼──────────────────┼───────────────┘
           │                  │                  │
@@ -183,31 +183,29 @@ export class PolymarketRealtime {
   private ws: WebSocket;
   private subscriptions: Set<string> = new Set();
 
-  async connect(auth: AuthConfig): Promise<void> {
-    this.ws = new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market');
-    this.ws.onopen = () => this.authenticate(auth);
+  async connect(): Promise<void> {
+    this.ws = new WebSocket(this.config.url);
     this.ws.onmessage = (msg) => this.handleMessage(msg);
   }
 
-  subscribeToMarket(assetId: string): void {
+  subscribeMarkets(assetIds: string[]): void {
     this.ws.send(JSON.stringify({
-      auth: this.auth,
       type: 'market',
-      assets_ids: [assetId]
+      assets_ids: assetIds
     }));
-    this.subscriptions.add(assetId);
+    for (const assetId of assetIds) this.subscriptions.add(assetId);
   }
 
   private handleMessage(msg: MessageEvent): void {
     const event = JSON.parse(msg.data) as MarketEvent;
-    MessageBus.emit('market:updated', event);
+    messageBus.emit('market:updated', event);
   }
 }
 ```
 
 #### 1.2 RPC Provider: Alchemy Polygon
 
-**Purpose**: On-chain settlement, contract interactions, event monitoring
+**Purpose**: Chain reads, contract interactions, and operational diagnostics
 
 **Configuration**:
 ```typescript
@@ -281,19 +279,13 @@ type EventMap = {
   'order:filled': OrderFilled;
   'order:failed': OrderFailed;
   'circuit:tripped': CircuitBreakerEvent;
-};
-
-export class MessageBus {
-  private static emitter = new TypedEmitter<EventMap>();
-
-  static on<K extends keyof EventMap>(event: K, handler: (data: EventMap[K]) => void): void {
-    this.emitter.on(event, handler);
-  }
-
-  static emit<K extends keyof EventMap>(event: K, data: EventMap[K]): void {
-    this.emitter.emit(event, data);
-  }
 }
+
+const messageBus = new MessageBus<EventMap>();
+messageBus.on('market:updated', (event) => {
+  // handle typed event
+});
+messageBus.emit('market:updated', event);
 ```
 
 #### 2.2 EventStore
@@ -306,23 +298,30 @@ export interface StoredEvent {
   id: string;
   timestamp: number;
   type: string;
-  data: any;
+  payload: unknown;
   metadata: { agent: string; correlationId?: string };
 }
 
 export class EventStore {
-  private db: sqlite3.Database;
+  private db: Database.Database;
 
-  async append(event: StoredEvent): Promise<void> {
-    await this.db.run(
-      'INSERT INTO events (id, timestamp, type, data, metadata) VALUES (?, ?, ?, ?, ?)',
-      [event.id, event.timestamp, event.type, JSON.stringify(event.data), JSON.stringify(event.metadata)]
-    );
+  append(event: StoredEvent): void {
+    this.db
+      .prepare('INSERT INTO events (id, ts, type, payload, metadata) VALUES (?, ?, ?, ?, ?)')
+      .run(event.id, event.timestamp, event.type, JSON.stringify(event.payload), JSON.stringify(event.metadata));
   }
 
-  async getEvents(since: number): Promise<StoredEvent[]> {
-    const rows = await this.db.all('SELECT * FROM events WHERE timestamp > ? ORDER BY timestamp ASC', [since]);
-    return rows.map(row => ({ ...row, data: JSON.parse(row.data), metadata: JSON.parse(row.metadata) }));
+  listSince(sinceMs: number): StoredEvent[] {
+    const rows = this.db
+      .prepare('SELECT id, ts, type, payload, metadata FROM events WHERE ts > ? ORDER BY ts ASC')
+      .all(sinceMs) as Array<{ id: string; ts: number; type: string; payload: string; metadata: string }>;
+    return rows.map((row) => ({
+      id: row.id,
+      timestamp: row.ts,
+      type: row.type,
+      payload: JSON.parse(row.payload),
+      metadata: JSON.parse(row.metadata) as { agent: string; correlationId?: string }
+    }));
   }
 }
 ```
@@ -374,7 +373,7 @@ export class CircuitBreaker {
     this.lastFailureTime = Date.now();
     if (this.failures >= this.config.failureThreshold) {
       this.state = 'open';
-      MessageBus.emit('circuit:tripped', { service: this.serviceName });
+      messageBus.emit('circuit:tripped', { service: this.serviceName });
     }
   }
 }
@@ -395,20 +394,19 @@ export class MarketDataAgent {
   private orderbook: Map<string, OrderBook> = new Map();
 
   async start(): Promise<void> {
-    await this.realtime.connect({ key, secret, passphrase });
+    await this.realtime.connect();
     this.realtime.on('message', this.handleMessage.bind(this));
-    
-    // Subscribe to all active markets
-    const markets = await this.getActiveMarkets();
-    for (const market of markets) {
-      this.realtime.subscribeToMarket(market.id);
+
+    // Subscribe to configured token IDs (allowlist-driven)
+    if (this.config.tokenIds.length > 0) {
+      this.realtime.subscribeMarkets(this.config.tokenIds);
     }
   }
 
   private handleMessage(msg: any): void {
     if (msg.type === 'book') {
       this.updateOrderbook(msg);
-      MessageBus.emit('market:updated', msg);
+      messageBus.emit('market:updated', msg);
     }
   }
 
@@ -530,12 +528,6 @@ export class ExecutionAgent {
 
     // Monitor for fills
     const result = await this.monitorOrders([yesOrder, noOrder]);
-
-    if (result.status === 'filled') {
-      // Settle on-chain via Polygon RPC
-      await this.settleOrders([yesOrder, noOrder]);
-    }
-
     return result;
   }
 
@@ -618,7 +610,7 @@ export class OpsAgent {
 
     for (const [i, check] of checks.entries()) {
       if (check.status === 'rejected') {
-        MessageBus.emit('ops:alert', {
+        messageBus.emit('ops:alert', {
           severity: 'critical',
           check: ['WebSocket', 'RPC', 'RateLimit', 'CircuitBreaker'][i],
           error: check.reason
@@ -696,29 +688,29 @@ export class Supervisor {
   }
 
   private setupEventHandlers(): void {
-    MessageBus.on('market:updated', async (event: MarketEvent) => {
+    messageBus.on('market:updated', async (event: MarketEvent) => {
       const scanner = this.agents.get('scanner') as ScannerAgent;
       const opportunity = await scanner.scanMarket(event.marketId);
       
       if (opportunity) {
-        MessageBus.emit('opportunity:detected', opportunity);
+        messageBus.emit('opportunity:detected', opportunity);
       }
     });
 
-    MessageBus.on('opportunity:detected', async (op: ArbitrageOpportunity) => {
+    messageBus.on('opportunity:detected', async (op: ArbitrageOpportunity) => {
       const risk = this.agents.get('risk') as RiskAgent;
       const decision = await risk.evaluateOpportunity(op);
       
       if (decision.approved) {
-        MessageBus.emit('risk:approved', { opportunity: op, ...decision });
+        messageBus.emit('risk:approved', { opportunity: op, ...decision });
       }
     });
 
-    MessageBus.on('risk:approved', async (approved: ApprovedTrade) => {
+    messageBus.on('risk:approved', async (approved: ApprovedTrade) => {
       const execution = this.agents.get('execution') as ExecutionAgent;
       const result = await execution.executeArbitrage(approved.opportunity, approved.positionSize);
       
-      MessageBus.emit(result.status === 'filled' ? 'order:filled' : 'order:failed', result);
+      messageBus.emit(result.status === 'filled' ? 'order:filled' : 'order:failed', result);
     });
   }
 }
@@ -748,7 +740,7 @@ export class Supervisor {
 4. Execute Orders
    └─> ExecutionAgent places paired FOK orders via CLOB API
        └─> Monitors for fills
-       └─> On fill: settles on-chain via Polygon RPC
+       └─> Emits execution outcome + fill telemetry
 
 5. Portfolio Update
    └─> PortfolioAgent updates positions
@@ -768,7 +760,8 @@ export class Supervisor {
 2. Supervisor restarts
    └─> Reads last checkpoint from SQLite
    └─> Loads events from EventStore since last checkpoint
-   └─> Rebuilds state: orderbooks, positions, portfolio
+   └─> Restores active execution state
+   └─> Rehydrates orderbooks/positions from live feeds and APIs
 
 3. Resume operation
    └─> MarketDataAgent reconnects to WebSocket
@@ -789,7 +782,7 @@ export class Supervisor {
 - **Funds + allowance**: verify USDC.e balance and allowance before both legs.
 
 ### Order placement choreography
-- **Batch place** both FOK legs when supported to minimize timing skew.
+- **Submit both legs in parallel** (single-shot FOK legs) to minimize timing skew.
 - **Single-shot policy**: do not retry a failed leg without a fresh book check.
 - **Shared correlation ID**: idempotency keyed to opportunity signature (market ids + prices + size + time bucket).
 
@@ -847,14 +840,16 @@ Phase 2 cross-venue is gated by `PHASE2_CROSS_VENUE_ENABLED` (see `.env.example`
 
 ### Position Sizing
 ```
-max_position = available_capital * 0.80  // Deploy 80% per opportunity
-reserve_capital = available_capital * 0.20  // 20% for gas + buffer
+target_position = available_capital * risk.targetTradeFraction
+max_position = available_capital * risk.maxTradeFraction
+reserve_capital = available_capital - max_position
 ```
 
 ### Exposure Limits
 ```
-max_market_exposure = total_capital * 0.50  // Max 50% per market
-daily_drawdown_limit = total_capital * 0.10  // Halt if -10% daily
+max_market_exposure = total_capital * risk.maxMarketExposureFraction
+daily_drawdown_limit = total_capital * risk.maxDailyDrawdownFraction
+daily_loss_limit = total_capital * risk.dailyLossLimitFraction
 ```
 
 ### Profit Compounding
@@ -865,10 +860,11 @@ reinvest_every = 'trade'  // Immediate reinvestment
 
 ### Trade Filters
 ```
-min_profit_per_trade = $5
-min_edge = 1%  // sum < $0.99
-max_edge = 5%  // sum > $0.95 (avoid illiquid markets)
+min_edge = policy.edgeRequired
+max_edge = policy.maxEdge
+min_edge_ticks = policy.minEdgeTicks
 ```
+No fixed `min_profit_per_trade` threshold is configured; filtering is edge/depth/slippage-driven.
 
 ---
 
@@ -900,20 +896,12 @@ SLACK_WEBHOOK=xxx  # Alerts
 GET /health
 Response: {
   status: 'healthy' | 'degraded',
-  uptime: 123456,
-  agents: {
-    marketData: 'running',
-    scanner: 'running',
-    risk: 'running',
-    execution: 'running',
-    portfolio: 'running',
-    ops: 'running',
-    learning: 'running'
+  checks: {
+    book_freshness: { ok: true, latencyMs: 12, info: 'worst=token stalenessMs=123' },
+    clob: { ok: true, latencyMs: 24 }
   },
-  connections: {
-    websocket: 'connected',
-    rpc: 'connected'
-  }
+  lastCheckMs: 1739040000000,
+  uptimeMs: 123456
 }
 ```
 
@@ -972,7 +960,7 @@ Response: {
 
 ### Batching
 - Batch contract calls via Multicall
-- Batch event writes to SQLite (every 100 events or 5 seconds)
+- Event writes to SQLite are currently synchronous per event (no batch writer)
 
 ### Connection Pooling
 - Reuse WebSocket connections (auto-reconnect)

@@ -196,6 +196,54 @@ describe('SignalAggregatorAgent', () => {
     agent.stop();
   });
 
+  it('runs websearch only for allowlisted active pairs', async () => {
+    const active: MarketPair = { marketId: 'active-market', yesTokenId: 'y-active', noTokenId: 'n-active' };
+    const inactive: MarketPair = { marketId: 'inactive-market', yesTokenId: 'y-inactive', noTokenId: 'n-inactive' };
+    const clob = {
+      getMarket: vi.fn().mockImplementation(async (marketId: string) => ({
+        question: `Will ${marketId} happen?`,
+        tokens: [{ outcome: 'Yes' }, { outcome: 'No' }]
+      }))
+    } as unknown as PolymarketClob;
+
+    const exa = new StubWebSearchClient(
+      [{ url: 'https://example.net', title: 'Example', publishedAt: new Date().toISOString() }],
+      [{ url: 'https://example.net', text: 'yes' }]
+    );
+
+    const allowlist = {
+      isAllowed: vi.fn((marketId: string) => marketId === active.marketId)
+    };
+
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      signalMode: 'ev' as const,
+      evWebSearchExaEnabled: true,
+      evWebSearchFirecrawlEnabled: false,
+      evWebSearchMaxConcurrency: 1
+    };
+    const metrics = new MetricsStore(1000);
+
+    const agent = new SignalAggregatorAgent({
+      policy,
+      marketPairs: [active, inactive],
+      allowlist,
+      clob,
+      exa,
+      metrics
+    });
+
+    await (agent as unknown as { runOnce: () => Promise<void> }).runOnce();
+
+    expect(allowlist.isAllowed).toHaveBeenCalledTimes(2);
+    expect(clob.getMarket).toHaveBeenCalledTimes(1);
+    expect(clob.getMarket).toHaveBeenCalledWith(active.marketId);
+    expect(exa.search).toHaveBeenCalledTimes(3);
+    expect(exa.fetchContents).toHaveBeenCalledTimes(1);
+    const event = metrics.recent('web_search', 10).find((entry) => entry.data?.event === 'active_pair_skip_allowlist');
+    expect(event?.data?.skipped).toBe(1);
+  });
+
   it('skips run when insight cache is fresh', async () => {
     const pair: MarketPair = { marketId: 'cached-1', yesTokenId: 'y1', noTokenId: 'n1' };
     const clob = {

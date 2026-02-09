@@ -2,17 +2,22 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
-import { rmSync } from 'node:fs';
+import { renameSync, rmSync } from 'node:fs';
 
 import { EventStore, type StoredEvent } from '../../src/core/EventStore.js';
 import type { IdempotencyRecord } from '../../src/domain/idempotency.js';
 
 describe('EventStore integration', () => {
   const paths: string[] = [];
+  const cleanupSqliteArtifacts = (path: string) => {
+    for (const suffix of ['', '-wal', '-shm', '.bak', '.bak-wal', '.bak-shm']) {
+      rmSync(`${path}${suffix}`, { force: true });
+    }
+  };
 
   afterEach(() => {
     for (const path of paths.splice(0, paths.length)) {
-      rmSync(path, { force: true });
+      cleanupSqliteArtifacts(path);
     }
   });
 
@@ -249,5 +254,36 @@ describe('EventStore integration', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('recovers writes when the database file is moved and replaced', () => {
+    const path = `data/test-${randomUUID()}.db`;
+    paths.push(path);
+
+    const store = new EventStore({ dbPath: path });
+
+    store.persistMetric({
+      type: 'info',
+      timestamp: 1000,
+      data: { message: 'before_move' }
+    });
+
+    renameSync(path, `${path}.bak`);
+    const replacement = new Database(path);
+    replacement.close();
+
+    expect(() =>
+      store.persistMetric({
+        type: 'info',
+        timestamp: 2000,
+        data: { message: 'after_move' }
+      })
+    ).not.toThrow();
+
+    const metrics = store.queryMetrics('info', 100000, 100000);
+    const messages = metrics.map((event) => (event.data as { message?: string }).message);
+    expect(messages).toContain('after_move');
+
+    store.close();
   });
 });

@@ -117,7 +117,7 @@ For the CLOB subscriptions endpoint (`wss://ws-subscriptions-clob.polymarket.com
 ## Boot Flow
 1. `MarketCatalog` loads pairs from config and the optional JSON file.
 2. `main.ts` seeds the `MarketAllowlist` with `marketId` values.
-3. The Ops dashboard and `/metrics` endpoint report the seeded count.
+3. The Ops dashboard and `/allowlist` endpoint report the seeded count (`/metrics` reports event counts and `lastEventAt`).
 
 If no pairs are loaded, the allowlist is empty and no trades are permitted.
 

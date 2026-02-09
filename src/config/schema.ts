@@ -43,6 +43,7 @@ export interface ConfigSchema {
 const POLICY_FIELDS: ConfigField[] = [
   { key: 'edgeRequired', label: 'Edge Required', type: 'number', min: 0.0001, max: 1, step: 0.0001, unit: 'fraction' },
   { key: 'maxEdge', label: 'Max Edge', type: 'number', min: 0.0001, max: 1, step: 0.0001, unit: 'fraction' },
+  { key: 'evMaxEdge', label: 'EV Max Edge', type: 'number', min: 0.0001, max: 1, step: 0.0001, unit: 'fraction' },
   { key: 'depthHeadroomFraction', label: 'Depth Headroom', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
   { key: 'maxSpread', label: 'Max Spread', type: 'number', min: 0, max: 1, step: 0.001, unit: 'fraction' },
   {
@@ -110,9 +111,11 @@ const POLICY_FIELDS: ConfigField[] = [
   { key: 'cancelTimeoutMs', label: 'Cancel Timeout', type: 'number', min: 0, max: 60000, step: 10, unit: 'ms', integer: true },
   { key: 'fallbackTickSize', label: 'Fallback Tick Size', type: 'number', min: 0.0001, max: 1, step: 0.0001, unit: 'price' },
   { key: 'fallbackMinOrderSize', label: 'Fallback Min Order Size', type: 'number', min: 0.0001, max: 1000, step: 0.0001, unit: 'shares' },
+  { key: 'nearZeroFeeBps', label: 'Near-Zero Fee', type: 'number', min: 0, max: 10000, step: 1, unit: 'bps', integer: true },
   { key: 'evEdgeRequired', label: 'EV Edge Required', type: 'number', min: 0, max: 1, step: 0.0001, unit: 'fraction' },
   { key: 'evFeeBps', label: 'EV Fee', type: 'number', min: 0, max: 10000, step: 1, unit: 'bps', integer: true },
   { key: 'evConfidenceMin', label: 'EV Confidence Min', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
+  { key: 'evConfidenceMinFloor', label: 'EV Confidence Min Floor', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
   { key: 'evMaxPerMarketNotional', label: 'EV Max Per Market', type: 'number', min: 0, max: 100000, step: 1, unit: 'usd' },
   { key: 'evMaxPortfolioNotional', label: 'EV Max Portfolio', type: 'number', min: 0, max: 100000, step: 1, unit: 'usd' },
   { key: 'evCooldownSeconds', label: 'EV Cooldown', type: 'number', min: 0, max: 86400, step: 1, unit: 's', integer: true },

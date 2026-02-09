@@ -31,6 +31,16 @@ export function validateP0Config(policy: TradePolicy, risk: RiskConfig): void {
   if (policy.evEdgeRequired <= 0) {
     throw new Error(`Invalid config: evEdgeRequired=${policy.evEdgeRequired} (must be > 0)`);
   }
+  if (policy.evMaxEdge <= 0 || policy.evEdgeRequired >= policy.evMaxEdge) {
+    throw new Error(
+      `Invalid config: evMaxEdge=${policy.evMaxEdge} (must be > 0 and > evEdgeRequired ${policy.evEdgeRequired})`
+    );
+  }
+  if (policy.evConfidenceMinFloor < 0 || policy.evConfidenceMinFloor > policy.evConfidenceMin) {
+    throw new Error(
+      `Invalid config: evConfidenceMinFloor=${policy.evConfidenceMinFloor} (must be >= 0 and <= evConfidenceMin ${policy.evConfidenceMin})`
+    );
+  }
 
   if (policy.evMaxPerMarketNotional > 0 && policy.evMaxPortfolioNotional > 0) {
     if (policy.evMaxPerMarketNotional > policy.evMaxPortfolioNotional) {

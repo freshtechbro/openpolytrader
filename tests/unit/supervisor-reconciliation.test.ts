@@ -142,3 +142,289 @@ describe('Supervisor reconciliation', () => {
     expect(reconcileSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('Supervisor fee-aware near-zero gate recheck', () => {
+  function createBook(tokenId: string, bestBid: number, bestAsk: number, nowMs: number) {
+    return {
+      tokenId,
+      bids: [{ price: bestBid, size: 100 }],
+      asks: [{ price: bestAsk, size: 100 }],
+      tickSize: 0.01,
+      minOrderSize: 1,
+      lastUpdateMs: nowMs,
+      stableSinceMs: nowMs - 1000,
+      bestBid: { price: bestBid, size: 100 },
+      bestAsk: { price: bestAsk, size: 100 }
+    };
+  }
+
+  function createSupervisor(policyOverrides: Partial<typeof DEFAULT_TRADE_POLICY>) {
+    const metrics = new MetricsStore(1000);
+    const allowlist = new MarketAllowlist({ autoResume: false });
+    const incidentTracker = new IncidentTracker(allowlist, metrics, {
+      cooldownMs: 1,
+      maxIncidents: 10
+    });
+    const portfolio = new PortfolioAgent(1000);
+
+    const clob = {} as unknown as PolymarketClob;
+    const dataApi = {} as unknown as PolymarketDataApi;
+    const realtime = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      subscribeMarkets: vi.fn()
+    } as unknown as PolymarketRealtime;
+
+    const supervisor = new Supervisor(
+      {
+        marketPairs: [{ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }],
+        policy: { ...DEFAULT_TRADE_POLICY, ...policyOverrides },
+        riskConfig: { ...DEFAULT_RISK_CONFIG },
+        capital: 1000,
+        tradingEnabled: true,
+        tradingMode: 'paper'
+      },
+      {
+        clob,
+        dataApi,
+        realtime,
+        allowlist,
+        metrics,
+        incidentTracker,
+        portfolio
+      }
+    );
+
+    return { supervisor, metrics };
+  }
+
+  it('rejects risk-approved near-zero execution when fees erase edge', async () => {
+    const nowMs = Date.now();
+    const { supervisor, metrics } = createSupervisor({
+      nearZeroFeeBps: 100,
+      minDepthLevels: 1,
+      depthHeadroomFraction: 1,
+      depthBufferMultiplier: 0,
+      minEdgeTicks: 0,
+      entrySlippageToleranceBps: 1000
+    });
+
+    const executeArbitrage = vi.fn().mockResolvedValue({ status: 'submitted' });
+    const internals = supervisor as unknown as {
+      marketData: { getOrderBook: (tokenId: string) => unknown };
+      execution: { executeArbitrage: typeof executeArbitrage };
+      handleRiskApproved: (payload: { opportunity: unknown; size: number }) => Promise<void>;
+    };
+    internals.marketData = {
+      getOrderBook: (tokenId: string) => {
+        if (tokenId === 'yes-1') return createBook('yes-1', 0.47, 0.48, nowMs);
+        if (tokenId === 'no-1') return createBook('no-1', 0.48, 0.49, nowMs);
+        return undefined;
+      }
+    };
+    internals.execution = { executeArbitrage };
+
+    await internals.handleRiskApproved({
+      opportunity: {
+        id: 'opp-1',
+        marketId: 'market-1',
+        yesTokenId: 'yes-1',
+        noTokenId: 'no-1',
+        yesPrice: 0.48,
+        noPrice: 0.49,
+        costPerSet: 0.97,
+        edge: 0.03,
+        tickSize: 0.01,
+        maxSizeByDepth: 100,
+        minOrderSize: 1,
+        detectedAt: nowMs,
+        gateReasons: [],
+        pair: { marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' },
+        type: 'near_zero'
+      },
+      size: 1
+    });
+
+    expect(executeArbitrage).not.toHaveBeenCalled();
+    const rejection = metrics.recent('gate_rejection', 1)[0];
+    expect(rejection?.data?.reasons).toContain('edge_below_threshold_after_fees');
+  });
+
+  it('keeps backward-compatible behavior under zero fee config', async () => {
+    const nowMs = Date.now();
+    const { supervisor } = createSupervisor({
+      nearZeroFeeBps: 0,
+      minDepthLevels: 1,
+      depthHeadroomFraction: 1,
+      depthBufferMultiplier: 0,
+      minEdgeTicks: 0,
+      entrySlippageToleranceBps: 1000
+    });
+
+    const executeArbitrage = vi.fn().mockResolvedValue({ status: 'submitted' });
+    const internals = supervisor as unknown as {
+      marketData: { getOrderBook: (tokenId: string) => unknown };
+      execution: { executeArbitrage: typeof executeArbitrage };
+      handleRiskApproved: (payload: { opportunity: unknown; size: number }) => Promise<void>;
+    };
+    internals.marketData = {
+      getOrderBook: (tokenId: string) => {
+        if (tokenId === 'yes-1') return createBook('yes-1', 0.47, 0.48, nowMs);
+        if (tokenId === 'no-1') return createBook('no-1', 0.48, 0.49, nowMs);
+        return undefined;
+      }
+    };
+    internals.execution = { executeArbitrage };
+
+    await internals.handleRiskApproved({
+      opportunity: {
+        id: 'opp-1',
+        marketId: 'market-1',
+        yesTokenId: 'yes-1',
+        noTokenId: 'no-1',
+        yesPrice: 0.48,
+        noPrice: 0.49,
+        costPerSet: 0.97,
+        edge: 0.03,
+        tickSize: 0.01,
+        maxSizeByDepth: 100,
+        minOrderSize: 1,
+        detectedAt: nowMs,
+        gateReasons: [],
+        pair: { marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' },
+        type: 'near_zero'
+      },
+      size: 1
+    });
+
+    expect(executeArbitrage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Supervisor gate rejection dedupe', () => {
+  function createSupervisorForDedupe(configOverrides?: { maxConcurrentMarkets?: number }) {
+    const metrics = new MetricsStore(1000);
+    const allowlist = new MarketAllowlist({ autoResume: false });
+    const incidentTracker = new IncidentTracker(allowlist, metrics, {
+      cooldownMs: 1,
+      maxIncidents: 10
+    });
+    const portfolio = new PortfolioAgent(1000);
+    const realtime = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      subscribeMarkets: vi.fn()
+    } as unknown as PolymarketRealtime;
+
+    const supervisor = new Supervisor(
+      {
+        marketPairs: [{ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }],
+        policy: { ...DEFAULT_TRADE_POLICY },
+        riskConfig: { ...DEFAULT_RISK_CONFIG },
+        capital: 1000,
+        tradingEnabled: true,
+        tradingMode: 'paper',
+        ...configOverrides
+      },
+      {
+        clob: {} as unknown as PolymarketClob,
+        dataApi: {} as unknown as PolymarketDataApi,
+        realtime,
+        allowlist,
+        metrics,
+        incidentTracker,
+        portfolio
+      }
+    );
+
+    return { supervisor, metrics };
+  }
+
+  function makeOpportunity(nowMs: number) {
+    return {
+      id: 'opp-1',
+      marketId: 'market-1',
+      yesTokenId: 'yes-1',
+      noTokenId: 'no-1',
+      yesPrice: 0.48,
+      noPrice: 0.49,
+      costPerSet: 0.97,
+      edge: 0.03,
+      tickSize: 0.01,
+      maxSizeByDepth: 100,
+      minOrderSize: 1,
+      detectedAt: nowMs,
+      gateReasons: [],
+      pair: { marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' },
+      type: 'near_zero' as const
+    };
+  }
+
+  it('suppresses identical market_in_flight rejections within cooldown', async () => {
+    vi.useFakeTimers();
+    const nowMs = Date.now();
+    vi.setSystemTime(nowMs);
+
+    const { supervisor, metrics } = createSupervisorForDedupe();
+    const internals = supervisor as unknown as {
+      inFlightMarkets: Set<string>;
+      handleRiskApproved: (payload: { opportunity: ReturnType<typeof makeOpportunity>; size: number }) => Promise<void>;
+    };
+    internals.inFlightMarkets.add('market-1');
+
+    await internals.handleRiskApproved({ opportunity: makeOpportunity(nowMs), size: 1 });
+    await internals.handleRiskApproved({ opportunity: makeOpportunity(nowMs), size: 1 });
+
+    const events = metrics.recent('gate_rejection', 10);
+    expect(events).toHaveLength(1);
+    expect((events[0].data as { reasons: string[] }).reasons).toContain('market_in_flight');
+  });
+
+  it('re-emits identical rejection after dedupe cooldown elapses', async () => {
+    vi.useFakeTimers();
+    const nowMs = Date.now();
+    vi.setSystemTime(nowMs);
+
+    const { supervisor, metrics } = createSupervisorForDedupe();
+    const internals = supervisor as unknown as {
+      inFlightMarkets: Set<string>;
+      handleRiskApproved: (payload: { opportunity: ReturnType<typeof makeOpportunity>; size: number }) => Promise<void>;
+    };
+    internals.inFlightMarkets.add('market-1');
+
+    await internals.handleRiskApproved({ opportunity: makeOpportunity(nowMs), size: 1 });
+    vi.setSystemTime(nowMs + 3001);
+    await internals.handleRiskApproved({ opportunity: makeOpportunity(nowMs + 3001), size: 1 });
+
+    const events = metrics.recent('gate_rejection', 10);
+    expect(events).toHaveLength(2);
+    expect((events[0].data as { reasons: string[] }).reasons).toContain('market_in_flight');
+    expect((events[1].data as { reasons: string[] }).reasons).toContain('market_in_flight');
+  });
+
+  it('emits immediately when rejection reason changes within cooldown', async () => {
+    vi.useFakeTimers();
+    const nowMs = Date.now();
+    vi.setSystemTime(nowMs);
+
+    const { supervisor, metrics } = createSupervisorForDedupe({ maxConcurrentMarkets: 2 });
+    const internals = supervisor as unknown as {
+      inFlightMarkets: Set<string>;
+      handleRiskApproved: (payload: { opportunity: ReturnType<typeof makeOpportunity>; size: number }) => Promise<void>;
+    };
+
+    internals.inFlightMarkets.add('market-1');
+    await internals.handleRiskApproved({ opportunity: makeOpportunity(nowMs), size: 1 });
+
+    internals.inFlightMarkets.clear();
+    internals.inFlightMarkets.add('other-1');
+    internals.inFlightMarkets.add('other-2');
+    vi.setSystemTime(nowMs + 1000);
+    await internals.handleRiskApproved({ opportunity: makeOpportunity(nowMs + 1000), size: 1 });
+
+    const events = metrics.recent('gate_rejection', 10);
+    expect(events).toHaveLength(2);
+    expect((events[0].data as { reasons: string[] }).reasons).toContain('market_in_flight');
+    expect((events[1].data as { reasons: string[] }).reasons).toContain('max_concurrent_markets');
+  });
+});
