@@ -143,6 +143,69 @@ describe('LearningAgent online loop', () => {
     agent.stop();
   });
 
+  it('requests structured JSON format for non-claude learning models', async () => {
+    const dbPath = `data/test-${randomUUID()}.db`;
+    paths.push(dbPath);
+
+    const store = new EventStore({ dbPath });
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_LEARNING_MODE: 'active',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key',
+      LLM_LEARNING_MODEL: 'kimi-k2.5'
+    });
+    const llmConfig = loadLLMConfig(env);
+
+    let capturedRequest: unknown = null;
+    const agent = new LearningAgent(
+      {
+        enabled: true,
+        llm: {
+          config: llmConfig,
+          client: {
+            call: async (_agent: 'LearningAgent', request) => {
+              capturedRequest = request;
+              return {
+                status: 'success',
+                providerId: 'openrouter',
+                baseUrl: llmConfig.providers.openrouter.baseUrl,
+                endpoint: 'chat.completions',
+                model: llmConfig.agents.LearningAgent.model,
+                outputText:
+                  '{"insights":[{"market_id":"market_123","signal":"high_confidence","value":0.8,"ttl_ms":60000,"confidence":0.9}]}',
+                startedAtMs: Date.now(),
+                latencyMs: 1,
+                timeoutMs: llmConfig.agents.LearningAgent.timeoutMs,
+                maxRetries: llmConfig.retry.maxRetries,
+                attempt: 1
+              };
+            }
+          },
+          promptVersion: 'test-v1',
+          windowMs: 300000,
+          minEventsPerRun: 1,
+          policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+        }
+      },
+      store
+    );
+
+    messageBus.emit('opportunity:detected', {
+      opportunity: { id: 'opp-1', marketId: 'market_123', edge: 0.05 }
+    });
+    await (agent as unknown as { synthesizeNow: () => Promise<void> }).synthesizeNow();
+
+    expect(capturedRequest).toMatchObject({
+      endpoint: 'chat.completions',
+      max_tokens: 800,
+      response_format: { type: 'json_object' }
+    });
+
+    agent.stop();
+    store.close();
+  });
+
   it('persists market stats snapshots across restarts', () => {
     const dbPath = `data/test-${randomUUID()}.db`;
     paths.push(dbPath);

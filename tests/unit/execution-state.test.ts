@@ -119,6 +119,21 @@ describe('execution state machine', () => {
     expect(state.state).toBe('no_filled');
   });
 
+  it('transitions to both_filled when YES fill arrives after NO fill', () => {
+    const initial = createInitialExecutionState(BASE_INPUT);
+    const noFilled = applyEvents(initial, [
+      { type: 'SUBMIT_STARTED', atMs: 1260 },
+      { type: 'SUBMIT_YES', atMs: 1261 },
+      { type: 'SUBMIT_NO', atMs: 1262 },
+      { type: 'ACK_YES', atMs: 1263, order: ORDER },
+      { type: 'ACK_NO', atMs: 1264, order: ORDER },
+      { type: 'FILL_NO', atMs: 1265 }
+    ]);
+
+    const bothFilled = transitionExecutionState(noFilled, { type: 'FILL_YES', atMs: 1266 });
+    expect(bothFilled.state).toBe('both_filled');
+  });
+
   it('handles partial fill and unwind completion', () => {
     const initial = createInitialExecutionState(BASE_INPUT);
     const state = applyEvents(initial, [
@@ -153,6 +168,23 @@ describe('execution state machine', () => {
 
     expect(state.state).toBe('unwind_failed');
     expect(state.error).toBe('no-liquidity');
+  });
+
+  it('defaults unwind failure error when reason is missing', () => {
+    const initial = createInitialExecutionState(BASE_INPUT);
+    const state = applyEvents(initial, [
+      { type: 'SUBMIT_STARTED', atMs: 1450 },
+      { type: 'SUBMIT_YES', atMs: 1451 },
+      { type: 'SUBMIT_NO', atMs: 1452 },
+      { type: 'ACK_YES', atMs: 1453, order: ORDER },
+      { type: 'ACK_NO', atMs: 1454, order: ORDER },
+      { type: 'PARTIAL_FILL', atMs: 1455 },
+      { type: 'START_UNWIND', atMs: 1456 },
+      { type: 'UNWIND_FAILED', atMs: 1457 }
+    ]);
+
+    expect(state.state).toBe('unwind_failed');
+    expect(state.error).toBe('unwind_failed');
   });
 
   it('handles cancellation flow', () => {
@@ -194,6 +226,18 @@ describe('execution state machine', () => {
     expect(timedOut.error).toBe('ack');
   });
 
+  it('defaults timeout phase when missing', () => {
+    const initial = createInitialExecutionState(BASE_INPUT);
+    const yesPending = transitionExecutionState(initial, { type: 'SUBMIT_YES', atMs: 1604 });
+    const timedOut = transitionExecutionState(yesPending, {
+      type: 'TIMEOUT',
+      atMs: 1605
+    });
+
+    expect(timedOut.state).toBe('timeout');
+    expect(timedOut.error).toBe('timeout');
+  });
+
   it('rejects invalid transitions and terminal states', () => {
     const initial = createInitialExecutionState(BASE_INPUT);
 
@@ -220,6 +264,14 @@ describe('execution state machine', () => {
     expect(() =>
       transitionExecutionState(initial, { type: 'UNKNOWN', atMs: 1702 } as unknown as ExecutionEvent)
     ).toThrow('Unknown execution event');
+  });
+
+  it('uses unknown fallback when event type is absent', () => {
+    const initial = createInitialExecutionState(BASE_INPUT);
+
+    expect(() =>
+      transitionExecutionState(initial, { atMs: 1703 } as unknown as ExecutionEvent)
+    ).toThrow('Unknown execution event: unknown');
   });
 
   it('returns required actions for each state', () => {

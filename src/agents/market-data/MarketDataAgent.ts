@@ -591,7 +591,8 @@ export class MarketDataAgent {
         { role: 'user', content: JSON.stringify(promptEnvelope) }
       ],
       temperature: 0,
-      max_tokens: 200
+      max_tokens: 200,
+      response_format: { type: 'json_object' }
     };
 
     const call = await llm.client.call('MarketDataAgent', request);

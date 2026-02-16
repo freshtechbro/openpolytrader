@@ -147,5 +147,9 @@ describe('MarketDataAgent LLM request selection', () => {
     });
 
     expect(captured?.endpoint).toBe('chat.completions');
+    expect(captured).toMatchObject({
+      max_tokens: 200,
+      response_format: { type: 'json_object' }
+    });
   });
 });

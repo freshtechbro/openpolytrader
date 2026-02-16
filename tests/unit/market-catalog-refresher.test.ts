@@ -508,6 +508,74 @@ describe('MarketCatalogRefresher', () => {
       expect(secondUrl.searchParams.get('cursor')).toBe('next-1');
     });
 
+    it('stops pagination when cursor does not advance', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 0,
+          maxSpread: 0.02,
+          pageSize: 1,
+          maxPages: 3,
+          explorationEnabled: false,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({ condition_id: 'market-repeat', accepting_orders: false });
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: [market], next_cursor: 'same-cursor' })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: [market], next_cursor: 'same-cursor' })
+        });
+
+      await refresher.refresh();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('reads next cursor from nextCursor and cursor response fields', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 0,
+          maxSpread: 0.02,
+          pageSize: 1,
+          maxPages: 2,
+          explorationEnabled: false,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const marketA = createGammaMarket({ condition_id: 'market-nextCursor', accepting_orders: false });
+      const marketB = createGammaMarket({ condition_id: 'market-cursor', accepting_orders: false });
+
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: [marketA], nextCursor: 'next-camel' })
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ data: [marketB], cursor: 'next-fallback' })
+        });
+
+      await refresher.refresh();
+
+      const firstUrl = new URL(fetchMock.mock.calls[0][0] as string);
+      const secondUrl = new URL(fetchMock.mock.calls[1][0] as string);
+      expect(firstUrl.searchParams.get('offset')).toBe('0');
+      expect(secondUrl.searchParams.get('cursor')).toBe('next-camel');
+    });
+
     it('restarts the interval when refresh config changes', async () => {
       fetchMock.mockResolvedValue({
         ok: true,
@@ -554,6 +622,284 @@ describe('MarketCatalogRefresher', () => {
       const result = await refresher.refresh();
       
       expect(result.totalPairs).toBe(0);
+    });
+
+    it('filters out ended markets when excludeEndedMarkets is enabled', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          explorationEnabled: false,
+          excludeEndedMarkets: true,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({ endDate: '2020-01-01T00:00:00.000Z' });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(0);
+      expect(mockClob.getOrderBook).not.toHaveBeenCalled();
+    });
+
+    it('does not reuse seeded pairs when ended-market filter excludes them', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          explorationEnabled: false,
+          excludeEndedMarkets: true,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+      refresher.seed([{ marketId: 'market-123', yesTokenId: 'yes-token', noTokenId: 'no-token' }]);
+
+      const market = createGammaMarket({ endDate: '2020-01-01T00:00:00.000Z' });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(0);
+      expect(result.removedMarketIds).toEqual(['market-123']);
+      expect(mockClob.getOrderBook).not.toHaveBeenCalled();
+    });
+
+    it('keeps ended markets when excludeEndedMarkets is disabled', async () => {
+      const market = createGammaMarket({ endDate: '2020-01-01T00:00:00.000Z' });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(1);
+      expect(result.discoveredPairs.map((pair) => pair.marketId)).toEqual(['market-123']);
+    });
+
+    it('treats non-positive numeric end dates as unset when excludeEndedMarkets is enabled', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          explorationEnabled: false,
+          excludeEndedMarkets: true,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({ endDate: 0 });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(1);
+      expect(result.discoveredPairs.map((pair) => pair.marketId)).toEqual(['market-123']);
+    });
+
+    it('treats unparsable end date strings as unset when excludeEndedMarkets is enabled', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          explorationEnabled: false,
+          excludeEndedMarkets: true,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({
+        endDate: undefined,
+        end_date: 'not-a-date'
+      });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(1);
+      expect(result.discoveredPairs.map((pair) => pair.marketId)).toEqual(['market-123']);
+    });
+
+    it('supports unix-second end timestamps for ended-market exclusion', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          explorationEnabled: false,
+          excludeEndedMarkets: true,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({
+        endDate: undefined,
+        end_date: '1'
+      });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(0);
+      expect(mockClob.getOrderBook).not.toHaveBeenCalled();
+    });
+
+    it('supports unix-second numeric endDate values for ended-market exclusion', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          explorationEnabled: false,
+          excludeEndedMarkets: true,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({
+        endDate: 1
+      });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(0);
+      expect(mockClob.getOrderBook).not.toHaveBeenCalled();
+    });
+
+    it('supports millisecond numeric end timestamps for ended-market exclusion', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          explorationEnabled: false,
+          excludeEndedMarkets: true,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({
+        endDate: 1_700_000_000_000
+      });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(0);
+      expect(mockClob.getOrderBook).not.toHaveBeenCalled();
+    });
+
+    it('supports millisecond numeric-string end timestamps for ended-market exclusion', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          explorationEnabled: false,
+          excludeEndedMarkets: true,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({
+        endDate: undefined,
+        end_date: '1700000000000'
+      });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(0);
+      expect(mockClob.getOrderBook).not.toHaveBeenCalled();
+    });
+
+    it('treats blank end date strings as unset when excludeEndedMarkets is enabled', async () => {
+      refresher = new MarketCatalogRefresher(
+        {
+          refreshIntervalMs: 60000,
+          maxPairs: 10,
+          minVolume24h: 50000,
+          maxSpread: 0.02,
+          explorationEnabled: false,
+          excludeEndedMarkets: true,
+          gammaApiBaseUrl: 'https://gamma-api.example.com'
+        },
+        mockClob as unknown as PolymarketClob,
+        mockMetrics
+      );
+
+      const market = createGammaMarket({
+        endDate: undefined,
+        end_date: '   '
+      });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(1);
+      expect(result.discoveredPairs.map((pair) => pair.marketId)).toEqual(['market-123']);
     });
 
     it('filters out markets not accepting orders', async () => {
@@ -641,6 +987,25 @@ describe('MarketCatalogRefresher', () => {
       const result = await refresher.refresh();
       
       expect(result.totalPairs).toBe(0);
+    });
+
+    it('accepts numeric volume fallback when volume24hr fields are missing', async () => {
+      const market = createGammaMarket({
+        volume24hr: undefined,
+        volume24hrClob: undefined,
+        volumeNum: undefined,
+        volume: 90000
+      });
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+      expect(result.totalPairs).toBe(1);
     });
 
     it('filters out markets when volume is non-numeric', async () => {
@@ -931,6 +1296,21 @@ describe('MarketCatalogRefresher', () => {
       expect(pairs[0]).toEqual(existingPair);
     });
 
+    it('skips duplicate markets seen within the same refresh pass', async () => {
+      const marketA = createGammaMarket({ condition_id: 'dup-market', clobTokenIds: ['yes-a', 'no-a'] });
+      const marketB = createGammaMarket({ condition_id: 'dup-market', clobTokenIds: ['yes-b', 'no-b'] });
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([marketA, marketB])
+      });
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+      expect(result.totalPairs).toBe(1);
+      expect(mockClob.getOrderBook).toHaveBeenCalledTimes(2);
+    });
+
     it('keeps previous pairs when refresh returns empty', async () => {
       const existingPair: MarketPair = {
         marketId: 'market-123',
@@ -993,6 +1373,36 @@ describe('MarketCatalogRefresher', () => {
         ([entry]) => entry?.data?.message === 'market_catalog_refresh_empty'
       );
       expect(emptyLogs).toHaveLength(1);
+    });
+
+    it('suppresses empty refresh logs while log cooldown is active', async () => {
+      const existingPair: MarketPair = {
+        marketId: 'market-123',
+        yesTokenId: 'existing-yes',
+        noTokenId: 'existing-no'
+      };
+      refresher.seed([existingPair]);
+
+      const market = createGammaMarket({ condition_id: 'market-other', accepting_orders: false });
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      const internal = refresher as unknown as {
+        emptyRefreshBackoffUntil: number;
+        emptyRefreshLogUntil: number;
+      };
+      internal.emptyRefreshBackoffUntil = 0;
+      internal.emptyRefreshLogUntil = Date.now() + 120_000;
+
+      await refresher.refresh();
+
+      const recordMock = mockMetrics.record as unknown as ReturnType<typeof vi.fn>;
+      const emptyLogs = recordMock.mock.calls.filter(
+        ([entry]) => entry?.data?.message === 'market_catalog_refresh_empty'
+      );
+      expect(emptyLogs).toHaveLength(0);
     });
 
     it('records metrics on success', async () => {

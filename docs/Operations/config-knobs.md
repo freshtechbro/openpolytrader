@@ -2,6 +2,8 @@
 
 This document is the final inventory of configurable knobs and where they live.
 
+For minimum required keys and the complete environment variable index, see `docs/Operations/environment-reference.md`.
+
 ## Principles
 
 - **Infra knobs are env-only** to avoid runtime/UI drift.
@@ -60,7 +62,7 @@ Use `.env.example` for the full list; the most operationally relevant groups are
 - Telemetry persistence: `EVENT_STORE_PATH`, `EVENT_STORE_METRICS_RETENTION_DAYS`, `EVENT_STORE_METRICS_PRUNE_INTERVAL_MS`
 - Polymarket endpoints + rate limiting: `POLYMARKET_CLOB_*`, `POLYMARKET_WS_*`, `POLYMARKET_USER_WS_URL`
 - Polymarket auth derivation: `POLYMARKET_L1_PRIVATE_KEY`, `POLYMARKET_L1_NONCE` (optional; derive API creds at boot)
-- Market catalog filters: `MARKET_CATALOG_PATH`, `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS`, `MARKET_CATALOG_MIN_VOLUME_24H`, `MARKET_CATALOG_MAX_SPREAD`, `MARKET_CATALOG_PAGE_SIZE`, `MARKET_CATALOG_MAX_PAGES`, `MARKET_CATALOG_ORDER`, `MARKET_CATALOG_EXPLORATION_*`
+- Market catalog filters: `MARKET_CATALOG_PATH`, `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS`, `MARKET_CATALOG_MIN_VOLUME_24H`, `MARKET_CATALOG_MAX_SPREAD`, `MARKET_CATALOG_PAGE_SIZE`, `MARKET_CATALOG_MAX_PAGES`, `MARKET_CATALOG_ORDER`, `MARKET_CATALOG_EXCLUDE_ENDED_MARKETS`, `MARKET_CATALOG_EXPLORATION_*`, `MARKET_CATALOG_PRESTART_MAX_AGE_MS`
 - EV web search (direct API): `EXA_*` (including `EXA_COOLDOWN_MS`, `EXA_COOLDOWN_FAILURE_THRESHOLD`), `FIRECRAWL_*`, `EV_WEBSEARCH_*`
 - RPC providers + wait defaults: `*_RPC_URL`, `*_WS_URL`, `*_RPC_RPS`, `RPC_RATE_LIMIT_WINDOW_MS`, `RPC_WAIT_CONFIRMATIONS`, `RPC_WAIT_TIMEOUT_MS`, `RPC_CIRCUIT_*`
 - Live trading credentials: `ALCHEMY_API_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_PASSPHRASE`, `POLYMARKET_POSITIONS_USER`
@@ -82,6 +84,12 @@ Use `.env.example` for the full list; the most operationally relevant groups are
     - `MARKET_CATALOG_EXPLORATION_MAX_PAGES=3`
     - `MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H=1000`
   - Keep `MARKET_CATALOG_PAGE_SIZE=100` unless Gamma paging behavior requires adjustment.
+- Ended-market exclusion:
+  - `MARKET_CATALOG_EXCLUDE_ENDED_MARKETS=false` by default.
+  - Set to `true` to drop markets whose end timestamp has passed.
+- Prestart freshness gate:
+  - `MARKET_CATALOG_PRESTART_MAX_AGE_MS=21600000` (6h) by default.
+  - `0` forces overwrite refresh on every prestart run.
 - Exa cooldown controls:
   - `EXA_COOLDOWN_MS` controls auth/billing backoff window after `401/402`.
   - `EXA_COOLDOWN_FAILURE_THRESHOLD` controls consecutive `401/402` count required before cooldown starts.

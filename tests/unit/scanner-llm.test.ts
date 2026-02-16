@@ -6,6 +6,7 @@ import { ScannerAgent } from '../../src/agents/scanner/ScannerAgent.js';
 import { MarketAllowlist } from '../../src/domain/allowlist.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
+import { messageBus } from '../../src/core/MessageBus.js';
 import { loadEnv } from '../../src/config/env.js';
 import { loadLLMConfig } from '../../src/config/llm.js';
 import type { ArbitrageOpportunity } from '../../src/domain/opportunity.js';
@@ -184,6 +185,204 @@ describe('ScannerAgent LLM prioritization', () => {
     agent.stop();
     await vi.runAllTimersAsync();
     vi.useRealTimers();
+  });
+
+  it('sends structured JSON request format with explicit token cap', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_SCANNER_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+
+    let capturedRequest: unknown = null;
+    const client = {
+      call: async (_agent: 'ScannerAgent', request: unknown) => {
+        capturedRequest = request;
+        return {
+          status: 'success' as const,
+          providerId: 'opencode-zen' as const,
+          baseUrl: llmConfig.providers['opencode-zen'].baseUrl,
+          endpoint: 'chat.completions' as const,
+          model: llmConfig.agents.ScannerAgent.model,
+          outputText: '{"priority_score":0.7,"rationale":"ok","confidence":0.7}',
+          startedAtMs: Date.now(),
+          latencyMs: 0,
+          timeoutMs: llmConfig.agents.ScannerAgent.timeoutMs,
+          maxRetries: llmConfig.retry.maxRetries,
+          attempt: 1
+        };
+      }
+    };
+
+    const allowlist = new MarketAllowlist({ autoResume: true });
+    const agent = new ScannerAgent(DEFAULT_TRADE_POLICY, allowlist, {
+      tradingMode: 'paper',
+      llm: {
+        config: llmConfig,
+        client,
+        promptVersion: 'test-v1',
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }
+    });
+
+    const opportunities: ArbitrageOpportunity[] = [
+      {
+        id: 'opp-1',
+        marketId: 'm1',
+        yesTokenId: 'y1',
+        noTokenId: 'n1',
+        yesPrice: 0.4,
+        noPrice: 0.55,
+        costPerSet: 0.95,
+        edge: 0.05,
+        tickSize: 0.01,
+        maxSizeByDepth: 100,
+        minOrderSize: 1,
+        detectedAt: Date.now(),
+        gateReasons: [],
+        pair: { marketId: 'm1', yesTokenId: 'y1', noTokenId: 'n1' }
+      }
+    ];
+
+    await agent.prioritizeOpportunities(opportunities);
+    expect(capturedRequest).toMatchObject({
+      endpoint: 'chat.completions',
+      max_tokens: 300,
+      response_format: { type: 'json_object' }
+    });
+    agent.stop();
+  });
+
+  it('records missing_output_text decision when scanner output is empty', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_SCANNER_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+    const llmClient = new MockLLMClient({
+      defaultProviderId: 'opencode-zen',
+      defaultBaseUrl: llmConfig.providers['opencode-zen'].baseUrl,
+      defaultTimeoutMs: llmConfig.agents.ScannerAgent.timeoutMs
+    });
+    llmClient.enqueue('ScannerAgent', {
+      status: 'success',
+      endpoint: 'chat.completions',
+      model: llmConfig.agents.ScannerAgent.model,
+      outputText: null
+    });
+
+    const decisions: Array<{ decision?: { output?: { rationale?: string }; clamp?: { violations?: string[] } } }> =
+      [];
+    const handler = (payload: unknown) => {
+      decisions.push(payload as { decision?: { output?: { rationale?: string }; clamp?: { violations?: string[] } } });
+    };
+    messageBus.on('llm:decision', handler);
+
+    const agent = new ScannerAgent(DEFAULT_TRADE_POLICY, new MarketAllowlist({ autoResume: true }), {
+      tradingMode: 'paper',
+      llm: {
+        config: llmConfig,
+        client: llmClient,
+        promptVersion: 'test-v1',
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }
+    });
+
+    const now = Date.now();
+    const opportunities: ArbitrageOpportunity[] = [
+      {
+        id: 'opp-1',
+        marketId: 'm1',
+        yesTokenId: 'y1',
+        noTokenId: 'n1',
+        yesPrice: 0.4,
+        noPrice: 0.55,
+        costPerSet: 0.95,
+        edge: 0.05,
+        tickSize: 0.01,
+        maxSizeByDepth: 100,
+        minOrderSize: 1,
+        detectedAt: now,
+        gateReasons: [],
+        pair: { marketId: 'm1', yesTokenId: 'y1', noTokenId: 'n1' }
+      }
+    ];
+
+    await agent.prioritizeOpportunities(opportunities, now);
+    messageBus.off('llm:decision', handler);
+
+    expect(decisions[0]?.decision?.output?.rationale).toBe('missing_output_text');
+    expect(decisions[0]?.decision?.clamp?.violations).toEqual(['missing_output_text']);
+    agent.stop();
+  });
+
+  it('records invalid_output decision when scanner output is malformed JSON', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_SCANNER_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+    const llmClient = new MockLLMClient({
+      defaultProviderId: 'opencode-zen',
+      defaultBaseUrl: llmConfig.providers['opencode-zen'].baseUrl,
+      defaultTimeoutMs: llmConfig.agents.ScannerAgent.timeoutMs
+    });
+    llmClient.enqueue('ScannerAgent', {
+      status: 'success',
+      endpoint: 'chat.completions',
+      model: llmConfig.agents.ScannerAgent.model,
+      outputText: '{'
+    });
+
+    const decisions: Array<{ decision?: { output?: { rationale?: string }; clamp?: { violations?: string[] } } }> =
+      [];
+    const handler = (payload: unknown) => {
+      decisions.push(payload as { decision?: { output?: { rationale?: string }; clamp?: { violations?: string[] } } });
+    };
+    messageBus.on('llm:decision', handler);
+
+    const agent = new ScannerAgent(DEFAULT_TRADE_POLICY, new MarketAllowlist({ autoResume: true }), {
+      tradingMode: 'paper',
+      llm: {
+        config: llmConfig,
+        client: llmClient,
+        promptVersion: 'test-v1',
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }
+    });
+
+    const now = Date.now();
+    const opportunities: ArbitrageOpportunity[] = [
+      {
+        id: 'opp-1',
+        marketId: 'm1',
+        yesTokenId: 'y1',
+        noTokenId: 'n1',
+        yesPrice: 0.4,
+        noPrice: 0.55,
+        costPerSet: 0.95,
+        edge: 0.05,
+        tickSize: 0.01,
+        maxSizeByDepth: 100,
+        minOrderSize: 1,
+        detectedAt: now,
+        gateReasons: [],
+        pair: { marketId: 'm1', yesTokenId: 'y1', noTokenId: 'n1' }
+      }
+    ];
+
+    await agent.prioritizeOpportunities(opportunities, now);
+    messageBus.off('llm:decision', handler);
+
+    expect(decisions[0]?.decision?.output?.rationale).toBe('invalid_output');
+    expect(decisions[0]?.decision?.clamp?.violations).toEqual(['invalid_output']);
+    agent.stop();
   });
 });
 

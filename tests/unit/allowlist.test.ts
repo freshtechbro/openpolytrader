@@ -82,6 +82,19 @@ describe('MarketAllowlist', () => {
     expect(status?.status).toBe('allowed');
   });
 
+  it('returns null when auto-resume cannot restore an entry', () => {
+    const allowlist = new MarketAllowlist({ autoResume: true });
+    (allowlist as unknown as { entries: Map<string, unknown> }).entries.set('m1', {
+      status: 'quarantined',
+      until: Date.now() - 1
+    });
+    (allowlist as unknown as { allow: (key: string) => void }).allow = () => {
+      (allowlist as unknown as { entries: Map<string, unknown> }).entries.delete('m1');
+    };
+
+    expect(allowlist.getStatus('m1')).toBeNull();
+  });
+
   it('returns null for unknown entries', () => {
     const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
     expect(allowlist.getStatus('missing')).toBeNull();

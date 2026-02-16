@@ -1,125 +1,144 @@
-# Development Setup
+# Development Setup Spec
 
-## Prerequisites
+## Minimum Requirements
+
+### Software
+
 - Node.js 20+
 - npm
+- Git
+- Optional: Docker (for `dev:live` / compose workflows)
 
-## Backend
+### Required Configuration by Mode
+
+#### Local safe mode (recommended)
+
+- `TRADING_MODE=paper` or `TRADING_ENABLED=false`
+- `OPS_API_TOKEN` in `.env`
+- `VITE_OPS_API_TOKEN` in `dashboard/.env` (match `OPS_API_TOKEN`)
+
+#### Live mode (strict required keys)
+
+When `TRADING_ENABLED=true` and `TRADING_MODE=live`, runtime validation requires:
+
+- `ALCHEMY_API_KEY`
+- `POLYMARKET_API_KEY`
+- `POLYMARKET_API_SECRET`
+- `POLYMARKET_PASSPHRASE`
+- `POLYMARKET_POSITIONS_USER`
+
+## First-Time Setup
 
 ```bash
 npm install
-npm run dev
+npm --prefix dashboard install
+cp .env.example .env
+cp dashboard/.env.example dashboard/.env
 ```
 
-Ops API defaults to `http://localhost:3000`.
-
-## Backend + Dashboard (dev:ops)
+Set local-safe defaults before first run:
 
 ```bash
-npm install
+# .env
+TRADING_MODE=paper
+TRADING_ENABLED=true
+OPS_API_TOKEN=replace-with-secure-token
+```
+
+```bash
+# dashboard/.env
+VITE_OPS_BASE_URL=http://localhost:3000
+VITE_OPS_API_TOKEN=replace-with-secure-token
+```
+
+## Quickstart Modes
+
+### Backend + Dashboard (recommended)
+
+```bash
 npm run dev:ops
 ```
 
-Notes:
-- Requires `OPS_API_TOKEN` or `VITE_OPS_API_TOKEN` in `dashboard/.env`.
-- Dashboard runs on `http://localhost:5174` by default (override with `DASHBOARD_PORT`).
-- Stop with `npm run dev:ops:down`.
-- Logs: `tmp/backend.log`, `tmp/dashboard.log`.
+Behavior:
 
-## Dashboard
+- Requires an ops token (from env or dashboard env)
+- Starts backend on `http://localhost:3000`
+- Starts dashboard on `http://localhost:5174`
+- Forces backend runtime to `TRADING_MODE=paper` in script startup
+- Writes logs to `tmp/backend.log` and `tmp/dashboard.log`
+
+Stop:
 
 ```bash
-cd dashboard
-npm install
+npm run dev:ops:down
+```
+
+### Backend Only
+
+```bash
 npm run dev
 ```
 
-## Live (Docker backend + local dashboard dev server)
+### Dashboard Only
+
+```bash
+npm --prefix dashboard run dev
+```
+
+### Docker backend + local dashboard
 
 ```bash
 npm run dev:live
 ```
 
-Requires Docker running. This command starts the backend container and runs dashboard Vite locally. Stop the container with:
+Stop:
 
 ```bash
 npm run dev:live:down
 ```
 
-## Environment variables
+## First-Run Verification
 
-Start from `.env.example`.
-For the full env-key inventory and production guidance, see `docs/Operations/runbook.md` and `docs/Operations/config-knobs.md`.
-Dashboard env keys live in `dashboard/.env.example`.
-
-Safety defaults:
-- `TRADING_ENABLED=true`
-- `TRADING_MODE=shadow`
-- `RISK_PROFILE=extra_high`
-- `OPS_API_ENABLED=true`
-
-For safe local testing, set `TRADING_ENABLED=false` or `TRADING_MODE=off`. The `dev:ops` script overrides to `TRADING_MODE=paper`.
-
-Risk profiles:
-- `RISK_PROFILE` selects `near_zero|moderate|high|extra_high` when explicitly set (non-empty).
-- `RISK_PROFILE_PATH` optionally points to a JSON profile file (overrides the default path).
-- Profile selections applied via the Ops API persist to `settings/risk-gates/active.json` and are loaded on boot unless overridden by env.
-
-Optional overrides (see `.env.example`):
-- Ops intervals/retention, allowlist auto-resume, event store path + telemetry retention, Polymarket CLOB/WS endpoints.
-- Ops reconciliation cadence/tolerance (`OPS_RECONCILIATION_*`) and Polymarket Data API endpoints (`POLYMARKET_DATA_API_*`).
-- RPC provider defaults, circuit breaker settings, rate limit window, and wait confirmations/timeouts.
-
-Near-zero-risk live mode requires user channel connectivity, configured via `POLYMARKET_USER_WS_URL` (default in `.env.example`).
-If credentials are missing or the user channel is disconnected, near-zero-risk live mode refuses to place orders (fail-closed).
-Live mode also requires `POLYMARKET_POSITIONS_USER` for portfolio reconciliation against the Polymarket Data API.
-
-Dashboard env (build-time):
-- `VITE_OPS_BASE_URL=http://localhost:3000`
-- `VITE_OPS_API_TOKEN=...`
-- `VITE_PORTFOLIO_REFRESH_MS=5000`
-- `VITE_SLO_REFRESH_MS=30000`
-- `VITE_INCIDENTS_LIMIT=100`
-- `VITE_INCIDENTS_PREVIEW_LIMIT=6`
-
-RPC infra env (env-only; UI never edits these):
-- `ALCHEMY_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2`
-- `ALCHEMY_WS_URL=wss://polygon-mainnet.g.alchemy.com/v2`
-- `ALCHEMY_RPC_RPS=125`
-- `QUICKNODE_RPC_URL=...`
-- `QUICKNODE_RPC_RPS=10`
-- `CHAINSTACK_RPC_URL=https://polygon-mainnet.chainstacklabs.com`
-- `CHAINSTACK_WS_URL=wss://polygon-mainnet.chainstacklabs.com`
-- `CHAINSTACK_RPC_RPS=600`
-- `ANKR_RPC_URL=https://rpc.ankr.com/polygon`
-- `ANKR_RPC_RPS_PHASE1=30`
-- `ANKR_RPC_RPS_PHASE2=1500`
-- `PRIVATE_RPC_URL=http://localhost:8545`
-- `PRIVATE_WS_URL=ws://localhost:8545`
-- `PRIVATE_RPC_RPS=10000`
-- `RPC_RATE_LIMIT_WINDOW_MS=1000`
-- `RPC_WAIT_CONFIRMATIONS=1`
-- `RPC_WAIT_TIMEOUT_MS=60000`
-- `RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE1=5`
-- `RPC_CIRCUIT_TIMEOUT_MS_PHASE1=60000`
-- `RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE1=3`
-- `RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE2=3`
-- `RPC_CIRCUIT_TIMEOUT_MS_PHASE2=30000`
-- `RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE2=5`
-- `RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE3=2`
-- `RPC_CIRCUIT_TIMEOUT_MS_PHASE3=15000`
-- `RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE3=10`
-
-## Docker
-
-Build and run locally:
+### Health check
 
 ```bash
-docker compose up --build
+curl -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/health
 ```
 
-Notes:
-- Container exposes `3000`.
-- SQLite database persists in `./data` (mounted into the container).
-- Docker healthcheck uses `GET /health/live` (liveness). For orchestrator readiness probes, use `GET /health/ready` (returns `503` when degraded).
-- For live trading, set the required Polymarket + RPC keys (see `docs/Operations/runbook.md`).
+### Config check
+
+```bash
+curl -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/config
+```
+
+Confirm:
+
+- `tradingMode` is `paper` (or your expected mode)
+- dashboard loads at `http://localhost:5174`
+
+## Quality Gate Commands
+
+Run before PRs/releases:
+
+```bash
+npm run lint
+npm run typecheck
+npm run build
+npm run test
+npm run test:coverage
+npm --prefix dashboard run build
+```
+
+Optional UI e2e:
+
+```bash
+npm --prefix dashboard run test:e2e
+```
+
+## References
+
+- Full env var inventory: `docs/Operations/environment-reference.md`
+- Ops API: `docs/API.md`
+- Runtime knobs: `docs/Operations/config-knobs.md`
+- Operations procedures: `docs/Operations/runbook.md`
+- Security controls: `docs/Operations/security.md`

@@ -209,7 +209,7 @@ export class RiskAgent {
 
 ### Coverage Threshold
 
-**Minimum 95% coverage** is required for all contributions.
+**Minimum 97% coverage** is required for all contributions.
 
 ```bash
 # Run tests with coverage
@@ -373,7 +373,7 @@ const idempotencyKey = createHash('sha256')
 
 - Clear description of changes
 - Link to related issue(s)
-- Test coverage report (95%+ required)
+- Test coverage report (97%+ required)
 - Documentation updates if applicable
 - No breaking changes without discussion
 

@@ -126,11 +126,15 @@ export class LLMClient {
       };
     }
 
+    const fallbackProviderModel = normalizeOptionalModelId(agentConfig.fallbackProviderModel);
+    const providerFallbackRequest = fallbackProviderModel
+      ? buildBackupRequest(request, fallbackProviderModel)
+      : request;
     const providerFallbackReason = buildFallbackReason(backupModel ? 'backup' : 'primary', lastResult);
     const providerFallbackResult = await this.tryProvider({
       providerId: selection.fallbackId,
       agent,
-      request,
+      request: providerFallbackRequest,
       timeoutMs,
       maxRetries,
       attempt,
@@ -448,7 +452,8 @@ const OPENROUTER_TO_ZEN_MODEL_ID: Record<string, string> = {
   'z-ai/glm-4.7': 'glm-4.7',
   'openai/gpt-5-nano': 'gpt-5-nano',
   'minimax/minimax-m2.1': 'minimax-m2.1',
-  'qwen/qwen3-coder': 'qwen3-coder'
+  'qwen/qwen3-coder': 'qwen3-coder',
+  'qwen/qwen3-coder-next': 'qwen3-coder'
 };
 
 const LEGACY_ZEN_MODEL_ALIASES: Record<string, string> = {
@@ -460,6 +465,12 @@ const LEGACY_ZEN_MODEL_ALIASES: Record<string, string> = {
 
 function normalizeZenModelId(model: string): string {
   return LEGACY_ZEN_MODEL_ALIASES[model] ?? model;
+}
+
+function normalizeOptionalModelId(model: string | null | undefined): string | null {
+  if (typeof model !== 'string') return null;
+  const trimmed = model.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function mapOpenRouterModelIdToZen(model: string): string {
@@ -635,7 +646,7 @@ function mapZenModelIdToOpenRouter(model: string): string {
     case 'minimax-m2.1':
       return 'minimax/minimax-m2.1';
     case 'qwen3-coder':
-      return 'qwen/qwen3-coder';
+      return 'qwen/qwen3-coder-next';
     default:
       return normalized;
   }

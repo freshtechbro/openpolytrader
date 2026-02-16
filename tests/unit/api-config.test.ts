@@ -180,6 +180,20 @@ describe('ops config endpoints', () => {
     await app.close();
   });
 
+  it('returns default risk profile snapshot when no profile state is provided', async () => {
+    const { app } = buildServer();
+
+    const response = await app.inject({ method: 'GET', url: '/config/risk-profiles' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      activeProfile: 'extra_high',
+      activeProfileSource: 'defaults'
+    });
+
+    await app.close();
+  });
+
   it('applies risk profile when configured', async () => {
     const applyRiskProfile = vi.fn().mockReturnValue({
       profile: { id: 'high', source: 'test' },
@@ -250,6 +264,30 @@ describe('ops config endpoints', () => {
     await app.close();
   });
 
+  it('passes risk profile override path when provided', async () => {
+    const applyRiskProfile = vi.fn().mockReturnValue({
+      profile: { id: 'high', source: 'test' },
+      policy: { ...DEFAULT_TRADE_POLICY },
+      risk: { ...DEFAULT_RISK_CONFIG },
+      persisted: true
+    });
+    const { app } = buildServer({
+      applyRiskProfile,
+      riskProfile: { id: 'near_zero', source: 'defaults' }
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/risk-profile',
+      payload: { profile: 'high', path: 'settings/risk-gates/high.json' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(applyRiskProfile).toHaveBeenCalledWith('high', 'settings/risk-gates/high.json');
+
+    await app.close();
+  });
+
   it('returns apply error when risk profile apply fails', async () => {
     const applyRiskProfile = vi.fn(() => {
       throw new Error('boom');
@@ -271,6 +309,27 @@ describe('ops config endpoints', () => {
     await app.close();
   });
 
+  it('returns apply error when risk profile apply throws a non-error value', async () => {
+    const applyRiskProfile = vi.fn(() => {
+      throw 'boom';
+    });
+    const { app } = buildServer({
+      applyRiskProfile,
+      riskProfile: { id: 'near_zero', source: 'defaults' }
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/risk-profile',
+      payload: { profile: 'high' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'risk_profile_apply_failed', message: 'boom' });
+
+    await app.close();
+  });
+
   it('rejects invalid risk profile', async () => {
     const applyRiskProfile = vi.fn();
     const { app } = buildServer({
@@ -288,6 +347,45 @@ describe('ops config endpoints', () => {
     const body = response.json() as { error?: string; validProfiles?: string[] };
     expect(body.error).toBe('invalid_profile');
     expect(Array.isArray(body.validProfiles)).toBe(true);
+    expect(applyRiskProfile).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('rejects risk profile requests when body is missing', async () => {
+    const applyRiskProfile = vi.fn();
+    const { app } = buildServer({
+      applyRiskProfile,
+      riskProfile: { id: 'near_zero', source: 'defaults' }
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/risk-profile'
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid_profile' });
+    expect(applyRiskProfile).not.toHaveBeenCalled();
+
+    await app.close();
+  });
+
+  it('rejects risk profile requests when profile is not a string', async () => {
+    const applyRiskProfile = vi.fn();
+    const { app } = buildServer({
+      applyRiskProfile,
+      riskProfile: { id: 'near_zero', source: 'defaults' }
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/config/risk-profile',
+      payload: { profile: 123 }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid_profile' });
     expect(applyRiskProfile).not.toHaveBeenCalled();
 
     await app.close();
@@ -558,6 +656,29 @@ describe('ops config endpoints', () => {
     await app.close();
   });
 
+  it('returns 500 with stringified message when SLO aggregation throws non-error', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+
+    const eventStore = {
+      queryMetricsByTypes: () => {
+        throw 'boom';
+      }
+    } as unknown as EventStore;
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, eventStore },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({ method: 'GET', url: '/slo' });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toMatchObject({ error: 'slo_compute_failed', message: 'boom' });
+
+    await app.close();
+  });
+
   it('returns 503 when infra config is not configured', async () => {
     const { app } = buildServer({ infraConfig: null });
     const response = await app.inject({ method: 'GET', url: '/config/infra' });
@@ -603,6 +724,14 @@ describe('ops config endpoints', () => {
     await app.close();
   });
 
+  it('accepts empty policy updates', async () => {
+    const { app } = buildServer();
+    const response = await app.inject({ method: 'PATCH', url: '/config/policy' });
+
+    expect(response.statusCode).toBe(200);
+    await app.close();
+  });
+
   it('rejects policy updates that violate validation', async () => {
     const { app } = buildServer();
     const response = await app.inject({
@@ -612,6 +741,27 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it('handles non-error policy update exceptions', async () => {
+    const failingStore = {
+      snapshot: () => ({ policy: DEFAULT_TRADE_POLICY, risk: DEFAULT_RISK_CONFIG }),
+      updatePolicy: () => {
+        throw 'boom';
+      },
+      updateRisk: () => DEFAULT_RISK_CONFIG
+    } as unknown as ConfigStore;
+
+    const { app } = buildServer({ configStore: failingStore });
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/config/policy',
+      payload: { maxDecisionLatencyMs: 300 }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid_policy_update', message: 'boom' });
     await app.close();
   });
 
@@ -1182,6 +1332,57 @@ describe('ops stream endpoint', () => {
 
     await app.close();
   });
+
+  it('keeps the stream open until maxPings is reached', async () => {
+    const { app } = buildServer({ streamHeartbeatMs: 1 });
+
+    const response = await app.inject({ method: 'GET', url: '/stream?maxPings=2' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.payload.match(/: ping/g)?.length).toBe(2);
+
+    await app.close();
+  });
+
+  it('maps error metrics to metric_error SSE event names', async () => {
+    vi.useFakeTimers();
+    try {
+      const { app, metrics } = buildServer({ streamHeartbeatMs: 10 });
+      const responsePromise = app.inject({ method: 'GET', url: '/stream?maxPings=1' });
+
+      await vi.advanceTimersByTimeAsync(1);
+      metrics.record({ type: 'error', timestamp: Date.now(), data: { message: 'boom' } });
+      await vi.advanceTimersByTimeAsync(10);
+
+      const response = await responsePromise;
+      expect(response.statusCode).toBe(200);
+      expect(response.payload).toContain('event: metric_error');
+
+      await app.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps non-error metric event names unchanged in SSE stream', async () => {
+    vi.useFakeTimers();
+    try {
+      const { app, metrics } = buildServer({ streamHeartbeatMs: 10 });
+      const responsePromise = app.inject({ method: 'GET', url: '/stream?maxPings=1' });
+
+      await vi.advanceTimersByTimeAsync(1);
+      metrics.record({ type: 'info', timestamp: Date.now(), data: { message: 'ping' } });
+      await vi.advanceTimersByTimeAsync(10);
+
+      const response = await responsePromise;
+      expect(response.statusCode).toBe(200);
+      expect(response.payload).toContain('event: info');
+
+      await app.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('ops debug endpoints', () => {
@@ -1278,6 +1479,22 @@ describe('ops debug endpoints', () => {
     await app.close();
   });
 
+  it('returns 400 when marketdata debug tokenId is not a string', async () => {
+    const debugMarketDataOutlier = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = buildServer({ debugMarketDataOutlier });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/debug/marketdata/outlier',
+      payload: { tokenId: 123 }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'missing_token_id' });
+
+    await app.close();
+  });
+
   it('returns 400 when marketdata debug reports failure', async () => {
     const debugMarketDataOutlier = vi.fn().mockResolvedValue({ ok: false, error: 'orderbook_missing' });
     const { app } = buildServer({ debugMarketDataOutlier });
@@ -1290,6 +1507,22 @@ describe('ops debug endpoints', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ ok: false, error: 'orderbook_missing' });
+
+    await app.close();
+  });
+
+  it('returns fallback marketdata debug error when failure has no explicit error', async () => {
+    const debugMarketDataOutlier = vi.fn().mockResolvedValue({ ok: false });
+    const { app } = buildServer({ debugMarketDataOutlier });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/debug/marketdata/outlier',
+      payload: { tokenId: 'token-1' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ ok: false, error: 'marketdata_outlier_failed' });
 
     await app.close();
   });
@@ -1364,6 +1597,33 @@ describe('ops debug endpoints', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true, marketId: 'm-1' });
+
+    await app.close();
+  });
+
+  it('passes empty synthetic opportunity options when body is missing', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const syntheticOpportunity = vi.fn().mockResolvedValue({ ok: true });
+
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent, syntheticOpportunity },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/debug/synthetic-opportunity'
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(syntheticOpportunity).toHaveBeenCalledTimes(1);
+    expect(syntheticOpportunity.mock.calls[0][0]).toMatchObject({
+      marketId: undefined,
+      executionMode: undefined,
+      execute: false
+    });
 
     await app.close();
   });

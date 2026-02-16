@@ -1,9 +1,9 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 
 import { MetricCard } from '../components/MetricCard';
 import { StatusPill } from '../components/StatusPill';
 import { Section } from '../components/Section';
-import { MetricsTable } from '../components/MetricsTable';
+import { MetricsTable, type TableRow } from '../components/MetricsTable';
 import { Panel } from '../components/Panel';
 import { INCIDENTS_PREVIEW_LIMIT } from '../lib/dashboardConfig';
 
@@ -42,17 +42,34 @@ export type SloAggregates = {
   error?: string;
 };
 
+export type IntentStrategy = 'near_zero' | 'ev' | 'unknown';
+
+export interface FinalIntent {
+  opportunityId: string;
+  marketId?: string;
+  marketQuestion?: string;
+  strategy?: IntentStrategy;
+  gatedAt: number;
+  executedAt?: number;
+  orderStatus?: string;
+  orderReason?: string;
+}
+
 export interface OverviewProps {
   health: HealthReport | null;
   metrics: MetricsSnapshot | null;
   slo: SloAggregates | null;
-  allowlist: AllowlistEntry[];
+  intents: FinalIntent[];
   incidents: any[];
   expanded: boolean;
   onToggleExpanded: () => void;
 }
 
-export function Overview({ health, metrics, slo, allowlist, incidents, expanded, onToggleExpanded }: OverviewProps) {
+const INTENTS_PREVIEW_LIMIT = 8;
+
+export function Overview({ health, metrics, slo, intents, incidents, expanded, onToggleExpanded }: OverviewProps) {
+  const [showAllGated, setShowAllGated] = useState(false);
+  const [showAllExecuted, setShowAllExecuted] = useState(false);
   const uptime = useMemo(() => formatUptime(health?.uptimeMs ?? 0), [health?.uptimeMs]);
   const sloRows = useMemo(() => {
     const aggregates = slo?.aggregates;
@@ -66,6 +83,58 @@ export function Overview({ health, metrics, slo, allowlist, incidents, expanded,
       String(agg.bookFreshnessViolations ?? 0)
     ]);
   }, [slo]);
+  const allIntentRows = useMemo((): TableRow[] => {
+    return intents.map((intent) => {
+      const status =
+        intent.orderStatus === 'submitted'
+          ? 'Executed'
+          : intent.orderStatus
+            ? `Order ${intent.orderStatus}`
+            : 'Ready';
+      const opportunity = intent.opportunityId;
+      const market = intent.marketQuestion ?? 'Question unavailable';
+      const strategy = formatIntentStrategy(intent.strategy);
+      const outcome = intent.orderReason ?? (intent.orderStatus === 'submitted' ? 'order_submitted' : 'awaiting_order');
+      const timeLabel = new Date(intent.gatedAt).toLocaleTimeString();
+      return [
+        <span className="intent-cell intent-cell--time" title={timeLabel}>{timeLabel}</span>,
+        <span className="intent-cell intent-cell--id" title={opportunity}>{opportunity}</span>,
+        <span className="intent-cell intent-cell--question" title={market}>{market}</span>,
+        <span className="intent-cell intent-cell--strategy" title={strategy}>{strategy}</span>,
+        <span className="intent-cell intent-cell--status">{status}</span>,
+        <span className="intent-cell intent-cell--outcome" title={outcome}>{outcome}</span>
+      ];
+    }).map((cells, index) => ({
+      key: `gated-${index}`,
+      cellClassNames: ['intent-cell-col', 'intent-cell-col', 'intent-cell-col', 'intent-cell-col', 'intent-cell-col', 'intent-cell-col'],
+      cells
+    }));
+  }, [intents]);
+  const executedIntentRows = useMemo((): TableRow[] => {
+    return intents
+      .filter((intent) => intent.orderStatus === 'submitted')
+      .map((intent, index) => {
+        const timeLabel = intent.executedAt ? new Date(intent.executedAt).toLocaleTimeString() : new Date(intent.gatedAt).toLocaleTimeString();
+        const opportunity = intent.opportunityId;
+        const market = intent.marketQuestion ?? 'Question unavailable';
+        const strategy = formatIntentStrategy(intent.strategy);
+        const reason = intent.orderReason ?? 'order_submitted';
+        return {
+          key: `executed-${index}`,
+          cellClassNames: ['intent-cell-col', 'intent-cell-col', 'intent-cell-col', 'intent-cell-col', 'intent-cell-col', 'intent-cell-col'],
+          cells: [
+            <span className="intent-cell intent-cell--time" title={timeLabel}>{timeLabel}</span>,
+            <span className="intent-cell intent-cell--id" title={opportunity}>{opportunity}</span>,
+            <span className="intent-cell intent-cell--question" title={market}>{market}</span>,
+            <span className="intent-cell intent-cell--strategy" title={strategy}>{strategy}</span>,
+            <span className="intent-cell intent-cell--status">{intent.orderStatus ?? 'submitted'}</span>,
+            <span className="intent-cell intent-cell--outcome" title={reason}>{reason}</span>
+          ]
+        };
+      });
+  }, [intents]);
+  const visibleGatedRows = showAllGated ? allIntentRows : allIntentRows.slice(0, INTENTS_PREVIEW_LIMIT);
+  const visibleExecutedRows = showAllExecuted ? executedIntentRows : executedIntentRows.slice(0, INTENTS_PREVIEW_LIMIT);
 
   return (
     <>
@@ -136,20 +205,89 @@ export function Overview({ health, metrics, slo, allowlist, incidents, expanded,
         />
       </Section>
 
-      <Section title="Allowlist & Quarantine" subtitle="Markets currently permitted to trade.">
+      <Section title="Final Intents" subtitle="Intents that passed risk gates and reached execution handoff.">
         <Panel
-          title="Allowlist"
+          title="All intents (gated)"
           body={
-            <MetricsTable
-              columns={['Market', 'Question', 'Status', 'Until', 'Reason']}
-              rows={allowlist.map((entry) => [
-                entry.key.slice(0, 12) + '…',
-                entry.question ?? '(loading...)',
-                entry.entry.status,
-                entry.entry.until ? new Date(entry.entry.until).toLocaleString() : '-',
-                entry.entry.reason ?? '-'
-              ])}
-            />
+            <>
+              <MetricsTable
+                className="intents-table"
+                ariaLabel="All gated intents"
+                columnClassNames={[
+                  'intents-col-time',
+                  'intents-col-opportunity',
+                  'intents-col-market',
+                  'intents-col-strategy',
+                  'intents-col-status',
+                  'intents-col-outcome'
+                ]}
+                columns={['Time', 'Opportunity', 'Market', 'Strategy', 'Status', 'Outcome']}
+                rows={
+                  allIntentRows.length > 0
+                    ? visibleGatedRows
+                    : [[
+                      <span className="intent-cell intent-cell--time">-</span>,
+                      <span className="intent-cell intent-cell--outcome">No gated intents captured yet</span>,
+                      <span className="intent-cell intent-cell--time">-</span>,
+                      <span className="intent-cell intent-cell--time">-</span>,
+                      <span className="intent-cell intent-cell--time">-</span>,
+                      <span className="intent-cell intent-cell--outcome">Waiting for stream events</span>
+                    ]]
+                }
+              />
+              {allIntentRows.length > INTENTS_PREVIEW_LIMIT ? (
+                <div className="table-meta">
+                  <span>
+                    Showing {visibleGatedRows.length} of {allIntentRows.length}
+                  </span>
+                  <button type="button" className="link-button" onClick={() => setShowAllGated((prev) => !prev)}>
+                    {showAllGated ? 'Show less' : 'Show all'}
+                  </button>
+                </div>
+              ) : null}
+            </>
+          }
+        />
+        <Panel
+          title="Executed intents"
+          body={
+            <>
+              <MetricsTable
+                className="intents-table"
+                ariaLabel="Executed intents"
+                columnClassNames={[
+                  'intents-col-time',
+                  'intents-col-opportunity',
+                  'intents-col-market',
+                  'intents-col-strategy',
+                  'intents-col-status',
+                  'intents-col-outcome'
+                ]}
+                columns={['Time', 'Opportunity', 'Market', 'Strategy', 'Order Status', 'Reason']}
+                rows={
+                  executedIntentRows.length > 0
+                    ? visibleExecutedRows
+                    : [[
+                      <span className="intent-cell intent-cell--time">-</span>,
+                      <span className="intent-cell intent-cell--outcome">No executed intents yet</span>,
+                      <span className="intent-cell intent-cell--time">-</span>,
+                      <span className="intent-cell intent-cell--time">-</span>,
+                      <span className="intent-cell intent-cell--time">-</span>,
+                      <span className="intent-cell intent-cell--outcome">Waiting for submitted orders</span>
+                    ]]
+                }
+              />
+              {executedIntentRows.length > INTENTS_PREVIEW_LIMIT ? (
+                <div className="table-meta">
+                  <span>
+                    Showing {visibleExecutedRows.length} of {executedIntentRows.length}
+                  </span>
+                  <button type="button" className="link-button" onClick={() => setShowAllExecuted((prev) => !prev)}>
+                    {showAllExecuted ? 'Show less' : 'Show all'}
+                  </button>
+                </div>
+              ) : null}
+            </>
           }
         />
       </Section>
@@ -195,4 +333,10 @@ function formatPercent(value: unknown): string {
 function formatMs(value: unknown): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 'n/a';
   return `${Math.round(value)}ms`;
+}
+
+function formatIntentStrategy(strategy?: IntentStrategy): string {
+  if (strategy === 'ev') return 'EV';
+  if (strategy === 'near_zero') return 'Near Zero';
+  return 'Unknown';
 }

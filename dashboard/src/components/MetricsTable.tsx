@@ -4,25 +4,30 @@ export interface TableRow {
   key?: string;
   style?: CSSProperties;
   cells: Array<ReactNode>;
+  cellClassNames?: Array<string | undefined>;
 }
 
 interface MetricsTableProps {
   columns: string[];
   rows: Array<Array<ReactNode> | TableRow>;
+  className?: string;
+  columnClassNames?: Array<string | undefined>;
+  ariaLabel?: string;
 }
 
 function isTableRow(row: Array<ReactNode> | TableRow): row is TableRow {
   return typeof row === 'object' && !Array.isArray(row) && 'cells' in row;
 }
 
-export function MetricsTable({ columns, rows }: MetricsTableProps) {
+export function MetricsTable({ columns, rows, className, columnClassNames, ariaLabel = 'Metrics table' }: MetricsTableProps) {
+  const tableClassName = className ? `table ${className}` : 'table';
   return (
-    <div className="table-wrapper" role="region" aria-label="Metrics table">
-      <table className="table">
+    <div className="table-wrapper" role="region" aria-label={ariaLabel}>
+      <table className={tableClassName}>
         <thead>
           <tr>
-            {columns.map((column) => (
-              <th key={column} scope="col">
+            {columns.map((column, columnIndex) => (
+              <th key={column} scope="col" className={columnClassNames?.[columnIndex]}>
                 {column}
               </th>
             ))}
@@ -42,9 +47,16 @@ export function MetricsTable({ columns, rows }: MetricsTableProps) {
               const rowStyle = isTableRow(row) ? row.style : undefined;
               return (
                 <tr key={rowKey} style={rowStyle}>
-                  {rowData.cells.map((cell, cellIndex) => (
-                    <td key={`cell-${rowIndex}-${cellIndex}`}>{cell}</td>
-                  ))}
+                  {rowData.cells.map((cell, cellIndex) => {
+                    const className = [columnClassNames?.[cellIndex], rowData.cellClassNames?.[cellIndex]]
+                      .filter(Boolean)
+                      .join(' ');
+                    return (
+                      <td key={`cell-${rowIndex}-${cellIndex}`} className={className || undefined}>
+                        {cell}
+                      </td>
+                    );
+                  })}
                 </tr>
               );
             })

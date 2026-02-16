@@ -154,6 +154,38 @@ describe('ZenMessagesClient', () => {
     expect(result.outputText).toBeNull();
   });
 
+  it('ignores blank and non-object nested message content values', async () => {
+    const server = await startServer(() => ({
+      status: 200,
+      body: JSON.stringify({
+        id: 'msg-blank-fields',
+        output_text: '   ',
+        text: '   ',
+        content: [
+          '   ',
+          123,
+          { content: '   ', value: '   ', output_text: '   ', text: { text: '   ' } }
+        ]
+      })
+    }));
+    servers.push(server);
+
+    const client = new ZenMessagesClient({ apiKey: 'k', baseURL: server.baseURL });
+    const result = await client.request(
+      {
+        endpoint: 'messages',
+        model: 'claude-sonnet-4',
+        system: 's',
+        messages: [{ role: 'user', content: 'ping' }],
+        temperature: 0,
+        max_tokens: 1
+      },
+      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+    );
+
+    expect(result.outputText).toBeNull();
+  });
+
   it('extracts text from nested message and choices fields', async () => {
     const server = await startServer(() => ({
       status: 200,
@@ -356,5 +388,58 @@ describe('ZenMessagesClient', () => {
     );
 
     expect(result.usage).toEqual({ inputTokens: 1, outputTokens: undefined, totalTokens: undefined });
+  });
+
+  it('collects deeply nested text fields across text/content/value/completion/output', async () => {
+    const server = await startServer(() => ({
+      status: 200,
+      body: JSON.stringify({
+        id: 'msg-deep',
+        text: { text: 'top-text' },
+        content: {
+          text: { text: 'nested-text' },
+          content: { text: 'nested-content' },
+          value: ' value-one ',
+          completion: '   ',
+          output_text: ' output-one ',
+          message: { text: ' message-one ' },
+          choices: [{ content: ' choice-one ' }],
+          output: [{ text: ' output-two ' }]
+        },
+        message: { completion: ' completion-one ' },
+        choices: [{ value: ' value-two ' }],
+        output: [{ output_text: ' output-three ' }]
+      })
+    }));
+    servers.push(server);
+
+    const client = new ZenMessagesClient({ apiKey: 'k', baseURL: server.baseURL });
+    const result = await client.request(
+      {
+        endpoint: 'messages',
+        model: 'claude-sonnet-4',
+        system: 's',
+        messages: [{ role: 'user', content: 'ping' }],
+        temperature: 0,
+        max_tokens: 1
+      },
+      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+    );
+
+    const parts = result.outputText?.split('\n') ?? [];
+    expect(parts).toEqual(
+      expect.arrayContaining([
+        'nested-text',
+        'nested-content',
+        'value-one',
+        'output-one',
+        'message-one',
+        'choice-one',
+        'output-two',
+        'completion-one',
+        'value-two',
+        'output-three'
+      ])
+    );
   });
 });

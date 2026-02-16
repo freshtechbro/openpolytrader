@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -310,9 +310,95 @@ describe('PortfolioAgent LLM anomaly detection', () => {
         applied: false,
         output: {
           anomaly: false,
-          reason: 'invalid_output'
+          reason: 'missing_output_text'
         }
       }
     });
+  });
+
+  it('skips anomaly analysis when portfolio LLM mode is disabled', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_PORTFOLIO_MODE: 'disabled',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+
+    const call = vi.fn().mockResolvedValue({
+      status: 'success',
+      endpoint: 'chat.completions',
+      model: llmConfig.agents.PortfolioAgent.model,
+      outputText: '{"anomaly":false,"severity":"low","reason":null,"confidence":0.5}'
+    });
+
+    const agent = new PortfolioAgent(1000, undefined, {
+      llm: {
+        config: llmConfig,
+        client: { call },
+        promptVersion: 'test-v1',
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }
+    });
+
+    await agent.analyzeAnomalies({ venueIssues: [{ type: 'missing_open_order' } as never], nowMs: 10 });
+
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it('includes venue issue count in the anomaly prompt envelope', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_PORTFOLIO_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+
+    let capturedRequest: unknown = null;
+    const client = {
+      call: async (_agent: 'PortfolioAgent', request: unknown) => {
+        capturedRequest = request;
+        return {
+          status: 'success',
+          providerId: 'openrouter',
+          baseUrl: llmConfig.providers.openrouter.baseUrl,
+          endpoint: 'chat.completions',
+          model: llmConfig.agents.PortfolioAgent.model,
+          outputText: '{"anomaly":false,"severity":"low","reason":null,"confidence":0.5}',
+          startedAtMs: 0,
+          latencyMs: 0,
+          timeoutMs: llmConfig.agents.PortfolioAgent.timeoutMs,
+          maxRetries: llmConfig.retry.maxRetries,
+          attempt: 1
+        };
+      }
+    };
+
+    const agent = new PortfolioAgent(1000, undefined, {
+      llm: {
+        config: llmConfig,
+        client,
+        promptVersion: 'test-v1',
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }
+    });
+
+    await agent.analyzeAnomalies({
+      venueIssues: [{ type: 'missing_open_order' } as never, { type: 'extra_open_order' } as never],
+      nowMs: 42
+    });
+
+    const request = capturedRequest as {
+      messages?: Array<{ role: string; content: string }>;
+      max_tokens?: number;
+      response_format?: { type?: string };
+    };
+    const payload = JSON.parse(request.messages?.find((msg) => msg.role === 'user')?.content ?? '{}') as {
+      inputs?: { snapshot?: { venue_issues_count?: number } };
+    };
+    expect(payload.inputs?.snapshot?.venue_issues_count).toBe(2);
+    expect(request.max_tokens).toBe(300);
+    expect(request.response_format).toEqual({ type: 'json_object' });
   });
 });

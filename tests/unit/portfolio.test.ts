@@ -236,6 +236,22 @@ describe('PortfolioAgent', () => {
       expect(agent.snapshot().marketExposure['market-1']).toBeUndefined();
     });
 
+    it('clearMarketExposure is a no-op for non-matching markets', () => {
+      const agent = new PortfolioAgent(1000);
+
+      agent.applyFill({
+        tokenId: 'token-1',
+        marketId: 'market-1',
+        side: 'BUY',
+        size: 100,
+        price: 0.5
+      });
+
+      agent.clearMarketExposure('market-2');
+
+      expect(agent.snapshot().marketExposure['market-1']).toBe(50);
+    });
+
     it('reduceMarketExposure scales down position sizes', () => {
       const agent = new PortfolioAgent(1000);
 
@@ -268,6 +284,14 @@ describe('PortfolioAgent', () => {
       const after = agent.snapshot();
 
       expect(after.marketExposure['market-1']).toBe(before.marketExposure['market-1']);
+    });
+
+    it('reduceMarketExposure is a no-op when there is no positive exposure', () => {
+      const agent = new PortfolioAgent(1000);
+
+      agent.reduceMarketExposure('market-1', 10);
+
+      expect(agent.snapshot().marketExposure).toEqual({});
     });
 
     it('reduceMarketExposure can scale exposure all the way to zero', () => {
@@ -389,6 +413,32 @@ describe('PortfolioAgent', () => {
 
       expect(result.ok).toBe(true);
       expect(result.expected?.opportunityId).toBe('opp-1');
+    });
+
+    it('uses default reconciliation tolerances when options are omitted', () => {
+      const agent = new PortfolioAgent(1000);
+      const nowMs = Date.now();
+
+      agent.expectFill({
+        opportunityId: 'opp-1',
+        tokenId: 'token-1',
+        expectedSize: 10,
+        expectedPrice: 0.5,
+        timestamp: nowMs
+      });
+
+      const result = agent.applyFillWithReconciliation({
+        opportunityId: 'opp-1',
+        tokenId: 'token-1',
+        marketId: 'market-1',
+        side: 'BUY',
+        size: 9,
+        price: 0.51
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.issues.some((issue) => issue.type === 'size_mismatch')).toBe(true);
+      expect(result.issues.some((issue) => issue.type === 'price_mismatch')).toBe(true);
     });
 
     it('flags ambiguous expected fills when opportunityId is missing and multiple candidates exist', () => {
@@ -831,6 +881,35 @@ describe('PortfolioAgent', () => {
       }
     });
 
+    it('treats opposite-sign positions as open inventory', () => {
+      vi.useFakeTimers();
+      try {
+        const start = 1_700_000_000_000;
+        vi.setSystemTime(start);
+        const agent = new PortfolioAgent(1000);
+
+        agent.applyFill({
+          tokenId: 'yes-token',
+          marketId: 'market-1',
+          side: 'BUY',
+          size: 10,
+          price: 0.48
+        });
+        agent.applyFill({
+          tokenId: 'no-token',
+          marketId: 'market-1',
+          side: 'SELL',
+          size: 10,
+          price: 0.49
+        });
+
+        vi.setSystemTime(start + 10_000);
+        expect(agent.snapshot().openInventoryAgeMs).toBe(10_000);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('applies token→market mapping when marketId is missing', () => {
       vi.useFakeTimers();
       try {
@@ -857,6 +936,32 @@ describe('PortfolioAgent', () => {
         vi.setSystemTime(start + 10_000);
         expect(agent.snapshot().openInventoryAgeMs).toBe(0);
         expect(agent.snapshot().marketExposure['market-1']).toBeGreaterThan(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('falls back to now when position update timestamp is missing', () => {
+      vi.useFakeTimers();
+      try {
+        const start = 1_700_000_000_000;
+        vi.setSystemTime(start);
+        const agent = new PortfolioAgent(1000);
+
+        agent.applyFill({
+          tokenId: 'token-1',
+          side: 'BUY',
+          size: 1,
+          price: 0.5
+        });
+
+        const internals = agent as unknown as {
+          positionUpdatedAt: Map<string, number>;
+        };
+        internals.positionUpdatedAt.delete('token-1');
+
+        vi.setSystemTime(start + 10_000);
+        expect(agent.snapshot().openInventoryAgeMs).toBe(0);
       } finally {
         vi.useRealTimers();
       }

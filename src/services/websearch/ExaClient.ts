@@ -93,7 +93,7 @@ export class ExaClient implements WebSearchClient {
     const end = new Date(nowMs).toISOString();
     const payload: Record<string, unknown> = {
       query,
-      type: 'auto',
+      type: 'neural',
       numResults: maxResults,
       startPublishedDate: start,
       endPublishedDate: end

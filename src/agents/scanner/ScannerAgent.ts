@@ -185,6 +185,8 @@ export class ScannerAgent {
           endpoint: 'chat.completions',
           model: llm.config.agents.ScannerAgent.model,
           temperature: 0,
+          max_tokens: 300,
+          response_format: { type: 'json_object' },
           messages: [
             {
               role: 'developer',
@@ -196,12 +198,21 @@ export class ScannerAgent {
         };
 
         const call = await llm.client.call('ScannerAgent', request);
-        const parsed = safeParseJSON(call.outputText);
-        const validated = ScannerScoreSchema.safeParse(parsed);
+        const hasOutputText = Boolean(call.outputText);
+        const parsed = hasOutputText ? safeParseJSON(call.outputText) : null;
+        const validated = hasOutputText
+          ? ScannerScoreSchema.safeParse(parsed)
+          : ({ success: false } as const);
+        const missingOutput = !hasOutputText;
 
         const output = validated.success
           ? validated.data
-          : { priority_score: 0.5, rationale: 'invalid_output', confidence: 0 };
+          : {
+              priority_score: 0.5,
+              rationale: missingOutput ? 'missing_output_text' : 'invalid_output',
+              confidence: 0
+            };
+        const violations = missingOutput ? ['missing_output_text'] : validated.success ? [] : ['invalid_output'];
 
         logLLMDecision({
           agent: 'ScannerAgent',
@@ -212,7 +223,12 @@ export class ScannerAgent {
           output,
           confidence: output.confidence,
           applied: mode === 'advisory',
-          clamp: { raw: safeParseJSON(call.outputText), final: output, bounds: { priority_score: [0, 1] } },
+          clamp: {
+            raw: safeParseJSON(call.outputText),
+            final: output,
+            bounds: { priority_score: [0, 1] },
+            violations
+          },
           nowMs,
           call,
           request,

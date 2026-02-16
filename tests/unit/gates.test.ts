@@ -498,6 +498,25 @@ describe('evaluateGates', () => {
 });
 
 describe('evaluateEvGates', () => {
+  it('returns base fatal errors for EV gate evaluation', () => {
+    const now = Date.now();
+    const yesBook = makeBook('yes', { price: 0.47, size: 500 }, { price: 0.48, size: 500 }, now);
+    const noBook = { ...makeBook('no', { price: 0.48, size: 500 }, { price: 0.49, size: 500 }, now), bestAsk: undefined, asks: [] };
+
+    const result = evaluateEvGates({
+      yesBook,
+      noBook,
+      policy: { ...DEFAULT_TRADE_POLICY, evEdgeRequired: 0 },
+      nowMs: now,
+      side: 'yes',
+      evEdge: 0.1,
+      confidence: 0.9
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.reasons).toContain('missing_best_ask');
+  });
+
   it('rejects non-finite ev inputs', () => {
     const now = Date.now();
     const yesBook = makeBook('yes', { price: 0.47, size: 500 }, { price: 0.48, size: 500 }, now);
@@ -596,5 +615,91 @@ describe('evaluateEvGates', () => {
     expect(result.reasons).toContain('insufficient_depth');
     expect(result.reasons).toContain('below_min_order_size');
     expect(result.reasons).toContain('ev_edge_below_threshold');
+  });
+
+  it('handles non-positive no-side ask prices as base validation failures', () => {
+    const now = Date.now();
+    const yesBook = makeBook('yes', { price: 0.47, size: 50 }, { price: 0.48, size: 50 }, now);
+    const noBook = {
+      ...makeBook('no', { price: 0.48, size: 2 }, { price: 0, size: 1 }, now),
+      asks: [{ price: 0, size: 1 }],
+      bestAsk: { price: 0, size: 1 }
+    };
+
+    const result = evaluateEvGates({
+      yesBook,
+      noBook,
+      policy: { ...DEFAULT_TRADE_POLICY, evEdgeRequired: 0, evConfidenceMin: 0, depthHeadroomFraction: 1, minDepthLevels: 1 },
+      nowMs: now,
+      side: 'no',
+      evEdge: 0.1,
+      confidence: 0.9,
+      desiredSize: 5
+    });
+
+    expect(result.reasons).toContain('no_best_ask_invalid');
+    expect(result.reasons).not.toContain('yes_best_ask_invalid');
+  });
+
+  it('uses no-side depth/slippage reason labels when EV no-side sweeps exceed depth', () => {
+    const now = Date.now();
+    const yesBook = makeBook('yes', { price: 0.47, size: 10 }, { price: 0.48, size: 10 }, now);
+    const noBook = {
+      ...makeBook('no', { price: 0.48, size: 10 }, { price: 0.49, size: 1 }, now),
+      asks: [
+        { price: 0.49, size: 1 },
+        { price: 0.7, size: 1 }
+      ],
+      bestAsk: { price: 0.49, size: 1 }
+    };
+
+    const result = evaluateEvGates({
+      yesBook,
+      noBook,
+      policy: {
+        ...DEFAULT_TRADE_POLICY,
+        evEdgeRequired: 0,
+        evConfidenceMin: 0,
+        depthHeadroomFraction: 1,
+        minDepthLevels: 1,
+        entrySlippageToleranceBps: 25
+      },
+      nowMs: now,
+      side: 'no',
+      evEdge: 0.1,
+      confidence: 0.9,
+      desiredSize: 3
+    });
+
+    expect(result.reasons).toContain('no_depth_exhausted');
+    expect(result.reasons).toContain('no_slippage_exceeded');
+    expect(result.reasons).not.toContain('yes_depth_exhausted');
+    expect(result.reasons).not.toContain('yes_slippage_exceeded');
+  });
+
+  it('falls back to maxEdge and confidenceMin when EV max/floor are non-finite', () => {
+    const now = Date.now();
+    const yesBook = makeBook('yes', { price: 0.47, size: 500 }, { price: 0.48, size: 500 }, now);
+    const noBook = makeBook('no', { price: 0.48, size: 500 }, { price: 0.49, size: 500 }, now);
+
+    const result = evaluateEvGates({
+      yesBook,
+      noBook,
+      policy: {
+        ...DEFAULT_TRADE_POLICY,
+        evEdgeRequired: 0.01,
+        evMaxEdge: Number.NaN,
+        maxEdge: 0.02,
+        evConfidenceMin: 0.3,
+        evConfidenceMinFloor: Number.NaN
+      },
+      nowMs: now,
+      side: 'yes',
+      evEdge: 0.05,
+      confidence: 0.2
+    });
+
+    expect(result.reasons).toContain('ev_edge_above_max');
+    expect(result.reasons).toContain('ev_confidence_below_min');
   });
 });

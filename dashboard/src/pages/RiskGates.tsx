@@ -7,6 +7,7 @@ import { opsFetchJson } from '../lib/opsClient';
 type ConfigSectionKey = 'policy' | 'risk';
 type ConfigValue = number | boolean | string;
 type RiskProfileId = 'near_zero' | 'moderate' | 'high' | 'extra_high';
+const DEFAULT_VISIBLE_FIELDS = 10;
 
 const RISK_PROFILES: Array<{ id: RiskProfileId; label: string }> = [
   { id: 'near_zero', label: 'Near Zero Risk (default)' },
@@ -132,6 +133,11 @@ export function RiskGates() {
     policy: { saving: false },
     risk: { saving: false }
   });
+  const [showInfra, setShowInfra] = useState(false);
+  const [expandedSections, setExpandedSections] = useState<Record<ConfigSectionKey, boolean>>({
+    policy: false,
+    risk: false
+  });
 
   useEffect(() => {
     let mounted = true;
@@ -186,6 +192,10 @@ export function RiskGates() {
     riskProfiles?.activeProfileSource ?? config?.riskProfileSource ?? 'defaults';
   const availableProfiles =
     riskProfiles?.availableProfiles ?? RISK_PROFILES.map((profile) => profile.id);
+
+  const toggleSectionExpansion = (sectionKey: ConfigSectionKey) => {
+    setExpandedSections((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
+  };
 
   const handleFieldChange = (sectionKey: ConfigSectionKey, field: ConfigField, value: ConfigValue) => {
     setDraft((prev) => {
@@ -354,7 +364,7 @@ export function RiskGates() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <button type="button" className="link-button" onClick={handleProfileApply} disabled={profileState.saving}>
-                    {profileState.saving ? 'Applying...' : 'Apply profile'}
+                    {profileState.saving ? 'Applying…' : 'Apply profile'}
                   </button>
                   {profileState.error ? <span style={{ color: 'var(--alert)' }}>{profileState.error}</span> : null}
                   {profileState.warning ? (
@@ -391,7 +401,17 @@ export function RiskGates() {
         />
       </Section>
 
-      <Section title="Infra (env-only)" subtitle="Operational and connectivity knobs sourced from environment variables (read-only).">
+      <Section title="Infra (env-only)" subtitle="Read-only connectivity knobs. Hidden by default to reduce visual noise.">
+        <div className="risk-toolbar">
+          <span className="risk-toolbar__hint">
+            {showInfra ? 'Infra details are visible.' : 'Infra details are hidden.'}
+          </span>
+          <button type="button" className="link-button" onClick={() => setShowInfra((prev) => !prev)}>
+            {showInfra ? 'Hide infra details' : 'Show infra details'}
+          </button>
+        </div>
+        {showInfra ? (
+          <>
         <Panel
           title="Ops / Streams"
           body={
@@ -553,114 +573,134 @@ export function RiskGates() {
             )
           }
         />
+          </>
+        ) : (
+          <Panel
+            title="Infra Summary"
+            body={
+              <p style={{ margin: 0, color: 'var(--ink-muted)' }}>
+                Expand infra details only when debugging environment-level connectivity, rate limits, or RPC behavior.
+              </p>
+            }
+          />
+        )}
       </Section>
 
       <Section title="Config Settings" subtitle="Edit policy and risk thresholds via the ops API.">
         {sections.length === 0 || !draft ? (
           <Panel title="Settings" body={<p>Config schema not available.</p>} />
         ) : (
-          sections.map((section) => (
-            <Panel
-              key={section.key}
-              title={section.label}
-              body={
-                <div style={{ display: 'grid', gap: 16 }}>
-                  {section.description ? <p style={{ margin: 0 }}>{section.description}</p> : null}
-                  <div style={{ display: 'grid', gap: 12 }}>
-                    {section.fields.map((field) => {
-                      const value = draft[section.key]?.[field.key];
-                      const fieldId = `${section.key}-${field.key}`;
-                      const descId = field.description ? `${fieldId}-desc` : undefined;
-                      return (
-                        <div
-                          key={field.key}
-                          style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) minmax(220px, 1.4fr)', gap: 16, alignItems: 'center' }}
-                        >
-                          <div>
-                            <label className="label" htmlFor={fieldId}>
-                              {field.label}
-                            </label>
-                            {field.description ? (
-                              <p
-                                id={descId}
-                                style={{ margin: '4px 0 0', color: 'var(--ink-muted)', fontSize: '0.85rem' }}
-                              >
-                                {field.description}
-                              </p>
-                            ) : null}
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            {field.type === 'boolean' ? (
-                              <input
-                                type="checkbox"
-                                id={fieldId}
-                                name={fieldId}
-                                aria-describedby={descId}
-                                checked={Boolean(value)}
-                                onChange={(event) => handleFieldChange(section.key, field, event.target.checked)}
-                              />
-                            ) : field.type === 'enum' ? (
-                              <select
-                                id={fieldId}
-                                name={fieldId}
-                                aria-describedby={descId}
-                                value={String(value ?? '')}
-                                onChange={(event) => handleFieldChange(section.key, field, event.target.value)}
-                              >
-                                {field.options.map((option) => (
-                                  <option key={option} value={option}>
-                                    {option}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : (
-                              <input
-                                type="number"
-                                id={fieldId}
-                                name={fieldId}
-                                aria-describedby={descId}
-                                value={value === '' || value === undefined || value === null ? '' : Number(value)}
-                                min={field.min}
-                                max={field.max}
-                                step={field.step ?? (field.integer ? 1 : 0.01)}
-                                onChange={(event) => {
-                                  const raw = event.target.value;
-                                  const nextValue = raw === '' ? '' : Number(raw);
-                                  handleFieldChange(section.key, field, Number.isNaN(nextValue) ? value : nextValue);
-                                }}
-                                style={{ width: '100%' }}
-                              />
-                            )}
-                            {field.type === 'number' && field.unit ? (
-                              <span style={{ fontSize: '0.8rem', color: 'var(--ink-muted)' }}>{field.unit}</span>
-                            ) : null}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <button
-                      type="button"
-                      className="link-button"
-                      onClick={() => handleSave(section.key)}
-                      disabled={saveState[section.key]?.saving}
-                    >
-                      {saveState[section.key]?.saving ? 'Saving...' : 'Save changes'}
-                    </button>
-                    {saveState[section.key]?.error ? (
-                      <span style={{ color: 'var(--alert)' }}>{saveState[section.key]?.error}</span>
-                    ) : null}
-                    {saveState[section.key]?.savedAt ? (
-                      <span style={{ color: 'var(--ink-muted)', fontSize: '0.8rem' }}>
-                        Saved {new Date(saveState[section.key].savedAt as number).toLocaleTimeString()}
+          sections.map((section) => {
+            const sectionExpanded = expandedSections[section.key];
+            const visibleFields = sectionExpanded ? section.fields : section.fields.slice(0, DEFAULT_VISIBLE_FIELDS);
+            return (
+              <Panel
+                key={section.key}
+                title={section.label}
+                body={
+                  <div style={{ display: 'grid', gap: 16 }}>
+                    {section.description ? <p style={{ margin: 0 }}>{section.description}</p> : null}
+                    <div className="risk-section-meta">
+                      <span>
+                        Showing {visibleFields.length} of {section.fields.length} fields
                       </span>
-                    ) : null}
+                      {section.fields.length > DEFAULT_VISIBLE_FIELDS ? (
+                        <button type="button" className="link-button" onClick={() => toggleSectionExpansion(section.key)}>
+                          {sectionExpanded ? 'Show fewer fields' : `Show all ${section.fields.length} fields`}
+                        </button>
+                      ) : null}
+                    </div>
+                    <div style={{ display: 'grid', gap: 12 }}>
+                      {visibleFields.map((field) => {
+                        const value = draft[section.key]?.[field.key];
+                        const fieldId = `${section.key}-${field.key}`;
+                        const descId = field.description ? `${fieldId}-desc` : undefined;
+                        return (
+                          <div key={field.key} className="risk-field-row">
+                            <div className="risk-field-meta">
+                              <label className="label" htmlFor={fieldId}>
+                                {field.label}
+                              </label>
+                              {field.description ? (
+                                <p id={descId} className="risk-field-description">
+                                  {field.description}
+                                </p>
+                              ) : null}
+                            </div>
+                            <div className="risk-field-control">
+                              {field.type === 'boolean' ? (
+                                <input
+                                  type="checkbox"
+                                  id={fieldId}
+                                  name={fieldId}
+                                  aria-describedby={descId}
+                                  checked={Boolean(value)}
+                                  onChange={(event) => handleFieldChange(section.key, field, event.target.checked)}
+                                />
+                              ) : field.type === 'enum' ? (
+                                <select
+                                  id={fieldId}
+                                  name={fieldId}
+                                  aria-describedby={descId}
+                                  value={String(value ?? '')}
+                                  onChange={(event) => handleFieldChange(section.key, field, event.target.value)}
+                                >
+                                  {field.options.map((option) => (
+                                    <option key={option} value={option}>
+                                      {option}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  type="number"
+                                  id={fieldId}
+                                  name={fieldId}
+                                  aria-describedby={descId}
+                                  autoComplete="off"
+                                  inputMode="decimal"
+                                  value={value === '' || value === undefined || value === null ? '' : Number(value)}
+                                  min={field.min}
+                                  max={field.max}
+                                  step={field.step ?? (field.integer ? 1 : 0.01)}
+                                  onChange={(event) => {
+                                    const raw = event.target.value;
+                                    const nextValue = raw === '' ? '' : Number(raw);
+                                    handleFieldChange(section.key, field, Number.isNaN(nextValue) ? value : nextValue);
+                                  }}
+                                />
+                              )}
+                              {field.type === 'number' && field.unit ? (
+                                <span style={{ fontSize: '0.8rem', color: 'var(--ink-muted)' }}>{field.unit}</span>
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={() => handleSave(section.key)}
+                        disabled={saveState[section.key]?.saving}
+                      >
+                        {saveState[section.key]?.saving ? 'Saving…' : 'Save changes'}
+                      </button>
+                      {saveState[section.key]?.error ? (
+                        <span style={{ color: 'var(--alert)' }}>{saveState[section.key]?.error}</span>
+                      ) : null}
+                      {saveState[section.key]?.savedAt ? (
+                        <span style={{ color: 'var(--ink-muted)', fontSize: '0.8rem' }}>
+                          Saved {new Date(saveState[section.key].savedAt as number).toLocaleTimeString()}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
-                </div>
-              }
-            />
-          ))
+                }
+              />
+            );
+          })
         )}
       </Section>
     </>

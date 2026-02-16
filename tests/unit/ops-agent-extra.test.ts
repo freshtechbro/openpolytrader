@@ -227,6 +227,41 @@ describe('OpsAgent runChecks', () => {
     expect(agent.getReport().status).toBe('healthy');
   });
 
+  it('reuses an existing outlier handler when already set', () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const agent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const existingHandler = vi.fn();
+
+    messageBus.on('marketdata:outlier', existingHandler);
+    try {
+      (agent as unknown as { outlierHandler: typeof existingHandler }).outlierHandler = existingHandler;
+      agent.start();
+      messageBus.emit('marketdata:outlier', { tokenId: 't1' });
+      expect(existingHandler).toHaveBeenCalledTimes(1);
+      agent.stop();
+      messageBus.emit('marketdata:outlier', { tokenId: 't1' });
+      expect(existingHandler).toHaveBeenCalledTimes(1);
+    } finally {
+      messageBus.off('marketdata:outlier', existingHandler);
+    }
+  });
+
+  it('records outlier telemetry with the default outlier handler', () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const agent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+
+    try {
+      agent.start();
+      messageBus.emit('marketdata:outlier', { tokenId: 't1', score: 0.99 });
+      const events = metrics.recent('info', 5);
+      expect(events.some((event) => (event.data as { message?: string }).message === 'marketdata_outlier')).toBe(
+        true
+      );
+    } finally {
+      agent.stop();
+    }
+  });
+
   it('supports updating checks at runtime', async () => {
     const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
     const agent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);

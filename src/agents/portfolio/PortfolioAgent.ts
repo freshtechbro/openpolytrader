@@ -515,6 +515,8 @@ export class PortfolioAgent {
       endpoint: 'chat.completions',
       model: llm.config.agents.PortfolioAgent.model,
       temperature: 0,
+      max_tokens: 300,
+      response_format: { type: 'json_object' },
       messages: [
         {
           role: 'developer',
@@ -526,11 +528,21 @@ export class PortfolioAgent {
     };
 
     const call = await llm.client.call('PortfolioAgent', request);
-    const parsed = safeParseJSON(call.outputText);
-    const validated = PortfolioAnomalySchema.safeParse(parsed);
+    const hasOutputText = Boolean(call.outputText);
+    const parsed = hasOutputText ? safeParseJSON(call.outputText) : null;
+    const validated = hasOutputText
+      ? PortfolioAnomalySchema.safeParse(parsed)
+      : ({ success: false } as const);
+    const missingOutput = !hasOutputText;
     const finalDecision = validated.success
       ? validated.data
-      : { anomaly: false, severity: 'low', reason: 'invalid_output', confidence: 0 };
+      : {
+          anomaly: false,
+          severity: 'low',
+          reason: missingOutput ? 'missing_output_text' : 'invalid_output',
+          confidence: 0
+        };
+    const violations = missingOutput ? ['missing_output_text'] : validated.success ? [] : ['invalid_output'];
 
     if (validated.success && validated.data.anomaly) {
       const alert = {
@@ -553,7 +565,7 @@ export class PortfolioAgent {
       output: finalDecision,
       confidence: finalDecision.confidence,
       applied: validated.success ? validated.data.anomaly : false,
-      clamp: { raw: parsed, final: finalDecision },
+      clamp: { raw: parsed, final: finalDecision, violations },
       nowMs,
       call,
       request,

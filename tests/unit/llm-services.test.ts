@@ -215,16 +215,23 @@ describe('LLM services', () => {
     const server = await startOpenAICompatServer();
     servers.push(server);
 
-    server.setChatHandler(() => ({
-      status: 200,
-      headers: { 'x-request-id': 'hdr-1' },
-      body: {
-        id: 'chatcmpl-1',
-        request_id: 'body-1',
-        choices: [{ message: { content: '{"ok":true}' } }],
-        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
-      }
-    }));
+    let seenResponseFormat: unknown = null;
+    server.setChatHandler((payload) => {
+      seenResponseFormat =
+        payload && typeof payload === 'object'
+          ? (payload as { response_format?: unknown }).response_format ?? null
+          : null;
+      return {
+        status: 200,
+        headers: { 'x-request-id': 'hdr-1' },
+        body: {
+          id: 'chatcmpl-1',
+          request_id: 'body-1',
+          choices: [{ message: { content: '{"ok":true}' } }],
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
+        }
+      };
+    });
 
     const client = new OpenAISdkClient({
       apiKey: 'key',
@@ -233,7 +240,10 @@ describe('LLM services', () => {
       maxRetries: 0
     });
 
-    const result = await client.request(ACTIVE_REQUEST, { timeoutMs: 250, maxRetries: 0, attempt: 1 });
+    const result = await client.request(
+      { ...ACTIVE_REQUEST, response_format: { type: 'json_object' } },
+      { timeoutMs: 250, maxRetries: 0, attempt: 1 }
+    );
 
     expect(result.endpoint).toBe('chat.completions');
     expect(result.outputText).toBe('{"ok":true}');
@@ -241,6 +251,7 @@ describe('LLM services', () => {
     expect(result.requestIdBody).toBe('body-1');
     expect(result.responseId).toBe('chatcmpl-1');
     expect(result.usage).toEqual({ inputTokens: 1, outputTokens: 2, totalTokens: 3 });
+    expect(seenResponseFormat).toEqual({ type: 'json_object' });
   });
 
   it('LLMClient: maps Zen chat model ids when falling back to OpenRouter', async () => {
@@ -773,11 +784,12 @@ describe('LLM services', () => {
     const client = new LLMClient(config);
 
     const modelsToTest = [
+      ['grok-code', 'z-ai/glm-4.7'],
       ['glm-4.7', 'z-ai/glm-4.7'],
       ['kimi-k2.5', 'moonshotai/kimi-k2.5'],
       ['minimax-m2.1', 'minimax/minimax-m2.1'],
       ['gpt-5-nano', 'openai/gpt-5-nano'],
-      ['qwen3-coder', 'qwen/qwen3-coder'],
+      ['qwen3-coder', 'qwen/qwen3-coder-next'],
       ['openai/gpt-5-nano', 'openai/gpt-5-nano'],
       ['unknown-model', 'unknown-model']
     ] as const;
@@ -788,6 +800,44 @@ describe('LLM services', () => {
     }
 
     expect(seen).toEqual(modelsToTest.map(([, expected]) => expected));
+  });
+
+  it('LLMClient: uses agent fallbackProviderModel for provider fallback', async () => {
+    const primary = await startOpenAICompatServer();
+    const fallback = await startOpenAICompatServer();
+    servers.push(primary, fallback);
+
+    let seenModel: string | null = null;
+    primary.setChatHandler(() => ({
+      status: 500,
+      body: { error: { message: 'boom' } }
+    }));
+    fallback.setChatHandler((payload) => {
+      seenModel =
+        payload && typeof payload === 'object' && typeof (payload as Record<string, unknown>).model === 'string'
+          ? String((payload as Record<string, unknown>).model)
+          : null;
+      return {
+        status: 200,
+        body: { id: 'chatcmpl-1', choices: [{ message: { content: '{"ok":true}' } }] }
+      };
+    });
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'primary-key' },
+      fallback: { id: 'openrouter', baseUrl: fallback.baseURL, apiKey: 'fallback-key' },
+      timeoutMs: 1000
+    });
+    config.agents.ExecutionAgent.mode = 'advisory';
+    config.agents.ExecutionAgent.provider = 'opencode-zen';
+    config.agents.ExecutionAgent.fallbackProviderModel = 'qwen/qwen3-coder-next';
+
+    const client = new LLMClient(config);
+    const result = await client.call('ExecutionAgent', { ...ACTIVE_REQUEST, model: 'glm-4.7' });
+
+    expect(result.status).toBe('fallback');
+    expect(seenModel).toBe('qwen/qwen3-coder-next');
   });
 
   it('OpenAISdkClient: handles responses and maps output_text/usage', async () => {
@@ -1217,49 +1267,49 @@ describe('LLM services', () => {
   });
 
   it('LLMClient: routes Claude chat requests to messages for opencode-zen', async () => {
-    const server = await startOpenAICompatServer();
-    servers.push(server);
-
     let seenModel: string | null = null;
     let seenSystem: string | null = null;
-
-    server.setMessagesHandler((payload) => {
-      if (payload && typeof payload === 'object') {
-        seenModel = (payload as { model?: string }).model ?? null;
-        seenSystem = (payload as { system?: string }).system ?? null;
-      }
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toContain('/messages');
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      seenModel = (payload as { model?: string }).model ?? null;
+      seenSystem = (payload as { system?: string }).system ?? null;
       return {
+        ok: true,
         status: 200,
-        body: {
-          id: 'msg-claude',
-          content: [{ type: 'text', text: '{"ok":true}' }],
-          usage: { input_tokens: 1, output_tokens: 2 }
-        }
-      };
+        text: async () =>
+          JSON.stringify({
+            id: 'msg-claude',
+            content: [{ type: 'text', text: '{"ok":true}' }],
+            usage: { input_tokens: 1, output_tokens: 2 }
+          })
+      } as Response;
     });
-    server.setChatHandler(() => ({
-      status: 500,
-      body: { error: { message: 'chat_should_not_be_called', type: 'server_error' } }
-    }));
 
     const config = makeConfig({
       enabled: true,
-      primary: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' },
-      fallback: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' }
+      primary: { id: 'opencode-zen', baseUrl: 'http://unit.test', apiKey: 'k' },
+      fallback: { id: 'openrouter', baseUrl: 'http://unit.test', apiKey: 'k' }
     });
     config.agents.LearningAgent.mode = 'active';
     config.agents.LearningAgent.provider = 'opencode-zen';
 
-    const client = new LLMClient(config);
-    const result = await client.call('LearningAgent', { ...ACTIVE_REQUEST, model: 'anthropic/claude-3.5-sonnet' });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const client = new LLMClient(config);
+      const result = await client.call('LearningAgent', { ...ACTIVE_REQUEST, model: 'anthropic/claude-3.5-sonnet' });
 
-    expect(result.status).toBe('success');
-    expect(result.endpoint).toBe('messages');
-    expect(result.outputText).toBe('{"ok":true}');
-    expect(server.calls.messages).toBe(1);
-    expect(server.calls.chat).toBe(0);
-    expect(seenModel).toBe('claude-3.5-sonnet');
-    expect(seenSystem).toContain('Return JSON only.');
+      expect(result.status).toBe('success');
+      expect(result.endpoint).toBe('messages');
+      expect(result.outputText).toBe('{"ok":true}');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toContain('/messages');
+      expect(seenModel).toBe('claude-3.5-sonnet');
+      expect(seenSystem).toContain('Return JSON only.');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('LLMClient: uses explicit max_tokens when converting chat to messages for opencode-zen', async () => {
@@ -1318,7 +1368,8 @@ describe('LLM services', () => {
       } as unknown as Response;
     });
 
-    vi.stubGlobal('fetch', fetchMock);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const config = makeConfig({
       enabled: true,
@@ -1340,7 +1391,7 @@ describe('LLM services', () => {
       expect(result.outputText).toBe('{"ok":true}');
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
-      vi.unstubAllGlobals();
+      globalThis.fetch = originalFetch;
     }
   });
 
@@ -1927,6 +1978,257 @@ describe('LLM services', () => {
 
     expect(result.status).toBe('error');
     expect(result.error?.message).toBe('boom');
+  });
+
+  it('LLMClient: normalizes namespaced GPT-5 responses models for opencode-zen', async () => {
+    const server = await startOpenAICompatServer();
+    servers.push(server);
+
+    let seenModel: string | null = null;
+    server.setResponsesHandler((payload) => {
+      seenModel =
+        payload && typeof payload === 'object' && typeof (payload as Record<string, unknown>).model === 'string'
+          ? String((payload as Record<string, unknown>).model)
+          : null;
+      return {
+        status: 200,
+        body: { id: 'resp-gpt5-normalized', output_text: '{"ok":true}' }
+      };
+    });
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' },
+      fallback: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' }
+    });
+    config.agents.MarketDataAgent.mode = 'advisory';
+    config.agents.MarketDataAgent.provider = 'opencode-zen';
+
+    const client = new LLMClient(config);
+    const result = await client.call('MarketDataAgent', {
+      ...RESPONSES_REQUEST,
+      model: 'openai/gpt-5-nano'
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.endpoint).toBe('responses');
+    expect(seenModel).toBe('gpt-5-nano');
+  });
+
+  it('LLMClient: converts non-Claude messages requests to chat for opencode-zen', async () => {
+    const server = await startOpenAICompatServer();
+    servers.push(server);
+
+    server.setChatHandler(() => ({
+      status: 200,
+      body: { id: 'chat-non-claude', choices: [{ message: { content: '{"ok":true}' } }] }
+    }));
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' },
+      fallback: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' }
+    });
+    config.agents.LearningAgent.mode = 'active';
+    config.agents.LearningAgent.provider = 'opencode-zen';
+
+    const client = new LLMClient(config);
+    const result = await client.call('LearningAgent', {
+      endpoint: 'messages',
+      model: 'glm-4.7',
+      system: 'Return JSON only.',
+      messages: [{ role: 'user', content: '{"task":"ping"}' }],
+      temperature: 0,
+      max_tokens: 10
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.endpoint).toBe('chat.completions');
+    expect(server.calls.chat).toBe(1);
+    expect(server.calls.messages).toBe(0);
+  });
+
+  it('LLMClient: normalizes namespaced Claude messages models for opencode-zen', async () => {
+    const server = await startOpenAICompatServer();
+    servers.push(server);
+
+    let seenModel: string | null = null;
+    server.setMessagesHandler((payload) => {
+      seenModel =
+        payload && typeof payload === 'object' && typeof (payload as Record<string, unknown>).model === 'string'
+          ? String((payload as Record<string, unknown>).model)
+          : null;
+      return {
+        status: 200,
+        body: { id: 'msg-claude-normalized', content: [{ type: 'text', text: '{"ok":true}' }] }
+      };
+    });
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' },
+      fallback: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' }
+    });
+    config.agents.LearningAgent.mode = 'active';
+    config.agents.LearningAgent.provider = 'opencode-zen';
+
+    const client = new LLMClient(config);
+    const result = await client.call('LearningAgent', {
+      endpoint: 'messages',
+      model: 'anthropic/claude-3.5-sonnet',
+      system: 'Return JSON only.',
+      messages: [{ role: 'user', content: '{"task":"ping"}' }],
+      temperature: 0,
+      max_tokens: 10
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.endpoint).toBe('messages');
+    expect(seenModel).toBe('claude-3.5-sonnet');
+  });
+
+  it('LLMClient: converts chat requests to messages for explicit backup endpoint', async () => {
+    const primary = await startOpenAICompatServer();
+    servers.push(primary);
+
+    primary.setChatHandler(() => ({
+      status: 500,
+      body: { error: { message: 'boom' } }
+    }));
+    primary.setMessagesHandler(() => ({
+      status: 200,
+      body: { id: 'msg-backup-chat', content: [{ type: 'text', text: '{"ok":"backup"}' }] }
+    }));
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'k' },
+      fallback: { id: 'openrouter', baseUrl: primary.baseURL, apiKey: 'k' },
+      fallbackEnabled: false
+    });
+    config.agents.ExecutionAgent.mode = 'advisory';
+    config.agents.ExecutionAgent.provider = 'opencode-zen';
+    config.agents.ExecutionAgent.backupModel = 'claude-sonnet-4';
+    config.agents.ExecutionAgent.backupEndpoint = 'messages';
+
+    const client = new LLMClient(config);
+    const result = await client.call('ExecutionAgent', { ...ACTIVE_REQUEST, model: 'glm-4.7' });
+
+    expect(result.status).toBe('fallback');
+    expect(result.providerId).toBe('opencode-zen');
+    expect(result.endpoint).toBe('messages');
+    expect(primary.calls.chat).toBe(1);
+    expect(primary.calls.messages).toBe(1);
+  });
+
+  it('LLMClient: converts chat requests to responses for explicit backup endpoint', async () => {
+    const primary = await startOpenAICompatServer();
+    servers.push(primary);
+
+    primary.setChatHandler(() => ({
+      status: 500,
+      body: { error: { message: 'boom' } }
+    }));
+    primary.setResponsesHandler(() => ({
+      status: 200,
+      body: { id: 'resp-backup-chat', output_text: '{"ok":"backup"}' }
+    }));
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'k' },
+      fallback: { id: 'openrouter', baseUrl: primary.baseURL, apiKey: 'k' },
+      fallbackEnabled: false
+    });
+    config.agents.ExecutionAgent.mode = 'advisory';
+    config.agents.ExecutionAgent.provider = 'opencode-zen';
+    config.agents.ExecutionAgent.backupModel = 'gpt-5-nano';
+    config.agents.ExecutionAgent.backupEndpoint = 'responses';
+
+    const client = new LLMClient(config);
+    const result = await client.call('ExecutionAgent', { ...ACTIVE_REQUEST, model: 'glm-4.7' });
+
+    expect(result.status).toBe('fallback');
+    expect(result.providerId).toBe('opencode-zen');
+    expect(result.endpoint).toBe('responses');
+    expect(primary.calls.chat).toBe(1);
+    expect(primary.calls.responses).toBe(1);
+  });
+
+  it('LLMClient: omits developer message when openrouter messages request has no system', async () => {
+    const server = await startOpenAICompatServer();
+    servers.push(server);
+
+    let seenMessages: Array<{ role: string; content: string }> = [];
+    server.setChatHandler((payload) => {
+      if (payload && typeof payload === 'object') {
+        const messages = (payload as { messages?: Array<{ role: string; content: string }> }).messages;
+        seenMessages = Array.isArray(messages) ? messages : [];
+      }
+      return {
+        status: 200,
+        body: { id: 'chat-openrouter-msg', choices: [{ message: { content: '{"ok":true}' } }] }
+      };
+    });
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' },
+      fallback: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' }
+    });
+    config.agents.LearningAgent.mode = 'active';
+    config.agents.LearningAgent.provider = 'openrouter';
+
+    const client = new LLMClient(config);
+    const result = await client.call('LearningAgent', {
+      endpoint: 'messages',
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: '{"task":"ping"}' }],
+      temperature: 0,
+      max_tokens: 200
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.endpoint).toBe('chat.completions');
+    expect(seenMessages).toEqual([{ role: 'user', content: '{"task":"ping"}' }]);
+  });
+
+  it('LLMClient: omits developer message when openrouter responses request has no instructions', async () => {
+    const server = await startOpenAICompatServer();
+    servers.push(server);
+
+    let seenMessages: Array<{ role: string; content: string }> = [];
+    server.setChatHandler((payload) => {
+      if (payload && typeof payload === 'object') {
+        const messages = (payload as { messages?: Array<{ role: string; content: string }> }).messages;
+        seenMessages = Array.isArray(messages) ? messages : [];
+      }
+      return {
+        status: 200,
+        body: { id: 'chat-openrouter-responses', choices: [{ message: { content: '{"ok":true}' } }] }
+      };
+    });
+
+    const config = makeConfig({
+      enabled: true,
+      primary: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' },
+      fallback: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' }
+    });
+    config.agents.MarketDataAgent.mode = 'advisory';
+    config.agents.MarketDataAgent.provider = 'openrouter';
+
+    const client = new LLMClient(config);
+    const result = await client.call('MarketDataAgent', {
+      endpoint: 'responses',
+      model: 'glm-4.7',
+      input: '{"task":"ping"}',
+      temperature: 0,
+      max_output_tokens: 10
+    });
+
+    expect(result.status).toBe('success');
+    expect(result.endpoint).toBe('chat.completions');
+    expect(seenMessages).toEqual([{ role: 'user', content: '{"task":"ping"}' }]);
   });
 
   it('MockLLMClient requires a base URL and supports defaults + clear', async () => {

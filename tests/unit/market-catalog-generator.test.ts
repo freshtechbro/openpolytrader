@@ -130,6 +130,19 @@ describe('market catalog generator', () => {
     expect(mergePairs(existing, incoming, 2)).toEqual(existing);
   });
 
+  it('deduplicates repeated market ids already present in existing pairs', () => {
+    const existing = [
+      { marketId: 'a', yesTokenId: '1', noTokenId: '2' },
+      { marketId: 'a', yesTokenId: 'x', noTokenId: 'y' }
+    ];
+    const incoming = [{ marketId: 'b', yesTokenId: '3', noTokenId: '4' }];
+
+    expect(mergePairs(existing, incoming)).toEqual([
+      { marketId: 'a', yesTokenId: '1', noTokenId: '2' },
+      { marketId: 'b', yesTokenId: '3', noTokenId: '4' }
+    ]);
+  });
+
   it('finds the first page offset containing orderbook-enabled markets', async () => {
     const pageSize = 1000;
     const total = 5000;
@@ -313,6 +326,7 @@ describe('market catalog generator', () => {
   it('validates generator args for missing/invalid values', () => {
     expect(() => parseGeneratorArgs(['node', 'script', '--out'])).toThrow('Missing value for --out');
     expect(() => parseGeneratorArgs(['node', 'script', '--max'])).toThrow('Missing value for --max');
+    expect(() => parseGeneratorArgs(['node', 'script', '--tag'])).toThrow('Missing value for --tag');
     expect(() => parseGeneratorArgs(['node', 'script', '--max', '0'])).toThrow('--max must be a positive number');
     expect(() => parseGeneratorArgs(['node', 'script', '--mode', 'nope'])).toThrow('--mode must be one of');
 
@@ -427,6 +441,60 @@ describe('market catalog generator', () => {
     };
 
     expect(marketToPair(market, { mode: 'any', yesnoOnly: false })?.marketId).toBe('0xabc');
+  });
+
+  it('enforces non-any market status checks', () => {
+    const base = {
+      condition_id: '0xabc',
+      active: true,
+      closed: false,
+      archived: false,
+      accepting_orders: true,
+      enable_order_book: true,
+      tokens: [
+        { token_id: '1', outcome: 'Yes' },
+        { token_id: '2', outcome: 'No' }
+      ]
+    };
+
+    expect(marketToPair({ ...base, active: false }, { mode: 'binary', yesnoOnly: false })).toBeNull();
+    expect(marketToPair({ ...base, closed: true }, { mode: 'binary', yesnoOnly: false })).toBeNull();
+    expect(marketToPair({ ...base, archived: true }, { mode: 'binary', yesnoOnly: false })).toBeNull();
+  });
+
+  it('rejects marketToPair entries missing condition or token ids', () => {
+    expect(
+      marketToPair(
+        {
+          condition_id: '',
+          active: true,
+          closed: false,
+          archived: false,
+          accepting_orders: true,
+          enable_order_book: true,
+          tokens: [
+            { token_id: '1', outcome: 'Yes' },
+            { token_id: '2', outcome: 'No' }
+          ]
+        },
+        { mode: 'near-zero', yesnoOnly: false }
+      )
+    ).toBeNull();
+
+    expect(
+      marketToPair(
+        {
+          condition_id: '0xabc',
+          active: true,
+          closed: false,
+          archived: false,
+          accepting_orders: true,
+          enable_order_book: true,
+          tokens: [{ token_id: '1', outcome: 1 }, { token_id: '', outcome: 2 }] as unknown as Array<{ token_id: string; outcome: string }>
+        },
+        { mode: 'near-zero', yesnoOnly: false }
+      )
+    ).toBeNull();
   });
 
   it('orders non-Yes/No outcomes deterministically when yesnoOnly=false', () => {
@@ -1363,6 +1431,68 @@ describe('market catalog generator', () => {
     process.env.POLYMARKET_CLOB_BASE_URL = savedBaseUrl;
   });
 
+  it('skips pairs when requireMetadata=true and numeric metadata is non-positive', async () => {
+    const savedBaseUrl = process.env.POLYMARKET_CLOB_BASE_URL;
+    process.env.POLYMARKET_CLOB_BASE_URL = 'https://clob.test';
+
+    const dir = mkdtempSync(join(tmpdir(), 'catalog-invalid-meta-number-'));
+    const file = join(dir, 'market-catalog.json');
+
+    const market = {
+      enable_order_book: true,
+      active: true,
+      closed: false,
+      archived: false,
+      accepting_orders: true,
+      condition_id: '0xabc',
+      tokens: [
+        { token_id: 'YES', outcome: 'Yes' },
+        { token_id: 'NO', outcome: 'No' }
+      ]
+    };
+
+    const marketsPage = { data: [market], next_cursor: null, count: 1000 };
+    const badMetaBook = { bids: [], asks: [{ price: '0.5', size: '1' }], tick_size: 0, min_order_size: 1 };
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.startsWith('https://clob.test/markets')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(marketsPage),
+            json: async () => marketsPage
+          } as unknown as Response;
+        }
+        if (url.startsWith('https://clob.test/book?token_id=')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(badMetaBook),
+            json: async () => badMetaBook
+          } as unknown as Response;
+        }
+        return { ok: false, status: 404, text: async () => 'not found', json: async () => ({}) } as unknown as Response;
+      })
+    );
+
+    const result = await generateMarketCatalog({
+      outPath: file,
+      mode: 'near-zero',
+      maxPairs: 5,
+      merge: false,
+      verifyBooks: true,
+      requireMetadata: true
+    });
+
+    expect(result.pairs).toEqual([]);
+
+    vi.unstubAllGlobals();
+    rmSync(dir, { recursive: true, force: true });
+    process.env.POLYMARKET_CLOB_BASE_URL = savedBaseUrl;
+  });
+
   it('stops when next_cursor repeats (cursor loop safety)', async () => {
     const savedBaseUrl = process.env.POLYMARKET_CLOB_BASE_URL;
     process.env.POLYMARKET_CLOB_BASE_URL = 'https://clob.test';
@@ -1439,29 +1569,35 @@ describe('market catalog prestart', () => {
     log.mockRestore();
   });
 
-  it('runs a conservative merge refresh when configured', async () => {
+  it('runs overwrite refresh when catalog is stale by age gate', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const loadEnvStub = () => ({ MARKET_CATALOG_PATH: 'data/catalog.json' });
+    const loadEnvStub = () => ({
+      MARKET_CATALOG_PATH: 'data/catalog.json',
+      MARKET_CATALOG_PRESTART_MAX_AGE_MS: 1000
+    });
     const generateStub = vi.fn(async () => ({
       outPath: 'data/catalog.json',
       pairs: [{ marketId: 'a', yesTokenId: '1', noTokenId: '2' }],
       pagesScanned: 0,
       mode: 'near-zero',
-      merged: true,
-      maxPairs: 1
+      merged: false,
+      maxPairs: 80
     }));
 
     await runMarketCatalogPrestart({
       loadEnv: loadEnvStub,
       generateMarketCatalog: generateStub,
-      pathExists: () => true
+      pathExists: () => true,
+      readMtimeMs: () => 0,
+      nowMs: () => 5000
     });
 
     expect(generateStub).toHaveBeenCalledWith(
       expect.objectContaining({
         outPath: 'data/catalog.json',
         mode: 'near-zero',
-        merge: true,
+        merge: false,
+        maxPairs: 80,
         yesnoOnly: true,
         verifyBooks: true,
         requireMetadata: true
@@ -1471,7 +1607,7 @@ describe('market catalog prestart', () => {
     log.mockRestore();
   });
 
-  it('bootstraps conservatively when the catalog file does not exist', async () => {
+  it('bootstraps overwrite refresh when the catalog file does not exist', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const loadEnvStub = () => ({ MARKET_CATALOG_PATH: 'data/catalog.json', MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS: 12 });
     const generateStub = vi.fn(async () => ({
@@ -1479,7 +1615,7 @@ describe('market catalog prestart', () => {
       pairs: [{ marketId: 'a', yesTokenId: '1', noTokenId: '2' }],
       pagesScanned: 1,
       mode: 'near-zero',
-      merged: true,
+      merged: false,
       maxPairs: 12
     }));
 
@@ -1493,11 +1629,100 @@ describe('market catalog prestart', () => {
       expect.objectContaining({
         outPath: 'data/catalog.json',
         mode: 'near-zero',
-        merge: true,
+        merge: false,
         maxPairs: 12,
         yesnoOnly: true,
         verifyBooks: true,
         requireMetadata: true
+      })
+    );
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it('skips refresh when catalog is fresh within the age gate', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const loadEnvStub = () => ({
+      MARKET_CATALOG_PATH: 'data/catalog.json',
+      MARKET_CATALOG_PRESTART_MAX_AGE_MS: 1000
+    });
+    const generateStub = vi.fn();
+
+    await runMarketCatalogPrestart({
+      loadEnv: loadEnvStub,
+      generateMarketCatalog: generateStub,
+      pathExists: () => true,
+      readMtimeMs: () => 4500,
+      nowMs: () => 5000
+    });
+
+    expect(generateStub).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it('forces overwrite refresh when prestart max age is zero', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const loadEnvStub = () => ({
+      MARKET_CATALOG_PATH: 'data/catalog.json',
+      MARKET_CATALOG_PRESTART_MAX_AGE_MS: 0
+    });
+    const generateStub = vi.fn(async () => ({
+      outPath: 'data/catalog.json',
+      pairs: [],
+      pagesScanned: 0,
+      mode: 'near-zero',
+      merged: false,
+      maxPairs: 80
+    }));
+
+    await runMarketCatalogPrestart({
+      loadEnv: loadEnvStub,
+      generateMarketCatalog: generateStub,
+      pathExists: () => true,
+      readMtimeMs: () => 5000,
+      nowMs: () => 5000
+    });
+
+    expect(generateStub).toHaveBeenCalledWith(
+      expect.objectContaining({
+        merge: false,
+        maxPairs: 80
+      })
+    );
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it('treats unreadable mtime as stale and refreshes catalog', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const loadEnvStub = () => ({
+      MARKET_CATALOG_PATH: 'data/catalog.json',
+      MARKET_CATALOG_PRESTART_MAX_AGE_MS: 1000
+    });
+    const generateStub = vi.fn(async () => ({
+      outPath: 'data/catalog.json',
+      pairs: [],
+      pagesScanned: 0,
+      mode: 'near-zero',
+      merged: false,
+      maxPairs: 80
+    }));
+
+    await runMarketCatalogPrestart({
+      loadEnv: loadEnvStub,
+      generateMarketCatalog: generateStub,
+      pathExists: () => true,
+      readMtimeMs: () => {
+        throw new Error('stat failed');
+      },
+      nowMs: () => 5000
+    });
+
+    expect(generateStub).toHaveBeenCalledWith(
+      expect.objectContaining({
+        merge: false,
+        maxPairs: 80
       })
     );
     expect(log).toHaveBeenCalled();

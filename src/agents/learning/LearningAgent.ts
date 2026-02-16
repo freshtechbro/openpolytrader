@@ -311,6 +311,7 @@ export class LearningAgent {
             endpoint: 'chat.completions',
             model,
             temperature: 0,
+            response_format: { type: 'json_object' },
             messages: [
               { role: 'developer', content: instruction },
               { role: 'user', content: JSON.stringify(promptEnvelope) }

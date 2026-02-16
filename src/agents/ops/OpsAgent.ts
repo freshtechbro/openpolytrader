@@ -214,6 +214,8 @@ export class OpsAgent {
       endpoint: 'chat.completions',
       model: llm.config.agents.OpsAgent.model,
       temperature: 0,
+      max_tokens: 350,
+      response_format: { type: 'json_object' },
       messages: [
         {
           role: 'developer',
@@ -225,23 +227,35 @@ export class OpsAgent {
     };
 
     const call = await llm.client.call('OpsAgent', request);
-    if (!call.outputText) return;
+    const hasOutputText = Boolean(call.outputText);
+    const parsed = hasOutputText ? safeParseJSON(call.outputText) : null;
+    const validated = hasOutputText
+      ? OpsHealthSummarySchema.safeParse(parsed)
+      : ({ success: false } as const);
+    const missingOutput = !hasOutputText;
+    const output = validated.success
+      ? validated.data
+      : missingOutput
+        ? { error: 'missing_output_text', status: call.status, llm_error: call.error ?? null }
+        : { error: 'invalid_output' };
+    const violations = missingOutput ? ['missing_output_text'] : validated.success ? [] : ['invalid_output'];
+    const applied = validated.success;
+    const confidence = validated.success ? validated.data.confidence : 0;
 
-    const parsed = safeParseJSON(call.outputText);
-    const validated = OpsHealthSummarySchema.safeParse(parsed);
-    if (!validated.success) return;
+    if (validated.success) {
+      messageBus.emit('ops:health_summary', { ...validated.data, generatedAtMs: nowMs });
+    }
 
-    messageBus.emit('ops:health_summary', { ...validated.data, generatedAtMs: nowMs });
     logLLMDecision({
       agent: 'OpsAgent',
       mode: llm.config.agents.OpsAgent.mode,
       task: 'health_summary',
       subject: 'system:ops-health',
       baseline: promptEnvelope.inputs,
-      output: validated.data,
-      confidence: validated.data.confidence,
-      applied: true,
-      clamp: { raw: parsed, final: validated.data },
+      output,
+      confidence,
+      applied,
+      clamp: { raw: parsed, final: validated.success ? validated.data : undefined, violations },
       nowMs,
       call,
       request,
@@ -257,6 +271,17 @@ export class OpsAgent {
       },
       store: this.eventStore ?? llm.eventStore
     });
+
+    if (!validated.success && call.error) {
+      messageBus.emit('llm:error', {
+        agent: 'OpsAgent',
+        provider_id: call.providerId ?? llm.config.agents.OpsAgent.provider,
+        endpoint: call.endpoint ?? request.endpoint,
+        model: call.model ?? request.model,
+        error: call.error,
+        at_ms: nowMs
+      });
+    }
   }
 
   private async sendAlert(payload: unknown): Promise<void> {

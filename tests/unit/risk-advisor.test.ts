@@ -195,6 +195,56 @@ describe('RiskAdvisor', () => {
 
     expect(result.recommendedSizeRaw).toBeNull();
     expect(result.clampedSize).toBe(50);
+    expect(result.reason).toBe('missing_output_text');
+  });
+
+  it('sends structured JSON request format with explicit token cap', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_RISK_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+
+    let capturedRequest: unknown = null;
+    const advisor = new RiskAdvisor({
+      llmConfig,
+      llmClient: {
+        call: async (_agent: 'RiskAgent', request) => {
+          capturedRequest = request;
+          return {
+            status: 'success',
+            providerId: 'opencode-zen',
+            baseUrl: llmConfig.providers['opencode-zen'].baseUrl,
+            endpoint: 'chat.completions',
+            model: llmConfig.agents.RiskAgent.model,
+            outputText: '{"recommended_size":25,"reason":"ok","confidence":0.7}',
+            startedAtMs: Date.now(),
+            latencyMs: 1,
+            timeoutMs: llmConfig.agents.RiskAgent.timeoutMs,
+            maxRetries: llmConfig.retry.maxRetries,
+            attempt: 1
+          };
+        }
+      },
+      promptVersion: 'test-v1',
+      policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+    });
+
+    await advisor.recommendSize({
+      opportunityId: 'opp-request-shape',
+      marketId: 'm1',
+      minSize: 10,
+      deterministicSize: 50,
+      constraints: { binding: 'depth' }
+    });
+
+    expect(capturedRequest).toMatchObject({
+      endpoint: 'chat.completions',
+      max_tokens: 300,
+      response_format: { type: 'json_object' }
+    });
   });
 
   it('persists decisions when EventStore is provided', async () => {

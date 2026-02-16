@@ -57,7 +57,7 @@ describe('ExecutionAgent advisory hints', () => {
     const advisor = new ExecutionAdvisor({ enabled: true });
 
     messageBus.emit('learning:insight', {
-      insights: [{ market_id: 'm1', signal: 'high_confidence', value: 0.5, ttl_ms: 1, confidence: 0.9 }],
+      insights: [{ market_id: 'm1', signal: 'high_confidence', value: 0.5, ttl_ms: 10_000, confidence: 0.9 }],
       generatedAtMs: Date.now()
     });
 

@@ -31,10 +31,10 @@ export default defineConfig({
         'src/telemetry/events.ts'
       ],
       thresholds: {
-        lines: 95,
-        functions: 95,
-        statements: 95,
-        branches: 94
+        lines: 97.01,
+        functions: 97.01,
+        statements: 97.01,
+        branches: 97.01
       }
     }
   }

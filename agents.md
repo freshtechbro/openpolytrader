@@ -32,7 +32,7 @@ Near-zero-risk Polymarket CLOB arbitrage bot. TypeScript + Fastify backend, Reac
 - 94 TypeScript source files
 - 17 Dashboard TypeScript/TSX files
 - 8 Specialized agents
-- 95% test coverage requirement
+- >97% test coverage requirement
 - 270+ environment configuration options
 
 ---
@@ -112,7 +112,7 @@ openpolytrader/
 | **Orchestration** | `src/core/Supervisor.ts` | Agent lifecycle, pipeline flow (1007 lines) |
 | **Dashboard UI** | `dashboard/src/` | React components + pages |
 | **Risk config UI** | `dashboard/src/pages/RiskGates.tsx` | 668 lines - complexity hotspot |
-| **Tests** | `tests/unit/`, `tests/integration/` | 95% coverage requirement |
+| **Tests** | `tests/unit/`, `tests/integration/` | >97% coverage requirement |
 
 ---
 
@@ -216,6 +216,7 @@ flowchart TD
 | Document | Purpose |
 |----------|---------|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, agent details, data flow |
+| [`docs/ARCHITECTURE_EVENT_FLOW.asc`](docs/ARCHITECTURE_EVENT_FLOW.asc) | ASCII end-to-end event flow diagram |
 | [`docs/Development/architecture-decisions.md`](docs/Development/architecture-decisions.md) | ADRs for key architectural choices |
 
 ### 💻 Development
@@ -224,15 +225,17 @@ flowchart TD
 |----------|---------|
 | [`docs/Development/setup.md`](docs/Development/setup.md) | Dev environment setup |
 | [`docs/Development/market-catalog.md`](docs/Development/market-catalog.md) | Market catalog generation |
+| [`docs/API.md`](docs/API.md) | Full Ops API reference |
 
 ### 🔧 Operations
 
 | Document | Purpose |
 |----------|---------|
+| [`docs/Operations/environment-reference.md`](docs/Operations/environment-reference.md) | Minimum requirements + complete env var inventory |
 | [`docs/Operations/runbook.md`](docs/Operations/runbook.md) | Operational guidance, health checks |
 | [`docs/Operations/config-knobs.md`](docs/Operations/config-knobs.md) | Configuration reference |
 | [`docs/Operations/security.md`](docs/Operations/security.md) | Security procedures |
-| [`docs/Operations/README.md`](docs/Operations/README.md) | Operations rollout guide |
+| [`docs/Operations/README.md`](docs/Operations/README.md) | Operations documentation index |
 
 ### 🧪 Testing
 
@@ -312,7 +315,7 @@ Local context files throughout the codebase:
 ### Testing
 
 - **Framework:** Vitest
-- **Coverage:** 95% requirement
+- **Coverage:** >97% requirement
 - **Mocking:** `vi.mock()` for external dependencies
 - **Cleanup:** `afterEach` for integration tests
 
@@ -336,7 +339,7 @@ npm run start            # node dist/main.js
 npm run lint             # eslint --max-warnings=0
 npm run typecheck        # tsc --noEmit
 npm run test             # vitest run
-npm run test:coverage    # 95% thresholds
+npm run test:coverage    # >97% thresholds
 npm run catalog:refresh  # refresh market catalog
 ```
 
@@ -361,6 +364,8 @@ docker compose up        # Local deployment
 
 Base: `http://localhost:3000`
 
+Reference: [`docs/API.md`](docs/API.md)
+
 | Endpoint | Description |
 |----------|-------------|
 | `GET /health` | Health check |
@@ -369,11 +374,20 @@ Base: `http://localhost:3000`
 | `GET /metrics` | JSON metrics snapshot (`counts` + `lastEventAt`) |
 | `GET /slo` | Service Level Objectives |
 | `GET /allowlist` | Market allowlist state |
+| `GET /markets` | Allowlist entries enriched with market metadata |
 | `GET /incidents` | Incident log |
+| `GET /portfolio` | Portfolio snapshot |
+| `GET /decisions` | Decision history query |
 | `GET /stream` | SSE real-time events |
 | `GET /config` | Configuration snapshot |
+| `GET /config/schema` | Runtime editable policy/risk schema |
+| `GET /config/infra` | Infra config snapshot (read-only) |
+| `GET /config/risk-profiles` | Active + available risk profiles |
 | `PATCH /config/policy` | Update trade policy |
 | `PATCH /config/risk` | Update risk settings |
+| `POST /config/risk-profile` | Apply risk profile |
+| `POST /config/trading-mode` | Change trading mode/enabled state |
+| `POST /allowlist/:marketId/resume` | Resume quarantined market |
 
 Auth: `Authorization: Bearer $OPS_API_TOKEN`
 

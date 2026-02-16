@@ -3,9 +3,9 @@
 [![CI](https://github.com/freshtechbro/openpolytrader/actions/workflows/ci.yml/badge.svg)](https://github.com/freshtechbro/openpolytrader/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5-blue.svg)](https://www.typescriptlang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen.svg)](docs/Testing/strategy.md)
+[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen.svg)](docs/Testing/strategy.md)
 
-> **Near-zero-risk Polymarket CLOB arbitrage automation** with event-sourced state, agent orchestration, and an ops dashboard.
+> Near-zero-risk Polymarket CLOB arbitrage automation with event-sourced state, agent orchestration, and an ops dashboard.
 
 <p align="center">
   <img src="docs/assets/readme/v2/readme-hero-v2-05.jpg" alt="OpenPolyTrader Polymarket trading dashboard hero" width="960" />
@@ -13,344 +13,269 @@
   <sub>Polymarket operations view: order books, scanner/risk/execution flow, and portfolio exposure.</sub>
 </p>
 
----
+## Disclaimer
 
-## 📋 Table of Contents
+This project is an **experimental, research-focused trading tool**.
 
-- [🚀 Highlights](#-highlights)
-- [📊 Strategy](#-strategy)
-- [🏗️ Architecture](#️-architecture)
-- [⚡ Quickstart](#-quickstart)
-- [⚙️ Configuration](#️-configuration)
-- [🔌 Ops API](#-ops-api)
-- [📦 Scripts](#-scripts)
-- [📚 Documentation](#-documentation)
-- [🤝 Contributing](#-contributing)
-- [🔒 Security](#-security)
-- [📄 License](#-license)
+- It is for engineering research and operational experimentation.
+- It is **not financial advice**, investment advice, or a solicitation to trade.
+- Trading live markets can lead to losses, including total loss of capital.
+- You are solely responsible for configuration, risk limits, and trading decisions.
 
----
+## Table of Contents
 
-## 🚀 Highlights
+- [Minimum Requirements](#minimum-requirements)
+- [Priority Keys (Live Trading)](#priority-keys-live-trading)
+- [Quickstart](#quickstart)
+- [Environment Variables (Complete Index)](#environment-variables-complete-index)
+- [AI Agent Setup Prompt](#ai-agent-setup-prompt)
+- [Ops API](#ops-api)
+- [Documentation Map](#documentation-map)
 
-| Feature | Description |
-|---------|-------------|
-| 🤖 **Agent Pipeline** | Scanner → Risk → Execution → Portfolio (event-driven architecture) |
-| 📝 **Event-Sourced State** | SQLite-backed EventStore for audit trail and crash recovery |
-| 📡 **Real-time Telemetry** | Ops API + SSE stream for live monitoring |
-| 🎛️ **React Dashboard** | Vite-powered UI for monitoring and configuration |
-| 🛡️ **Risk Profiles** | `near_zero`, `moderate`, `high`, `extra_high` with runtime switching |
-| 🧠 **LLM Advisory** | Bounded, conservative AI support across all agents |
-| ⚡ **Deterministic Execution** | Idempotency + timeout controls for reliable trading |
-| 📋 **Market Catalog** | Controlled trading universe with allowlist gating |
+## Minimum Requirements
 
----
+### Local Monitoring Only (No Live Trading)
 
-## 📊 Strategy
+- Node.js 20+
+- npm
+- `git`
+- Backend + dashboard dependencies installed
+- Optional but recommended: Docker (for `dev:live` workflow)
 
-### Core Principles
+Minimum runtime settings for safe local usage:
 
-1. **Universe Control**: Load an explicit market catalog, seed the allowlist, and quarantine markets after incidents
-2. **Opportunity Types**:
-   - **Near-zero arbitrage** (default): Exploit YES+NO pricing inefficiencies
-   - **EV signals** (optional): Enable via `signalMode=ev` for expected value trading
-3. **Risk Gating**: Enforce depth, spread, freshness, sizing caps, and daily loss limits before execution
-4. **Execution Discipline**: Timeouts and idempotency enforced; delayed/partial fills trigger conservative handling
-5. **Post-Trade Management**: Portfolio reconciliation and incident tracking with automatic quarantines
+- `TRADING_MODE=paper` or `TRADING_ENABLED=false`
+- `OPS_API_TOKEN` (recommended)
+- `VITE_OPS_API_TOKEN` (must match `OPS_API_TOKEN` when auth is enabled)
 
----
+### Live Trading (Strict Minimum)
 
-## 🏗️ Architecture
+When `TRADING_ENABLED=true` and `TRADING_MODE=live`, the runtime enforces these keys in `src/config/env.ts`:
 
-### System Overview
+- `ALCHEMY_API_KEY`
+- `POLYMARKET_API_KEY`
+- `POLYMARKET_API_SECRET`
+- `POLYMARKET_PASSPHRASE`
+- `POLYMARKET_POSITIONS_USER`
 
-```
-External Services
-  Gamma API -> MarketCatalogRefresher -> MarketCatalog -> Allowlist
-  Polymarket WS/REST -> MarketDataAgent -> Orderbooks
-  Polymarket Data API -> PortfolioAgent
+Also required operationally for near-zero live mode:
 
-Core Flow
-  SignalAggregatorAgent -> ScannerAgent -> RiskAgent -> ExecutionAgent -> PortfolioAgent
-  PortfolioAgent -> EventStore -> Ops API -> Dashboard
+- `POLYMARKET_USER_WS_URL` reachable for user channel updates
+- `POLYMARKET_WS_URL` reachable for market data
+- `POLYMARKET_CLOB_BASE_URL` and `POLYMARKET_DATA_API_BASE_URL` reachable
 
-Ops/Telemetry
-  OpsAgent -> Ops API (/health, /metrics, /slo, /stream)
-  MessageBus connects agents and events end-to-end
-```
+## Priority Keys (Live Trading)
 
-### Agent Pipeline
+### Priority 1: Required Keys
 
-```
-┌─────────────────────┐     ┌─────────────┐     ┌──────────┐     ┌────────────┐     ┌────────────────┐
-│ SignalAggregatorAgent│────▶│ ScannerAgent │────▶│ RiskAgent │────▶│ ExecutionAgent │────▶│ PortfolioAgent │
-└─────────────────────┘     └─────────────┘     └──────────┘     └────────────┘     └────────────────┘
-        │                           │                  │                │                    │
-        ▼                           ▼                  ▼                ▼                    ▼
-   Detects                    Validates          Executes          Reconciles
-   opportunity                 gates              orders            positions
-```
+| Key | Why it is required |
+| --- | --- |
+| `ALCHEMY_API_KEY` | Required RPC authentication for Polygon connectivity in live mode |
+| `POLYMARKET_API_KEY` | Required for private CLOB trading requests |
+| `POLYMARKET_API_SECRET` | Required for private CLOB request signing/auth |
+| `POLYMARKET_PASSPHRASE` | Required CLOB credential component |
+| `POLYMARKET_POSITIONS_USER` | Required for portfolio reconciliation against Polymarket Data API |
 
-### Technology Stack
+### Priority 2: Strongly Recommended
 
-| Layer | Technology |
-|-------|------------|
-| **Backend** | TypeScript, Fastify, Node.js 20+ |
-| **Database** | SQLite (event sourcing) |
-| **Frontend** | React 18, Vite |
-| **Testing** | Vitest (95% coverage), Playwright (E2E) |
-| **Blockchain** | Ethers.js, Polygon POS |
-| **Real-time** | WebSocket, SSE |
+| Key | Why it matters |
+| --- | --- |
+| `OPS_API_TOKEN` | Protects ops endpoints (`/config/*`, `/stream`, etc.) |
+| `VITE_OPS_API_TOKEN` | Allows authenticated dashboard access |
+| `TRADING_MODE` | Explicitly controls execution mode (`off`, `shadow`, `paper`, `live`) |
+| `RISK_PROFILE` | Ensures expected risk gate set at boot |
 
----
+### Other Market Integrations
 
-## ⚡ Quickstart
+- **Active venue now:** Polymarket
+- **Scaffolded, not active by default:** Kalshi (`PHASE2_CROSS_VENUE_ENABLED=false`)
+- If cross-venue is enabled later, configure:
+  - `KALSHI_API_KEY_ID`
+  - `KALSHI_PRIVATE_KEY_PEM` or `KALSHI_PRIVATE_KEY_PATH`
 
-### 🎯 Recommended: Ops Dev Mode (Backend + Dashboard)
+## Quickstart
 
-Starts both backend and dashboard with a single command:
+### 1. Install
 
 ```bash
 npm install
+npm --prefix dashboard install
+cp .env.example .env
+cp dashboard/.env.example dashboard/.env
+```
+
+### 2. Set Safe Defaults for Local Work
+
+In `.env`:
+
+```bash
+TRADING_MODE=paper
+TRADING_ENABLED=true
+OPS_API_TOKEN=replace-with-secure-token
+```
+
+In `dashboard/.env`:
+
+```bash
+VITE_OPS_BASE_URL=http://localhost:3000
+VITE_OPS_API_TOKEN=replace-with-secure-token
+```
+
+### 3. Start Backend + Dashboard
+
+```bash
 npm run dev:ops
 ```
 
-**Access Points:**
-- Backend: http://localhost:3000
-- Dashboard: http://localhost:5174
+Access:
 
-**Requirements:**
-- Set `OPS_API_TOKEN` or `VITE_OPS_API_TOKEN` in `dashboard/.env`
-- See [setup guide](docs/Development/setup.md) for details
+- Backend: `http://localhost:3000`
+- Dashboard: `http://localhost:5174`
 
-**Stop:**
+Stop:
+
 ```bash
 npm run dev:ops:down
 ```
 
----
-
-### 🐳 Docker Mode (Backend + Local Dashboard Dev Server)
+### 4. Validate
 
 ```bash
-npm install
-npm run dev:live
+npm run lint
+npm run typecheck
+npm run build
+npm run test
+npm run test:coverage
+npm --prefix dashboard run build
 ```
 
-Starts the backend in Docker and the dashboard with a local Vite dev server.
+## Environment Variables (Complete Index)
 
-**Access Points:**
-- Backend: http://localhost:3000
-- Dashboard: http://localhost:5173
+Source of truth files:
 
-**Stop:**
-```bash
-npm run dev:live:down
+- Backend/runtime: `.env.example`
+- Dashboard: `dashboard/.env.example`
+- Validation and defaults: `src/config/env.ts`
+- Detailed descriptions: `docs/Operations/environment-reference.md`
+
+<details>
+<summary>Core runtime</summary>
+
+`NODE_ENV`, `LOG_LEVEL`, `PORT`
+
+</details>
+
+<details>
+<summary>Ops API + scheduling</summary>
+
+`OPS_API_ENABLED`, `OPS_API_HOST`, `OPS_API_TOKEN`, `OPS_ALERT_WEBHOOK_URL`, `OPS_HEALTH_INTERVAL_MS`, `OPS_SHUTDOWN_TIMEOUT_MS`, `OPS_STREAM_HEARTBEAT_MS`, `OPS_INCIDENTS_LIMIT`, `OPS_RECONCILIATION_INTERVAL_MS`, `OPS_RECONCILIATION_AFTER_INCIDENT_DELAY_MS`, `OPS_RECONCILIATION_POSITION_SIZE_TOLERANCE`, `OPS_BOOK_REFRESH_INTERVAL_MS`, `OPS_BOOK_REFRESH_STALE_MS`, `OPS_BOOK_STALE_QUARANTINE_THRESHOLD`, `OPS_BOOK_STALE_QUARANTINE_WINDOW_MS`, `OPS_BOOK_STALE_QUARANTINE_COOLDOWN_MS`
+
+</details>
+
+<details>
+<summary>Metrics + EventStore</summary>
+
+`METRICS_MAX_EVENTS`, `INCIDENTS_MAX_EVENTS`, `ALLOWLIST_AUTO_RESUME`, `EVENT_STORE_PATH`, `EVENT_STORE_METRICS_RETENTION_DAYS`, `EVENT_STORE_METRICS_PRUNE_INTERVAL_MS`
+
+</details>
+
+<details>
+<summary>Market catalog + trading modes</summary>
+
+`TOTAL_CAPITAL`, `MARKET_CATALOG_PATH`, `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS`, `MARKET_CATALOG_MIN_VOLUME_24H`, `MARKET_CATALOG_MAX_SPREAD`, `MARKET_CATALOG_PAGE_SIZE`, `MARKET_CATALOG_MAX_PAGES`, `MARKET_CATALOG_ORDER`, `MARKET_CATALOG_EXPLORATION_ENABLED`, `MARKET_CATALOG_EXPLORATION_MAX_PAIRS`, `MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H`, `MARKET_CATALOG_EXPLORATION_MAX_PAGES`, `GAMMA_API_BASE_URL`, `TRADING_ENABLED`, `TRADING_MODE`, `RISK_PROFILE`, `RISK_PROFILE_PATH`, `RISK_PROFILE_ACTIVE_PATH`, `MAX_CONCURRENT_MARKETS`, `MAX_CAPITAL_IN_FLIGHT`, `PHASE2_CROSS_VENUE_ENABLED`
+
+</details>
+
+<details>
+<summary>EV web search</summary>
+
+`EXA_API_KEY`, `EXA_BASE_URL`, `EXA_SEARCH_PATH`, `EXA_CONTENTS_PATH`, `EXA_COOLDOWN_MS`, `EXA_COOLDOWN_FAILURE_THRESHOLD`, `FIRECRAWL_API_KEY`, `FIRECRAWL_BASE_URL`, `FIRECRAWL_SEARCH_PATH`, `FIRECRAWL_SCRAPE_PATH`, `FIRECRAWL_CRAWL_PATH`, `FIRECRAWL_CRAWL_ENABLED`, `EV_WEBSEARCH_TIMEOUT_MS`, `EV_WEBSEARCH_REQUESTS_PER_MINUTE`, `EV_WEBSEARCH_RATE_LIMIT_WINDOW_MS`, `EV_WEBSEARCH_MAX_CONTENT_BYTES`, `EV_WEBSEARCH_DOMAIN_ALLOWLIST`, `EV_WEBSEARCH_DOMAIN_DENYLIST`
+
+</details>
+
+<details>
+<summary>LLM advisory configuration</summary>
+
+`LLM_ENABLED`, `LLM_DATA_EXPORT_ENABLED`, `LLM_PRIMARY_PROVIDER`, `LLM_FALLBACK_PROVIDER`, `LLM_PRIMARY_BASE_URL`, `LLM_FALLBACK_BASE_URL`, `LLM_PRIMARY_API_KEY`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_ENABLED`, `LLM_PRIMARY_RETRY_COUNT`, `LLM_OPENROUTER_SORT`, `LLM_OPENROUTER_ALLOW_FALLBACKS`, `LLM_OPENROUTER_HTTP_REFERER`, `LLM_OPENROUTER_X_TITLE`, `LLM_TIMEOUT_MS`, `LLM_MAX_RETRIES`, `LLM_CB_FAILURE_THRESHOLD`, `LLM_CB_COOLDOWN_MS`, `LLM_CB_HALF_OPEN_SUCCESSES`, `LLM_EXECUTION_PROVIDER`, `LLM_EXECUTION_MODEL`, `LLM_EXECUTION_MODE`, `LLM_EXECUTION_TIMEOUT_MS`, `LLM_EXECUTION_MODEL_BACKUP`, `LLM_EXECUTION_ENDPOINT_BACKUP`, `LLM_RISK_PROVIDER`, `LLM_RISK_MODEL`, `LLM_RISK_MODE`, `LLM_RISK_TIMEOUT_MS`, `LLM_RISK_MODEL_BACKUP`, `LLM_RISK_ENDPOINT_BACKUP`, `LLM_SCANNER_PROVIDER`, `LLM_SCANNER_MODEL`, `LLM_SCANNER_MODE`, `LLM_SCANNER_TIMEOUT_MS`, `LLM_SCANNER_SCORE_TOP_N`, `LLM_SCANNER_SCORE_CONCURRENCY`, `LLM_SCANNER_SHADOW_MIN_INTERVAL_MS`, `LLM_SCANNER_MODEL_BACKUP`, `LLM_SCANNER_ENDPOINT_BACKUP`, `LLM_LEARNING_PROVIDER`, `LLM_LEARNING_MODEL`, `LLM_LEARNING_MODE`, `LLM_LEARNING_TIMEOUT_MS`, `LLM_LEARNING_MODEL_BACKUP`, `LLM_LEARNING_ENDPOINT_BACKUP`, `LLM_PORTFOLIO_PROVIDER`, `LLM_PORTFOLIO_MODEL`, `LLM_PORTFOLIO_MODE`, `LLM_PORTFOLIO_TIMEOUT_MS`, `LLM_PORTFOLIO_MODEL_BACKUP`, `LLM_PORTFOLIO_ENDPOINT_BACKUP`, `LLM_MARKETDATA_PROVIDER`, `LLM_MARKETDATA_MODEL`, `LLM_MARKETDATA_MODE`, `LLM_MARKETDATA_TIMEOUT_MS`, `LLM_MARKETDATA_MODEL_BACKUP`, `LLM_MARKETDATA_ENDPOINT_BACKUP`, `LLM_OPS_PROVIDER`, `LLM_OPS_MODEL`, `LLM_OPS_MODE`, `LLM_OPS_TIMEOUT_MS`, `LLM_OPS_MODEL_BACKUP`, `LLM_OPS_ENDPOINT_BACKUP`
+
+</details>
+
+<details>
+<summary>Polymarket REST + WebSocket + Data API</summary>
+
+`POLYMARKET_CLOB_BASE_URL`, `POLYMARKET_CLOB_TIMEOUT_MS`, `POLYMARKET_CLOB_RATE_LIMIT_PER_SEC`, `POLYMARKET_CLOB_RATE_LIMIT_WINDOW_MS`, `POLYMARKET_CLOB_ORDER_PATH`, `POLYMARKET_CLOB_BATCH_ORDER_PATH`, `POLYMARKET_CLOB_CANCEL_ORDER_PATH`, `POLYMARKET_CLOB_CANCEL_ORDERS_PATH`, `POLYMARKET_CLOB_CANCEL_ALL_PATH`, `POLYMARKET_CLOB_CANCEL_MARKET_ORDERS_PATH`, `POLYMARKET_CLOB_ACTIVE_ORDERS_PATH`, `POLYMARKET_CLOB_RETRY_MAX_RETRIES`, `POLYMARKET_CLOB_RETRY_BASE_DELAY_MS`, `POLYMARKET_CLOB_RETRY_MAX_DELAY_MS`, `POLYMARKET_WS_URL`, `POLYMARKET_USER_WS_URL`, `POLYMARKET_WS_HEARTBEAT_MS`, `POLYMARKET_WS_RECONNECT_BASE_MS`, `POLYMARKET_WS_RECONNECT_MAX_MS`, `POLYMARKET_WS_RECONNECT_JITTER_PCT`, `POLYMARKET_DATA_API_BASE_URL`, `POLYMARKET_DATA_API_POSITIONS_PATH`, `POLYMARKET_DATA_API_TIMEOUT_MS`, `POLYMARKET_DATA_API_RATE_LIMIT_PER_SEC`, `POLYMARKET_DATA_API_RATE_LIMIT_WINDOW_MS`, `POLYMARKET_DATA_API_RETRY_MAX_RETRIES`, `POLYMARKET_DATA_API_RETRY_BASE_DELAY_MS`, `POLYMARKET_DATA_API_RETRY_MAX_DELAY_MS`, `POLYMARKET_POSITIONS_USER`, `POLYMARKET_POSITIONS_SIZE_THRESHOLD`, `POLYMARKET_POSITIONS_LIMIT`, `POLYMARKET_POSITIONS_OFFSET`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_PASSPHRASE`, `POLYMARKET_L1_PRIVATE_KEY`, `POLYMARKET_L1_NONCE`
+
+</details>
+
+<details>
+<summary>RPC infrastructure + Phase 2 (Kalshi)</summary>
+
+`ALCHEMY_RPC_URL`, `ALCHEMY_WS_URL`, `ALCHEMY_RPC_RPS`, `QUICKNODE_RPC_URL`, `QUICKNODE_RPC_RPS`, `CHAINSTACK_RPC_URL`, `CHAINSTACK_WS_URL`, `CHAINSTACK_RPC_RPS`, `ANKR_RPC_URL`, `ANKR_RPC_RPS_PHASE1`, `ANKR_RPC_RPS_PHASE2`, `PRIVATE_RPC_URL`, `PRIVATE_WS_URL`, `PRIVATE_RPC_RPS`, `RPC_RATE_LIMIT_WINDOW_MS`, `RPC_WAIT_CONFIRMATIONS`, `RPC_WAIT_TIMEOUT_MS`, `RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE1`, `RPC_CIRCUIT_TIMEOUT_MS_PHASE1`, `RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE1`, `RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE2`, `RPC_CIRCUIT_TIMEOUT_MS_PHASE2`, `RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE2`, `RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE3`, `RPC_CIRCUIT_TIMEOUT_MS_PHASE3`, `RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE3`, `ALCHEMY_API_KEY`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PEM`, `KALSHI_PRIVATE_KEY_PATH`
+
+</details>
+
+<details>
+<summary>Dashboard environment variables</summary>
+
+`VITE_OPS_BASE_URL`, `VITE_OPS_API_TOKEN`, `VITE_PORTFOLIO_REFRESH_MS`, `VITE_SLO_REFRESH_MS`, `VITE_INCIDENTS_LIMIT`, `VITE_INCIDENTS_PREVIEW_LIMIT`
+
+</details>
+
+## AI Agent Setup Prompt
+
+Use this prompt with your coding agent:
+
+```text
+Set up OpenPolyTrader locally in safe paper mode.
+
+Requirements:
+1) Install backend and dashboard dependencies.
+2) Create .env and dashboard/.env from examples.
+3) Set TRADING_MODE=paper, TRADING_ENABLED=true.
+4) Set OPS_API_TOKEN and mirror it as VITE_OPS_API_TOKEN.
+5) Start with npm run dev:ops.
+6) Verify:
+   - GET /health returns healthy
+   - dashboard loads on :5174
+   - authenticated /config works with Authorization: Bearer $OPS_API_TOKEN
+7) Run quality checks: npm run lint, npm run typecheck, npm run build, npm run test, npm run test:coverage.
+8) Do not switch to live mode unless ALCHEMY_API_KEY, POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_PASSPHRASE, and POLYMARKET_POSITIONS_USER are configured.
+
+Return a short report with commands run, files changed, and verification results.
 ```
 
----
-
-### 🔧 Backend Only
-
-```bash
-npm install
-npm run dev
-```
-
----
-
-### 🎨 Dashboard Only
-
-```bash
-cd dashboard
-npm install
-npm run dev
-```
-
----
-
-### 🛠️ Build Commands
-
-```bash
-# Build backend + dashboard + Docker images
-npm run build:all
-
-# Build and start Docker containers
-npm run build:all:up
-
-# Build and start backend + dashboard (dev server)
-npm run build:all:live
-```
-
----
-
-## ⚙️ Configuration
-
-### Environment Setup
-
-1. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Edit `.env` with your settings (see [config guide](docs/Operations/config-knobs.md))
-
-### Key Settings
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `TRADING_ENABLED` | `true` | Set `false` to hard-disable trading |
-| `TRADING_MODE` | `shadow` | Options: `off`, `shadow`, `paper`, `live` |
-| `RISK_PROFILE` | `extra_high` | Options: `near_zero`, `moderate`, `high`, `extra_high` |
-| `OPS_API_TOKEN` | - | Recommended for API security |
-| `TOTAL_CAPITAL` | `1000` | Starting capital in USD |
-
-### Risk Profile Behavior
-
-- If `RISK_PROFILE` is explicitly set, it takes precedence on boot
-- Applied profiles persist to `settings/risk-gates/active.json`
-- Runtime changes via Ops API override env settings
-
-### Live Trading Requirements
-
-Near-zero-risk live mode requires:
-- `POLYMARKET_USER_WS_URL` (user channel connectivity)
-- Valid trading credentials:
-  - `ALCHEMY_API_KEY`
-  - `POLYMARKET_API_KEY`
-  - `POLYMARKET_API_SECRET`
-  - `POLYMARKET_PASSPHRASE`
-
----
-
-## 🔌 Ops API
+## Ops API
 
 Base URL: `http://localhost:3000`
 
-### Endpoints
+See full endpoint docs in `docs/API.md`.
 
-#### Health & Monitoring
-- `GET /health` - System health status
-- `GET /health/live` - Liveness probe (Docker)
-- `GET /health/ready` - Readiness probe (returns 503 if degraded)
-- `GET /metrics` - JSON metrics snapshot (`counts` + `lastEventAt`)
-- `GET /slo` - Service Level Objectives
+Common endpoints:
 
-#### Configuration
-- `GET /config` - Current configuration snapshot
-- `GET /config/schema` - Policy/risk schema for UI
-- `GET /config/infra` - Infrastructure config (read-only)
-- `GET /config/risk-profiles` - Available risk profiles
-- `PATCH /config/policy` - Update trade policy
-- `PATCH /config/risk` - Update risk settings
-- `POST /config/risk-profile` - Apply risk profile
+- `GET /health`, `GET /health/live`, `GET /health/ready`
+- `GET /metrics`, `GET /slo`, `GET /stream`
+- `GET /allowlist`, `GET /markets`, `GET /incidents`, `GET /portfolio`, `GET /decisions`
+- `GET /config`, `GET /config/schema`, `GET /config/infra`, `GET /config/risk-profiles`
+- `PATCH /config/policy`, `PATCH /config/risk`
+- `POST /config/risk-profile`, `POST /config/trading-mode`, `POST /allowlist/:marketId/resume`
 
-#### Operations
-- `GET /allowlist` - Market allowlist state
-- `POST /allowlist/:marketId/resume` - Resume quarantined market
-- `GET /incidents` - Recent incidents
-- `GET /stream` - SSE real-time events
+Auth (when `OPS_API_TOKEN` is set):
 
-### Authentication
-
-When `OPS_API_TOKEN` is set:
 ```bash
 curl -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/health
 ```
 
----
+## Documentation Map
 
-## 📦 Scripts
+- API reference: `docs/API.md`
+- Architecture (with end-to-end event flow diagrams): `docs/ARCHITECTURE.md`
+- Local setup spec and quickstart details: `docs/Development/setup.md`
+- Environment variable descriptions and defaults: `docs/Operations/environment-reference.md`
+- Runtime/ops procedures: `docs/Operations/runbook.md`
+- Config knobs: `docs/Operations/config-knobs.md`
+- Security: `docs/Operations/security.md`
+- Testing strategy: `docs/Testing/strategy.md`
 
-### Backend
+## License
 
-| Script | Description |
-|--------|-------------|
-| `npm run dev` | Start backend (tsx) |
-| `npm run dev:ops` | Start backend + dashboard |
-| `npm run dev:ops:down` | Stop dev:ops processes |
-| `npm run dev:live` | Docker backend + local dashboard dev server |
-| `npm run dev:live:down` | Stop Docker backend |
-| `npm run build` | Compile TypeScript |
-| `npm run build:all` | Build backend + dashboard + Docker |
-| `npm run start` | Run compiled backend |
-| `npm run lint` | ESLint check |
-| `npm run typecheck` | TypeScript check (no emit) |
-| `npm run test` | Run unit + integration tests |
-| `npm run test:coverage` | Run tests with 95% coverage |
-| `npm run catalog:refresh` | Refresh market catalog |
-
-### Dashboard
-
-| Script | Description |
-|--------|-------------|
-| `npm run dev` | Vite dev server |
-| `npm run build` | Production build |
-| `npm run test:e2e` | Playwright E2E tests |
-
----
-
-## 📚 Documentation
-
-### Architecture & Design
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - System architecture and agent flow
-- [`docs/Development/architecture-decisions.md`](docs/Development/architecture-decisions.md) - Architectural Decision Records (ADRs)
-
-### Development
-- [`docs/Development/setup.md`](docs/Development/setup.md) - Dev setup and environment
-- [`docs/Development/market-catalog.md`](docs/Development/market-catalog.md) - Market catalog generation
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) - Contribution guidelines
-
-### Operations
-- [`docs/Operations/runbook.md`](docs/Operations/runbook.md) - Operational guidance
-- [`docs/Operations/config-knobs.md`](docs/Operations/config-knobs.md) - Configuration reference
-- [`docs/Operations/security.md`](docs/Operations/security.md) - Security procedures
-- [`docs/Operations/README.md`](docs/Operations/README.md) - Operations rollout guide
-
-### Testing
-- [`docs/Testing/strategy.md`](docs/Testing/strategy.md) - Test strategy and coverage
-
-### Project Context
-- [`AGENTS.md`](AGENTS.md) - Comprehensive project knowledge base
-
----
-
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Development setup
-- Coding standards
-- Testing requirements (95% coverage)
-- Pull request process
-- Commit message conventions
-
----
-
-## 🔒 Security
-
-- **Never commit secrets** (API keys, private keys)
-- Store credentials in environment variables
-- Use `OPS_API_TOKEN` to secure the Ops API
-- Rotate keys regularly
-
-See [docs/Operations/security.md](docs/Operations/security.md) for detailed security procedures.
-
----
-
-## 📄 License
-
-MIT License - see LICENSE file for details.
-
----
-
-## 🆘 Support
-
-- 📖 Documentation: Check the [docs/](docs/) folder
-- 🐛 Issues: Open a GitHub issue
-- 💬 Discussions: Use GitHub Discussions for questions
-
----
-
-<p align="center">
-  Built with ⚡ by the OpenPolyTrader team
-</p>
+MIT License. See `LICENSE`.

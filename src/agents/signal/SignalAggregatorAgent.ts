@@ -9,6 +9,8 @@ import type { WebSearchClient, WebSearchContent, WebSearchQueryOptions, WebSearc
 import { clamp01 } from '../../utils/math.js';
 import { runWithConcurrency } from '../../utils/concurrency.js';
 
+const MAX_CONTENT_URLS = 8;
+
 export interface SignalAggregatorConfig {
   policy: TradePolicy;
   marketPairs: MarketPair[];
@@ -209,9 +211,10 @@ export class SignalAggregatorAgent {
     }
 
     const urls = Array.from(new Set(results.map((result) => result.url).filter(Boolean)));
-    if (urls.length > 0) {
+    const urlsForContent = urls.slice(0, MAX_CONTENT_URLS);
+    if (urlsForContent.length > 0) {
       const client = primary ?? secondary;
-      contents = client ? await client.fetchContents(urls, options.cacheTtlSeconds) : [];
+      contents = client ? await client.fetchContents(urlsForContent, options.cacheTtlSeconds) : [];
     }
 
     return { results, contents };

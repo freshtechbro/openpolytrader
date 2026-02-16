@@ -82,7 +82,7 @@ export function logLLMDecision(args: LLMDecisionLoggerArgs): void {
       top_p: args.request.top_p,
       max_output_tokens:
         args.request.endpoint === 'responses' ? args.request.max_output_tokens : args.request.max_tokens,
-      response_format: undefined
+      response_format: args.request.endpoint === 'chat.completions' ? args.request.response_format : undefined
     },
     hashes: { prompt_hash: promptHash, context_hash: contextHash, prompt_version: args.promptVersion },
     usage: args.call.usage

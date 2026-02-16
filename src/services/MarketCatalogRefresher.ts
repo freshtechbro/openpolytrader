@@ -21,6 +21,8 @@ export interface MarketCatalogRefresherConfig {
   maxPages: number;
   /** Gamma ordering mode (default: volume24hr) */
   order: MarketCatalogOrder;
+  /** Exclude markets whose end time has passed */
+  excludeEndedMarkets: boolean;
   /** Enable bounded second pass to discover newer markets */
   explorationEnabled: boolean;
   /** Max number of exploration pairs to add per refresh */
@@ -50,6 +52,10 @@ export interface GammaMarket {
   acceptingOrders?: boolean;
   enable_order_book?: boolean;
   enableOrderBook?: boolean;
+  endDate?: string | number | null;
+  endDateIso?: string | null;
+  end_date?: string | number | null;
+  end_date_iso?: string | null;
   clobTokenIds?: string[] | string;
   tokens?: Array<{ token_id?: string; tokenId?: string; outcome?: string }>;
 }
@@ -70,6 +76,7 @@ const DEFAULT_CONFIG: Omit<MarketCatalogRefresherConfig, 'gammaApiBaseUrl'> = {
   pageSize: 100,
   maxPages: 5,
   order: 'volume24hr',
+  excludeEndedMarkets: false,
   explorationEnabled: true,
   explorationMaxPairs: 30,
   explorationMinVolume24h: 1000,
@@ -81,6 +88,7 @@ interface CatalogPassSummary {
   pagesScanned: number;
   candidates: number;
   accepted: number;
+  endedExcluded: number;
 }
 
 interface CatalogCollectResult {
@@ -195,7 +203,8 @@ export class MarketCatalogRefresher extends EventEmitter {
       const { validPairs, pagesScanned, coreMarketIds, explorationMarketIds, funnel } =
         await this.collectValidPairs();
 
-      if (validPairs.length === 0 && previousMarketIds.size > 0) {
+      const totalEndedExcluded = funnel.core.endedExcluded + funnel.exploration.endedExcluded;
+      if (validPairs.length === 0 && previousMarketIds.size > 0 && totalEndedExcluded === 0) {
         const durationMs = Date.now() - startMs;
         const backoffMs = this.getEmptyRefreshBackoffMs();
         if (Date.now() >= this.emptyRefreshLogUntil) {
@@ -317,12 +326,14 @@ export class MarketCatalogRefresher extends EventEmitter {
       core: {
         pagesScanned: corePass.pagesScanned,
         candidates: corePass.candidates,
-        accepted: corePass.validPairs.length
+        accepted: corePass.validPairs.length,
+        endedExcluded: corePass.endedExcluded
       },
       exploration: {
         pagesScanned: 0,
         candidates: 0,
-        accepted: 0
+        accepted: 0,
+        endedExcluded: 0
       }
     };
 
@@ -348,6 +359,7 @@ export class MarketCatalogRefresher extends EventEmitter {
         funnel.exploration.pagesScanned = explorationPass.pagesScanned;
         funnel.exploration.candidates = explorationPass.candidates;
         funnel.exploration.accepted = explorationPass.validPairs.length;
+        funnel.exploration.endedExcluded = explorationPass.endedExcluded;
       }
     }
 
@@ -360,10 +372,11 @@ export class MarketCatalogRefresher extends EventEmitter {
     maxPages: number;
     targetPairs: number;
     seenMarketIds: Set<string>;
-  }): Promise<{ validPairs: MarketPair[]; pagesScanned: number; candidates: number }> {
+  }): Promise<{ validPairs: MarketPair[]; pagesScanned: number; candidates: number; endedExcluded: number }> {
     const validPairs: MarketPair[] = [];
     let pagesScanned = 0;
     let candidates = 0;
+    let endedExcluded = 0;
     let offset = 0;
     let cursor: string | null = null;
 
@@ -388,6 +401,10 @@ export class MarketCatalogRefresher extends EventEmitter {
 
         const conditionId = extractConditionId(market);
         if (conditionId && params.seenMarketIds.has(conditionId)) {
+          continue;
+        }
+        if (this.config.excludeEndedMarkets && isMarketEnded(market, Date.now())) {
+          endedExcluded += 1;
           continue;
         }
         if (conditionId && this.currentPairs.has(conditionId)) {
@@ -416,7 +433,7 @@ export class MarketCatalogRefresher extends EventEmitter {
       offset += pageSize;
     }
 
-    return { validPairs, pagesScanned, candidates };
+    return { validPairs, pagesScanned, candidates, endedExcluded };
   }
 
   private resolveOrderParams(orderMode: MarketCatalogOrder): { order: string; ascending: boolean } {
@@ -485,6 +502,7 @@ export class MarketCatalogRefresher extends EventEmitter {
     if (!conditionId) return null;
     if (!market.active) return null;
     if (market.closed) return null;
+    if (this.config.excludeEndedMarkets && isMarketEnded(market, Date.now())) return null;
 
     const acceptingOrders = market.accepting_orders ?? market.acceptingOrders ?? false;
     if (!acceptingOrders) return null;
@@ -602,6 +620,38 @@ function coerceNumber(value: unknown): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function isMarketEnded(market: GammaMarket, nowMs: number): boolean {
+  const endMs = extractMarketEndTimeMs(market);
+  return endMs !== null && endMs <= nowMs;
+}
+
+function extractMarketEndTimeMs(market: GammaMarket): number | null {
+  const candidates: Array<unknown> = [market.endDate, market.endDateIso, market.end_date, market.end_date_iso];
+  for (const value of candidates) {
+    const parsed = parseTimestampMs(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function parseTimestampMs(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (value <= 0) return null;
+    return value < 1_000_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return null;
+    const asNumber = Number(trimmed);
+    if (Number.isFinite(asNumber) && asNumber > 0) {
+      return asNumber < 1_000_000_000_000 ? asNumber * 1000 : asNumber;
+    }
+    const parsed = Date.parse(trimmed);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 function findBestPrice(

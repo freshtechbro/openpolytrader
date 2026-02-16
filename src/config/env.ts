@@ -101,10 +101,12 @@ const envSchema = z.object({
   MARKET_CATALOG_PAGE_SIZE: z.coerce.number().int().min(1).max(500).default(100),
   MARKET_CATALOG_MAX_PAGES: z.coerce.number().int().min(1).max(50).default(5),
   MARKET_CATALOG_ORDER: marketCatalogOrderSchema,
+  MARKET_CATALOG_EXCLUDE_ENDED_MARKETS: envBoolean(false),
   MARKET_CATALOG_EXPLORATION_ENABLED: envBoolean(true),
   MARKET_CATALOG_EXPLORATION_MAX_PAIRS: z.coerce.number().int().min(0).max(500).default(30),
   MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H: z.coerce.number().min(0).default(1000),
   MARKET_CATALOG_EXPLORATION_MAX_PAGES: z.coerce.number().int().min(1).max(50).default(3),
+  MARKET_CATALOG_PRESTART_MAX_AGE_MS: z.coerce.number().int().min(0).default(21600000),
   GAMMA_API_BASE_URL: z.string().default('https://gamma-api.polymarket.com'),
   TRADING_ENABLED: envBoolean(true),
   TRADING_MODE: z.enum(['off', 'shadow', 'paper', 'live']).default('shadow'),
@@ -161,6 +163,7 @@ const envSchema = z.object({
   LLM_EXECUTION_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
   LLM_EXECUTION_MODEL_BACKUP: z.string().optional(),
   LLM_EXECUTION_ENDPOINT_BACKUP: llmEndpointSchema,
+  LLM_EXECUTION_FALLBACK_PROVIDER_MODEL: z.string().optional(),
 
   LLM_RISK_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
   LLM_RISK_MODEL: z.string().default('minimax-m2.1'),
@@ -168,6 +171,7 @@ const envSchema = z.object({
   LLM_RISK_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
   LLM_RISK_MODEL_BACKUP: z.string().optional(),
   LLM_RISK_ENDPOINT_BACKUP: llmEndpointSchema,
+  LLM_RISK_FALLBACK_PROVIDER_MODEL: z.string().optional(),
 
   LLM_SCANNER_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
   LLM_SCANNER_MODEL: z.string().default('glm-4.7'),
@@ -178,13 +182,15 @@ const envSchema = z.object({
   LLM_SCANNER_SHADOW_MIN_INTERVAL_MS: z.coerce.number().int().min(0).default(500),
   LLM_SCANNER_MODEL_BACKUP: z.string().optional(),
   LLM_SCANNER_ENDPOINT_BACKUP: llmEndpointSchema,
+  LLM_SCANNER_FALLBACK_PROVIDER_MODEL: z.string().optional(),
 
   LLM_LEARNING_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
-  LLM_LEARNING_MODEL: z.string().default('qwen3-coder'),
+  LLM_LEARNING_MODEL: z.string().default('kimi-k2.5'),
   LLM_LEARNING_MODE: z.enum(['disabled', 'active']).default('active'),
   LLM_LEARNING_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   LLM_LEARNING_MODEL_BACKUP: z.string().optional(),
   LLM_LEARNING_ENDPOINT_BACKUP: llmEndpointSchema,
+  LLM_LEARNING_FALLBACK_PROVIDER_MODEL: z.string().default('qwen/qwen3-coder-next'),
 
   LLM_PORTFOLIO_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
   LLM_PORTFOLIO_MODEL: z.string().default('minimax-m2.1'),
@@ -192,6 +198,7 @@ const envSchema = z.object({
   LLM_PORTFOLIO_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   LLM_PORTFOLIO_MODEL_BACKUP: z.string().optional(),
   LLM_PORTFOLIO_ENDPOINT_BACKUP: llmEndpointSchema,
+  LLM_PORTFOLIO_FALLBACK_PROVIDER_MODEL: z.string().optional(),
 
   LLM_MARKETDATA_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
   LLM_MARKETDATA_MODEL: z.string().default('glm-4.7'),
@@ -199,6 +206,7 @@ const envSchema = z.object({
   LLM_MARKETDATA_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   LLM_MARKETDATA_MODEL_BACKUP: z.string().optional(),
   LLM_MARKETDATA_ENDPOINT_BACKUP: llmEndpointSchema,
+  LLM_MARKETDATA_FALLBACK_PROVIDER_MODEL: z.string().optional(),
 
   LLM_OPS_PROVIDER: z.enum(['opencode-zen', 'openrouter']).default('opencode-zen'),
   LLM_OPS_MODEL: z.string().default('glm-4.7'),
@@ -206,6 +214,7 @@ const envSchema = z.object({
   LLM_OPS_TIMEOUT_MS: z.coerce.number().int().positive().default(12000),
   LLM_OPS_MODEL_BACKUP: z.string().optional(),
   LLM_OPS_ENDPOINT_BACKUP: llmEndpointSchema,
+  LLM_OPS_FALLBACK_PROVIDER_MODEL: z.string().optional(),
 
   ALCHEMY_API_KEY: z.string().optional(),
   ALCHEMY_RPC_URL: z.string().default('https://polygon-mainnet.g.alchemy.com/v2'),

@@ -23,6 +23,8 @@ describe('llm config', () => {
     expect(cfg.agents.ScannerAgent.provider).toBe('opencode-zen');
     expect(cfg.agents.LearningAgent.mode).toBe('active');
     expect(cfg.agents.LearningAgent.provider).toBe('opencode-zen');
+    expect(cfg.agents.LearningAgent.model).toBe('kimi-k2.5');
+    expect(cfg.agents.LearningAgent.fallbackProviderModel).toBe('qwen/qwen3-coder-next');
     expect(cfg.agents.PortfolioAgent.mode).toBe('advisory');
     expect(cfg.agents.PortfolioAgent.provider).toBe('opencode-zen');
     expect(cfg.agents.MarketDataAgent.mode).toBe('advisory');
@@ -33,6 +35,17 @@ describe('llm config', () => {
     expect(cfg.agents.ScannerAgent.scoreTopN).toBe(20);
     expect(cfg.agents.ScannerAgent.scoreConcurrency).toBe(3);
     expect(cfg.agents.ScannerAgent.shadowMinIntervalMs).toBe(500);
+  });
+
+  it('loads per-agent fallback provider model overrides from env', () => {
+    const env = loadEnv({
+      LLM_RISK_FALLBACK_PROVIDER_MODEL: 'minimax/minimax-m2.1',
+      LLM_OPS_FALLBACK_PROVIDER_MODEL: 'qwen/qwen3-coder-next'
+    });
+
+    const cfg = loadLLMConfig(env);
+    expect(cfg.agents.RiskAgent.fallbackProviderModel).toBe('minimax/minimax-m2.1');
+    expect(cfg.agents.OpsAgent.fallbackProviderModel).toBe('qwen/qwen3-coder-next');
   });
 
   it('does not throw when enabled but missing keys (disables at runtime)', () => {
@@ -93,6 +106,20 @@ describe('llm config', () => {
     const cfg = loadLLMConfig(env);
     expect(cfg.enabled).toBe(true);
     expect(cfg.providers['opencode-zen'].apiKey).toBe('zen-key');
+  });
+
+  it('treats whitespace-only provider keys as missing', () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_SCANNER_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: '   ',
+      LLM_FALLBACK_API_KEY: '   '
+    });
+
+    const cfg = loadLLMConfig(env);
+    expect(cfg.enabled).toBe(false);
+    expect(cfg.providers['opencode-zen'].apiKey).toBeNull();
+    expect(cfg.providers.openrouter.apiKey).toBeNull();
   });
 
   it('gates data export behind runtime enablement', () => {

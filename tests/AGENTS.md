@@ -2,7 +2,7 @@
 
 ## Overview
 
-Vitest for backend (95% lines/functions/statements, 94% branches), Playwright for dashboard e2e.
+Vitest for backend (>97% thresholds across lines/functions/statements/branches), Playwright for dashboard e2e.
 
 ## Structure
 
@@ -26,10 +26,10 @@ Local `AGENTS.md` files refine these rules:
 ## Coverage Requirements
 
 Thresholds from `vitest.config.ts`:
-- lines: 95%
-- functions: 95%
-- statements: 95%
-- branches: 94%
+- lines: 97.01%
+- functions: 97.01%
+- statements: 97.01%
+- branches: 97.01%
 
 Excluded from coverage:
 - `src/main.ts` (entry point)
@@ -47,7 +47,7 @@ Excluded from coverage:
 
 ```bash
 npm run test           # vitest run
-npm run test:coverage  # with 95% thresholds
+npm run test:coverage  # with >97% thresholds
 
 cd dashboard
 npm run test:e2e       # Playwright

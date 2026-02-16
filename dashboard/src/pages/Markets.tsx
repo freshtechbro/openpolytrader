@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { Panel } from '../components/Panel';
 import { Section } from '../components/Section';
-import { MetricsTable } from '../components/MetricsTable';
+import { MetricsTable, type TableRow } from '../components/MetricsTable';
 import { useEventStream, StreamEvent } from '../hooks/useEventStream';
 import { opsFetchJson, OPS_STREAM_URL } from '../lib/opsClient';
 
@@ -12,6 +12,8 @@ interface EnrichedMarketEntry extends AllowlistEntry {
   question: string | null;
   description: string | null;
 }
+
+const MARKETS_PREVIEW_LIMIT = 30;
 
 export function Markets({ allowlist: initialAllowlist }: { allowlist: AllowlistEntry[] }) {
   const [markets, setMarkets] = useState<EnrichedMarketEntry[]>(
@@ -23,6 +25,7 @@ export function Markets({ allowlist: initialAllowlist }: { allowlist: AllowlistE
   );
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [showAllMarkets, setShowAllMarkets] = useState(false);
 
   useEffect(() => {
     fetchMarkets();
@@ -48,6 +51,36 @@ export function Markets({ allowlist: initialAllowlist }: { allowlist: AllowlistE
   }, [fetchMarkets]);
 
   const [{ connected }] = useEventStream(OPS_STREAM_URL, handleStreamEvent);
+  const visibleMarkets = useMemo(
+    () => (showAllMarkets ? markets : markets.slice(0, MARKETS_PREVIEW_LIMIT)),
+    [markets, showAllMarkets]
+  );
+  const marketRows = useMemo<TableRow[]>(() => {
+    return visibleMarkets.map((entry) => {
+      const marketLabel = `${entry.key.slice(0, 12)}…`;
+      const question = entry.question ?? '(loading...)';
+      const status = entry.entry.status;
+      const until = entry.entry.until ? new Date(entry.entry.until).toLocaleString() : '-';
+      const reason = entry.entry.reason ?? '-';
+      return {
+        key: entry.key,
+        cellClassNames: [
+          'market-cell',
+          'market-cell',
+          'market-cell',
+          'market-cell',
+          'market-cell'
+        ],
+        cells: [
+          <span className="market-cell-content market-cell-content--id" title={entry.key}>{marketLabel}</span>,
+          <span className="market-cell-content market-cell-content--question" title={question}>{question}</span>,
+          <span className="market-cell-content" title={status}>{status}</span>,
+          <span className="market-cell-content market-cell-content--time" title={until}>{until}</span>,
+          <span className="market-cell-content market-cell-content--reason" title={reason}>{reason}</span>
+        ]
+      };
+    });
+  }, [visibleMarkets]);
 
   return (
     <>
@@ -83,10 +116,19 @@ export function Markets({ allowlist: initialAllowlist }: { allowlist: AllowlistE
                 {connected ? 'Live' : 'Offline'}
               </span>
               {lastUpdate && (
-                <span style={{ fontSize: 11, opacity: 0.6 }}>
+                <span style={{ fontSize: 11, opacity: 0.6 }} aria-live="polite">
                   Updated {lastUpdate.toLocaleTimeString()}
                 </span>
               )}
+              {markets.length > MARKETS_PREVIEW_LIMIT ? (
+                <button
+                  type="button"
+                  onClick={() => setShowAllMarkets((prev) => !prev)}
+                  style={{ fontSize: 12, padding: '4px 8px' }}
+                >
+                  {showAllMarkets ? 'Show less' : 'Show all'}
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={fetchMarkets}
@@ -98,16 +140,28 @@ export function Markets({ allowlist: initialAllowlist }: { allowlist: AllowlistE
             </div>
           }
           body={
-            <MetricsTable
-              columns={['Market', 'Question', 'Status', 'Until', 'Reason']}
-              rows={markets.map((entry: EnrichedMarketEntry) => [
-                entry.key.slice(0, 12) + '…',
-                entry.question ?? '(loading...)',
-                entry.entry.status,
-                entry.entry.until ? new Date(entry.entry.until).toLocaleString() : '-',
-                entry.entry.reason ?? '-'
-              ])}
-            />
+            <>
+              <MetricsTable
+                className="markets-table"
+                ariaLabel="Markets table"
+                columnClassNames={[
+                  'markets-col-id',
+                  'markets-col-question',
+                  'markets-col-status',
+                  'markets-col-until',
+                  'markets-col-reason'
+                ]}
+                columns={['Market', 'Question', 'Status', 'Until', 'Reason']}
+                rows={marketRows}
+              />
+              {markets.length > MARKETS_PREVIEW_LIMIT ? (
+                <div className="table-meta">
+                  <span>
+                    Showing {visibleMarkets.length} of {markets.length}
+                  </span>
+                </div>
+              ) : null}
+            </>
           }
         />
       </Section>

@@ -10,6 +10,7 @@ import {
   assertSectionValues,
   buildUpdateSchema,
   getConfigSection,
+  type ConfigField,
   type ConfigSection
 } from '../../src/config/schema.js';
 import { MARKET_PAIRS } from '../../src/config/markets.js';
@@ -28,10 +29,12 @@ describe('config env + store', () => {
     const env = loadEnv({});
 
     expect(env.MARKET_CATALOG_MAX_SPREAD).toBe(0.02);
+    expect(env.MARKET_CATALOG_EXCLUDE_ENDED_MARKETS).toBe(false);
     expect(env.MARKET_CATALOG_EXPLORATION_ENABLED).toBe(true);
     expect(env.MARKET_CATALOG_EXPLORATION_MAX_PAIRS).toBe(30);
     expect(env.MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H).toBe(1000);
     expect(env.MARKET_CATALOG_EXPLORATION_MAX_PAGES).toBe(3);
+    expect(env.MARKET_CATALOG_PRESTART_MAX_AGE_MS).toBe(21600000);
     expect(env.EXA_COOLDOWN_MS).toBe(300000);
     expect(env.EXA_COOLDOWN_FAILURE_THRESHOLD).toBe(1);
   });
@@ -39,19 +42,23 @@ describe('config env + store', () => {
   it('parses catalog and Exa cooldown overrides', () => {
     const env = loadEnv({
       MARKET_CATALOG_MAX_SPREAD: '0.015',
+      MARKET_CATALOG_EXCLUDE_ENDED_MARKETS: 'true',
       MARKET_CATALOG_EXPLORATION_ENABLED: 'true',
       MARKET_CATALOG_EXPLORATION_MAX_PAIRS: '12',
       MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H: '250',
       MARKET_CATALOG_EXPLORATION_MAX_PAGES: '3',
+      MARKET_CATALOG_PRESTART_MAX_AGE_MS: '3600000',
       EXA_COOLDOWN_MS: '45000',
       EXA_COOLDOWN_FAILURE_THRESHOLD: '2'
     });
 
     expect(env.MARKET_CATALOG_MAX_SPREAD).toBe(0.015);
+    expect(env.MARKET_CATALOG_EXCLUDE_ENDED_MARKETS).toBe(true);
     expect(env.MARKET_CATALOG_EXPLORATION_ENABLED).toBe(true);
     expect(env.MARKET_CATALOG_EXPLORATION_MAX_PAIRS).toBe(12);
     expect(env.MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H).toBe(250);
     expect(env.MARKET_CATALOG_EXPLORATION_MAX_PAGES).toBe(3);
+    expect(env.MARKET_CATALOG_PRESTART_MAX_AGE_MS).toBe(3600000);
     expect(env.EXA_COOLDOWN_MS).toBe(45000);
     expect(env.EXA_COOLDOWN_FAILURE_THRESHOLD).toBe(2);
   });
@@ -109,6 +116,8 @@ describe('config env + store', () => {
     expect(env.LLM_RISK_MODE).toBe('advisory');
     expect(env.LLM_SCANNER_MODE).toBe('advisory');
     expect(env.LLM_LEARNING_MODE).toBe('active');
+    expect(env.LLM_LEARNING_MODEL).toBe('kimi-k2.5');
+    expect(env.LLM_LEARNING_FALLBACK_PROVIDER_MODEL).toBe('qwen/qwen3-coder-next');
     expect(env.LLM_PORTFOLIO_MODE).toBe('advisory');
     expect(env.LLM_MARKETDATA_MODE).toBe('advisory');
     expect(env.LLM_OPS_MODE).toBe('advisory');
@@ -128,6 +137,35 @@ describe('config env + store', () => {
       'responses'
     );
     expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: '   ' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBeUndefined();
+  });
+
+  it('normalizes catalog order aliases and rejects non-string catalog order values', () => {
+    expect(loadEnv({ MARKET_CATALOG_ORDER: 'volume' }).MARKET_CATALOG_ORDER).toBe('volume24hr');
+    expect(loadEnv({ MARKET_CATALOG_ORDER: 'volume24hr' }).MARKET_CATALOG_ORDER).toBe('volume24hr');
+    expect(loadEnv({ MARKET_CATALOG_ORDER: 'newest' }).MARKET_CATALOG_ORDER).toBe('newest');
+    expect(loadEnv({ MARKET_CATALOG_ORDER: 'recent' }).MARKET_CATALOG_ORDER).toBe('newest');
+    expect(loadEnv({ MARKET_CATALOG_ORDER: 'latest' }).MARKET_CATALOG_ORDER).toBe('newest');
+    expect(loadEnv({ MARKET_CATALOG_ORDER: '   ' }).MARKET_CATALOG_ORDER).toBe('volume24hr');
+
+    expect(() =>
+      loadEnv({ MARKET_CATALOG_ORDER: 123 as unknown as string } as unknown as NodeJS.ProcessEnv)
+    ).toThrow(/Invalid environment configuration/);
+  });
+
+  it('normalizes responses endpoint aliases', () => {
+    expect(loadEnv({ LLM_SCANNER_ENDPOINT_BACKUP: 'RESPONSES' }).LLM_SCANNER_ENDPOINT_BACKUP).toBe('responses');
+  });
+
+  it('rejects unknown LLM endpoint aliases', () => {
+    expect(() => loadEnv({ LLM_SCANNER_ENDPOINT_BACKUP: 'invalid-endpoint' })).toThrow(
+      /Invalid environment configuration/
+    );
+  });
+
+  it('rejects unknown catalog order aliases', () => {
+    expect(() => loadEnv({ MARKET_CATALOG_ORDER: 'most_active' })).toThrow(
+      /Invalid environment configuration/
+    );
   });
 
   it('requires keys for live trading', () => {
@@ -288,6 +326,26 @@ describe('config validation + schema helpers', () => {
     expect(() => validateP0Config(badPolicy, DEFAULT_RISK_CONFIG)).toThrow(/evEdgeRequired/);
   });
 
+  it('rejects non-positive evMaxEdge and evEdgeRequired >= evMaxEdge', () => {
+    const nonPositiveMax = { ...DEFAULT_TRADE_POLICY, evMaxEdge: 0 };
+    expect(() => validateP0Config(nonPositiveMax, DEFAULT_RISK_CONFIG)).toThrow(/evMaxEdge/);
+
+    const equalThreshold = { ...DEFAULT_TRADE_POLICY, evEdgeRequired: 0.01, evMaxEdge: 0.01 };
+    expect(() => validateP0Config(equalThreshold, DEFAULT_RISK_CONFIG)).toThrow(/evMaxEdge/);
+  });
+
+  it('rejects invalid evConfidenceMinFloor ranges', () => {
+    const belowZero = { ...DEFAULT_TRADE_POLICY, evConfidenceMinFloor: -0.1 };
+    expect(() => validateP0Config(belowZero, DEFAULT_RISK_CONFIG)).toThrow(/evConfidenceMinFloor/);
+
+    const aboveMin = {
+      ...DEFAULT_TRADE_POLICY,
+      evConfidenceMin: 0.3,
+      evConfidenceMinFloor: 0.4
+    };
+    expect(() => validateP0Config(aboveMin, DEFAULT_RISK_CONFIG)).toThrow(/evConfidenceMinFloor/);
+  });
+
   it('rejects evMaxPerMarketNotional above evMaxPortfolioNotional', () => {
     const badPolicy = {
       ...DEFAULT_TRADE_POLICY,
@@ -295,6 +353,15 @@ describe('config validation + schema helpers', () => {
       evMaxPortfolioNotional: 100
     };
     expect(() => validateP0Config(badPolicy, DEFAULT_RISK_CONFIG)).toThrow(/evMaxPerMarketNotional/);
+  });
+
+  it('allows evMaxPerMarketNotional when portfolio cap is disabled', () => {
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      evMaxPerMarketNotional: 500,
+      evMaxPortfolioNotional: 0
+    };
+    expect(() => validateP0Config(policy, DEFAULT_RISK_CONFIG)).not.toThrow();
   });
 
   it('rejects invalid evWebSearchPrimary settings', () => {
@@ -372,6 +439,39 @@ describe('config validation + schema helpers', () => {
         maxDecisionLatencyMs: '250'
       })
     ).toThrow(/expected number/);
+  });
+
+  it('buildUpdateSchema rejects enum fields without options', () => {
+    const fields: ConfigField[] = [
+      {
+        key: 'mode',
+        label: 'Mode',
+        type: 'enum',
+        options: []
+      }
+    ];
+
+    expect(() => buildUpdateSchema(fields)).toThrow(/has no options/);
+  });
+
+  it('assertSectionValues validates enum field values', () => {
+    const section: ConfigSection = {
+      key: 'policy',
+      label: 'Policy',
+      fields: [
+        {
+          key: 'strategyMode',
+          label: 'Strategy Mode',
+          type: 'enum',
+          options: ['near_zero_risk', 'standard']
+        }
+      ]
+    };
+
+    expect(() => assertSectionValues(section, { strategyMode: 'invalid' })).toThrow(
+      /expected near_zero_risk, standard/
+    );
+    expect(() => assertSectionValues(section, { strategyMode: 'standard' })).not.toThrow();
   });
 
   it('exposes schema and market/venue helpers', () => {

@@ -67,19 +67,24 @@ MARKET_CATALOG_PATH=data/market-catalog.json
 
 ## Automated refresh (deploy prestart)
 
-When starting via `npm start` (including the Docker image), a prestart hook runs a conservative catalog refresh:
+When starting via `npm start` (including the Docker image), a prestart hook runs a conservative **overwrite** refresh only when needed:
 - Uses `MARKET_CATALOG_PATH` as the output path
 - Uses `near-zero` mode
 - Uses `--yesno-only` (only outcomes exactly Yes/No)
-- Uses merge semantics (never removes existing pairs)
-- Preserves existing pair count by default in merge mode
+- Uses overwrite semantics (`--overwrite`)
+- Runs only when the file is missing or stale by age gate
 
-If the file does not exist yet, it bootstraps up to `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS` near-zero-compatible pairs (default: 80).
+If the file does not exist yet, it bootstraps up to `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS` near-zero-compatible pairs (default: 80). Existing files are refreshed when file age exceeds `MARKET_CATALOG_PRESTART_MAX_AGE_MS` (default: 21600000 / 6h).
 
 Refresher tuning (env-only):
 - `MARKET_CATALOG_MIN_VOLUME_24H` (default: 1000) sets the minimum 24h volume.
 - `MARKET_CATALOG_ORDER` (default: `volume24hr`) accepts `volume24hr` or `newest` (maps to Gamma `order=id`).
 - `MARKET_CATALOG_PAGE_SIZE` (default: 100) and `MARKET_CATALOG_MAX_PAGES` (default: 5) bound pagination.
+- `MARKET_CATALOG_EXCLUDE_ENDED_MARKETS` (default: `false`) optionally excludes markets whose end time has already passed.
+
+Trading startup safety:
+- In `paper` and `live` modes, execution stays blocked until the first successful runtime catalog refresh.
+- This prevents stale static seed catalogs from trading before runtime Gamma validation completes.
 
 Manual refresh that never removes existing pairs:
 ```bash

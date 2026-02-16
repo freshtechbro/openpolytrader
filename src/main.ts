@@ -476,6 +476,11 @@ const signalAggregator =
     : undefined;
 
 const tradingStateManager = new TradingStateManager(env.TRADING_ENABLED, env.TRADING_MODE);
+const blockTradingUntilCatalogRefresh =
+  env.TRADING_ENABLED && (env.TRADING_MODE === 'paper' || env.TRADING_MODE === 'live');
+let catalogRefreshReady = !blockTradingUntilCatalogRefresh;
+const catalogRefreshBlockStartedAtMs = blockTradingUntilCatalogRefresh ? Date.now() : null;
+const resolveEffectiveTradingEnabled = () => tradingStateManager.enabled && catalogRefreshReady;
 
 const supervisor = new Supervisor(
   {
@@ -483,7 +488,7 @@ const supervisor = new Supervisor(
     policy,
     riskConfig: risk,
     capital: env.TOTAL_CAPITAL,
-    tradingEnabled: env.TRADING_ENABLED,
+    tradingEnabled: resolveEffectiveTradingEnabled(),
     tradingMode: env.TRADING_MODE,
     maxConcurrentMarkets: env.MAX_CONCURRENT_MARKETS,
     maxCapitalInFlight: env.MAX_CAPITAL_IN_FLIGHT,
@@ -518,14 +523,27 @@ const supervisor = new Supervisor(
   }
 );
 
+if (!catalogRefreshReady) {
+  metrics.record({
+    type: 'info',
+    timestamp: Date.now(),
+    data: { message: 'trading_blocked_pending_catalog_refresh' }
+  });
+  console.log('[boot] trading execution blocked until first successful catalog refresh');
+}
+
 tradingStateManager.onModeChange((event) => {
   console.info(`[trading] mode changed: ${event.previousMode} -> ${event.newMode}`);
   supervisor.updateTradingMode(event.newMode);
 });
 
 tradingStateManager.onEnabledChange((event) => {
+  const effectiveEnabled = resolveEffectiveTradingEnabled();
   console.info(`[trading] enabled changed: ${event.previousEnabled} -> ${event.newEnabled}`);
-  supervisor.updateTradingEnabled(event.newEnabled);
+  if (event.newEnabled && !catalogRefreshReady) {
+    console.info('[trading] execution remains blocked (waiting for first successful catalog refresh)');
+  }
+  supervisor.updateTradingEnabled(effectiveEnabled);
 });
 
 let catalogRefresher: MarketCatalogRefresher | null = null;
@@ -619,6 +637,7 @@ catalogRefresher = new MarketCatalogRefresher(
     pageSize: env.MARKET_CATALOG_PAGE_SIZE,
     maxPages: env.MARKET_CATALOG_MAX_PAGES,
     order: env.MARKET_CATALOG_ORDER,
+    excludeEndedMarkets: env.MARKET_CATALOG_EXCLUDE_ENDED_MARKETS,
     explorationEnabled: env.MARKET_CATALOG_EXPLORATION_ENABLED,
     explorationMaxPairs: env.MARKET_CATALOG_EXPLORATION_MAX_PAIRS,
     explorationMinVolume24h: env.MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H,
@@ -635,6 +654,18 @@ catalogRefresher.on('refresh', ({ pairs }: { pairs: typeof marketPairs }) => {
   supervisor.updateMarketPairs(pairs);
   allowlist.seed(pairs.map((p) => p.marketId));
   updateTokenToMarketId(pairs);
+  if (!catalogRefreshReady) {
+    catalogRefreshReady = true;
+    supervisor.updateTradingEnabled(resolveEffectiveTradingEnabled());
+    const blockedMs =
+      catalogRefreshBlockStartedAtMs === null ? 0 : Math.max(0, Date.now() - catalogRefreshBlockStartedAtMs);
+    metrics.record({
+      type: 'info',
+      timestamp: Date.now(),
+      data: { message: 'trading_unblocked_catalog_refresh_ready', blockedMs }
+    });
+    console.log(`[boot] trading execution unblocked after catalog refresh (${blockedMs}ms)`);
+  }
 });
 
 catalogRefresher.on('error', (error) => {
@@ -714,7 +745,7 @@ if (env.OPS_API_ENABLED) {
         learningAgent: learning,
         configStore,
         tradingMode: env.TRADING_MODE,
-        tradingEnabled: env.TRADING_ENABLED,
+        tradingEnabled: resolveEffectiveTradingEnabled(),
         tradingStateManager,
         infraConfig,
         clobClient: clob,

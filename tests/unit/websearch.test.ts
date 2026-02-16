@@ -78,6 +78,7 @@ describe('ExaClient', () => {
     const [url, request] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.exa.ai/search');
     const body = JSON.parse(request.body as string);
+    expect(body.type).toBe('neural');
     expect(body.includeDomains).toEqual(['example.com']);
     expect(body.excludeDomains).toEqual(['spam.com']);
   });
@@ -444,6 +445,22 @@ describe('ExaClient', () => {
     expect(contents).toEqual([]);
   });
 
+  it('does not cache contents when cache ttl is omitted', async () => {
+    const fetchSpy = stubFetch({
+      results: [{ url: 'https://example.com', title: 'Example', text: 'alpha' }]
+    });
+
+    const cache = new WebSearchCache();
+    const client = new ExaClient({ ...BASE_EXA, cache });
+
+    const first = await client.fetchContents(['https://example.com']);
+    const second = await client.fetchContents(['https://example.com']);
+
+    expect(first[0]?.text).toBe('alpha');
+    expect(second[0]?.text).toBe('alpha');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('throws on non-OK response', async () => {
     const fetchSpy = vi.fn().mockResolvedValue({
       ok: false,
@@ -478,6 +495,136 @@ describe('ExaClient', () => {
       maxResults: 5,
       cacheTtlSeconds: 0
     })).rejects.toThrow(/invalid JSON/);
+  });
+
+  it('does not enter cooldown when cooldown is disabled', async () => {
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: async () => JSON.stringify({ error: 'unauthorized' })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ results: [] })
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new ExaClient({ ...BASE_EXA, cooldownMs: 0, cooldownFailureThreshold: 1, cache });
+
+    await expect(
+      client.search('market news', {
+        lookbackDays: 7,
+        maxResults: 5,
+        cacheTtlSeconds: 0
+      })
+    ).rejects.toBeInstanceOf(ExaApiError);
+
+    await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 5,
+      cacheTtlSeconds: 0
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts cooldown only after threshold failures and skips uncached contents while cooling down', async () => {
+    vi.useFakeTimers();
+    try {
+      const now = Date.now();
+      vi.setSystemTime(now);
+      const fetchSpy = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 401,
+          text: async () => JSON.stringify({ error: 'unauthorized' })
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 402,
+          text: async () => JSON.stringify({ error: 'payment_required' })
+        });
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const cache = new WebSearchCache();
+      const metrics = new MetricsStore(100);
+      const client = new ExaClient({ ...BASE_EXA, cooldownMs: 60_000, cooldownFailureThreshold: 2, cache, metrics });
+
+      await expect(
+        client.search('market news', {
+          lookbackDays: 7,
+          maxResults: 5,
+          cacheTtlSeconds: 0
+        })
+      ).rejects.toBeInstanceOf(ExaApiError);
+
+      await expect(
+        client.search('market news', {
+          lookbackDays: 7,
+          maxResults: 5,
+          cacheTtlSeconds: 0
+        })
+      ).rejects.toBeInstanceOf(ExaApiError);
+
+      const contents = await client.fetchContents(['https://example.com'], undefined);
+      expect(contents).toEqual([]);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      const events = metrics.recent('web_search', 10);
+      expect(events.some((event) => event.data?.event === 'provider_cooldown_started')).toBe(true);
+      expect(events.some((event) => event.data?.event === 'provider_cooldown_skip' && event.data?.kind === 'contents')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stores raw response text for non-OK invalid JSON error bodies', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'not-json'
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new ExaClient({ ...BASE_EXA, cache });
+
+    await expect(
+      client.search('market news', {
+        lookbackDays: 7,
+        maxResults: 5,
+        cacheTtlSeconds: 0
+      })
+    ).rejects.toMatchObject<Partial<ExaApiError>>({
+      status: 500,
+      body: { raw: 'not-json' }
+    });
+  });
+
+  it('does not record duplicate cooldown start events while already cooling down', () => {
+    const cache = new WebSearchCache();
+    const metrics = new MetricsStore(100);
+    const client = new ExaClient({ ...BASE_EXA, cooldownMs: 60_000, cooldownFailureThreshold: 1, cache, metrics });
+    const internals = client as unknown as {
+      cooldownUntilMs: number;
+      consecutiveAuthFailures: number;
+      handleAuthFailure: (kind: 'search' | 'contents', status: number, nowMs: number) => void;
+    };
+
+    const nowMs = Date.now();
+    internals.cooldownUntilMs = nowMs + 60_000;
+    internals.consecutiveAuthFailures = 1;
+
+    internals.handleAuthFailure('search', 401, nowMs);
+
+    const starts = metrics
+      .recent('web_search', 10)
+      .filter((event) => event.data?.event === 'provider_cooldown_started');
+    expect(starts).toHaveLength(0);
   });
 });
 
@@ -695,6 +842,22 @@ describe('FirecrawlClient', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(0);
   });
 
+  it('does not cache fetched contents when cache ttl is omitted', async () => {
+    const fetchSpy = stubFetch({
+      data: { markdown: 'hello world', title: 'Example' }
+    });
+
+    const cache = new WebSearchCache();
+    const client = new FirecrawlClient({ ...BASE_FIRECRAWL, cache });
+
+    const first = await client.fetchContents(['https://example.com']);
+    const second = await client.fetchContents(['https://example.com']);
+
+    expect(first[0]?.text).toContain('hello world');
+    expect(second[0]?.text).toContain('hello world');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   it('skips crawl when scrape has content', async () => {
     const fetchSpy = vi.fn().mockResolvedValue({
       ok: true,
@@ -891,5 +1054,28 @@ describe('FirecrawlClient', () => {
     const [, request] = fetchSpy.mock.calls[1] as [string, RequestInit];
     const body = JSON.parse(request.body as string) as { crawlerOptions?: { maxDepth?: number; limit?: number } };
     expect(body.crawlerOptions).toEqual({ maxDepth: 2, limit: 10 });
+  });
+
+  it('stores raw response text for Firecrawl non-OK invalid JSON error bodies', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: async () => 'not-json'
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new FirecrawlClient({ ...BASE_FIRECRAWL, cache });
+
+    await expect(
+      client.search('polymarket', {
+        lookbackDays: 7,
+        maxResults: 3,
+        cacheTtlSeconds: 0
+      })
+    ).rejects.toMatchObject<Partial<FirecrawlApiError>>({
+      status: 502,
+      body: { raw: 'not-json' }
+    });
   });
 });

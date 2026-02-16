@@ -40,7 +40,8 @@ export class OpenAISdkClient {
             messages: request.messages,
             temperature: request.temperature,
             top_p: request.top_p,
-            max_tokens: request.max_tokens
+            max_tokens: request.max_tokens,
+            response_format: request.response_format
           },
           { timeout: opts.timeoutMs, maxRetries: opts.maxRetries }
         );
@@ -62,9 +63,9 @@ export class OpenAISdkClient {
           requestIdHeader,
           requestIdBody,
           responseId: (completion as unknown as { id?: string }).id,
-        usage: mapChatUsage(completion.usage)
-      };
-    }
+          usage: mapChatUsage(completion.usage)
+        };
+      }
 
       const response = await this.client.responses.create(
         {

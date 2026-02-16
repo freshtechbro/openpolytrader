@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { FeeModel, type FeeModelConfig } from '../../src/domain/feeModel.js';
+import { createUniformTakerFeeModel, FeeModel, type FeeModelConfig } from '../../src/domain/feeModel.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import { marketKey } from '../../src/domain/market.js';
 import { opportunityId } from '../../src/domain/opportunity.js';
@@ -32,6 +32,19 @@ describe('domain utils', () => {
     const config = { takerFeeBps: { polymarket: 35 } } as unknown as FeeModelConfig;
     const model = new FeeModel(config);
     expect(model.takerFeeFraction('kalshi')).toBe(0);
+  });
+
+  it('normalizes uniform taker fee inputs', () => {
+    const negative = createUniformTakerFeeModel(-10);
+    expect(negative.takerFeeFraction('polymarket')).toBe(0);
+    expect(negative.takerFeeFraction('kalshi')).toBe(0);
+
+    const nonFinite = createUniformTakerFeeModel(Number.NaN);
+    expect(nonFinite.takerFeeFraction('polymarket')).toBe(0);
+
+    const positive = createUniformTakerFeeModel(25);
+    expect(positive.takerFeeFraction('polymarket')).toBeCloseTo(0.0025);
+    expect(positive.takerFeeFraction('kalshi')).toBeCloseTo(0.0025);
   });
 
   it('generates market keys and opportunity ids', () => {

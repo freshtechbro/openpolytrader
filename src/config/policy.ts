@@ -105,7 +105,7 @@ export const DEFAULT_TRADE_POLICY: TradePolicy = {
   evWebSearchPrimary: 'exa',
   evWebSearchLookbackDays: 7,
   evWebSearchMaxResults: 10,
-  evWebSearchCacheTtlSeconds: 3600,
+  evWebSearchCacheTtlSeconds: 7200,
   evWebSearchMaxConcurrency: 3,
   evWebSearchFirecrawlMaxDepth: 2,
   evWebSearchFirecrawlMaxPages: 10

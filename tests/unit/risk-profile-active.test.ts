@@ -105,6 +105,16 @@ describe('risk profile active persistence', () => {
       expect(loaded).toBeNull();
     }));
 
+  it('resolves active profile override paths from cwd when the relative file exists', () =>
+    withTempCwd((cwd) => {
+      const relativePath = 'custom/active.json';
+      const absolutePath = resolve(cwd, relativePath);
+      writeJson(absolutePath, { id: 'high' });
+      const resolved = resolveActiveRiskProfilePath(relativePath);
+      expect(resolved).toBe(absolutePath);
+      expect(loadActiveRiskProfile(relativePath)?.id).toBe('high');
+    }));
+
   it('loads active profile override from repo root when cwd is missing', () =>
     withTempCwd(() => {
       const relativePath = 'tmp/risk-profile-active-test.json';
@@ -320,6 +330,19 @@ describe('risk profile loading', () => {
       expect(candidates).toEqual([resolve(absolutePath)]);
     }));
 
+  it('returns a single override candidate when cwd and repo root resolve identically', () =>
+    withArgv(['node', 'script'], () => {
+      const moduleActivePath = resolveActiveRiskProfilePath();
+      const moduleRoot = dirname(dirname(dirname(moduleActivePath)));
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(moduleRoot);
+      try {
+        const candidates = resolveRiskProfilePathCandidates('near_zero', 'settings/risk-gates/near_zero.json');
+        expect(candidates).toEqual([resolve(moduleRoot, 'settings/risk-gates/near_zero.json')]);
+      } finally {
+        cwdSpy.mockRestore();
+      }
+    }));
+
   it('uses single risk profile candidate when cwd matches module root', () =>
     withArgv(['node', 'script'], () => {
       const moduleActivePath = resolveActiveRiskProfilePath();
@@ -337,6 +360,13 @@ describe('risk profile loading', () => {
     withTempCwd(() => {
       const loaded = loadRiskProfile('near_zero');
       expect(loaded).toBeNull();
+    }));
+
+  it('throws when default profile path resolves to a directory', () =>
+    withTempCwd((cwd) => {
+      const profileDir = join(cwd, 'settings', 'risk-gates', 'near_zero.json');
+      mkdirSync(profileDir, { recursive: true });
+      expect(() => loadRiskProfile('near_zero')).toThrow(/Risk profile path is a directory/);
     }));
 
   it('throws when override path is missing', () =>

@@ -74,6 +74,8 @@ export class RiskAdvisor {
       endpoint: 'chat.completions',
       model: cfg.agents.RiskAgent.model,
       temperature: 0,
+      max_tokens: 300,
+      response_format: { type: 'json_object' },
       messages: [
         {
           role: 'developer',
@@ -85,8 +87,12 @@ export class RiskAdvisor {
     };
 
     const call = await this.deps.llmClient.call('RiskAgent', request);
-    const parsed = safeParseJSON(call.outputText);
-    const validated = RiskSizeRecommendationSchema.safeParse(parsed);
+    const hasOutputText = Boolean(call.outputText);
+    const parsed = hasOutputText ? safeParseJSON(call.outputText) : null;
+    const validated = hasOutputText
+      ? RiskSizeRecommendationSchema.safeParse(parsed)
+      : ({ success: false } as const);
+    const missingOutput = !hasOutputText;
 
     const recommendedSizeRaw = validated.success ? validated.data.recommended_size : null;
     const recommended = typeof recommendedSizeRaw === 'number' ? recommendedSizeRaw : Number.NaN;
@@ -98,7 +104,12 @@ export class RiskAdvisor {
           reason: validated.data.reason,
           confidence: clamp01(validated.data.confidence)
         }
-      : { recommended_size: deterministicSize, reason: 'invalid_output', confidence: 0 };
+      : {
+          recommended_size: deterministicSize,
+          reason: missingOutput ? 'missing_output_text' : 'invalid_output',
+          confidence: 0
+        };
+    const violations = missingOutput ? ['missing_output_text'] : validated.success ? [] : ['invalid_output'];
 
     this.persistDecision({
       opportunityId: input.opportunityId,
@@ -110,6 +121,7 @@ export class RiskAdvisor {
       promptEnvelope,
       promptVersion: this.deps.promptVersion,
       policyHashes: this.deps.policyHashes,
+      violations,
       nowMs
     });
 
@@ -155,6 +167,7 @@ export class RiskAdvisor {
     promptEnvelope: unknown;
     promptVersion: string;
     policyHashes: { tradePolicyHash: string; riskConfigHash: string };
+    violations: string[];
     nowMs: number;
   }): void {
     const request: LLMRequest =
@@ -178,7 +191,8 @@ export class RiskAdvisor {
       clamp: {
         raw: safeParseJSON(args.call.outputText),
         final: args.output,
-        bounds: { recommended_size: ['min_size', 'deterministic_size'] }
+        bounds: { recommended_size: ['min_size', 'deterministic_size'] },
+        violations: args.violations
       },
       nowMs: args.nowMs,
       call: args.call,

@@ -120,6 +120,7 @@ export function Decisions() {
   const [liveEnabled, setLiveEnabled] = useState(true);
   const [newDecisionKeys, setNewDecisionKeys] = useState<Set<string>>(new Set());
   const decisionsRef = useRef<DecisionRow[]>([]);
+  const detailsRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     decisionsRef.current = decisions;
@@ -212,6 +213,11 @@ export function Decisions() {
     return () => clearTimeout(timer);
   }, [copyStatus]);
 
+  useEffect(() => {
+    if (!selectedKey) return;
+    detailsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [selectedKey]);
+
   const selected = useMemo(() => {
     if (!selectedKey) return null;
     return decisions.find((row) => row.key === selectedKey) ?? null;
@@ -219,8 +225,9 @@ export function Decisions() {
 
   const rows = useMemo(() => {
     return decisions.map((decision) => {
-      const decisionJson = truncate(stringifyCompact(decision.decision), 180);
-      const reasoningJson = truncate(stringifyCompact(decision.reasoning), 180);
+      const decisionJson = stringifyCompact(decision.decision);
+      const reasoningJson = stringifyCompact(decision.reasoning);
+      const timestampLabel = new Date(decision.timestamp).toLocaleString();
       const isNew = newDecisionKeys.has(decision.key);
       const rowStyle = isNew
         ? { background: 'rgba(34, 197, 94, 0.15)', transition: 'background 0.5s ease-out' }
@@ -228,14 +235,30 @@ export function Decisions() {
       return {
         key: decision.key,
         style: rowStyle,
+        cellClassNames: [
+          'decisions-cell',
+          'decisions-cell',
+          'decisions-cell',
+          'decisions-cell',
+          'decisions-cell',
+          'decisions-cell',
+          'decisions-cell'
+        ],
         cells: [
-          new Date(decision.timestamp).toLocaleString(),
-          decision.agent,
-          decision.subjectId,
-          decision.source === 'persisted' ? 'Persisted' : 'Live',
-          decisionJson,
-          reasoningJson,
-          <button key={decision.key} type="button" onClick={() => setSelectedKey(decision.key)} disabled={loading}>
+          <span className="decision-cell decision-cell--time" title={timestampLabel}>{timestampLabel}</span>,
+          <span className="decision-cell decision-cell--agent" title={decision.agent}>{decision.agent}</span>,
+          <span className="decision-cell decision-cell--subject" title={decision.subjectId}>{decision.subjectId}</span>,
+          <span className="decision-cell decision-cell--source">{decision.source === 'persisted' ? 'Persisted' : 'Live'}</span>,
+          <span className="decision-cell decision-cell--json" title={decisionJson}>{truncate(decisionJson, 220)}</span>,
+          <span className="decision-cell decision-cell--json" title={reasoningJson}>{truncate(reasoningJson, 220)}</span>,
+          <button
+            key={decision.key}
+            className="decisions-view-button"
+            type="button"
+            onClick={() => setSelectedKey(decision.key)}
+            disabled={loading}
+            aria-label={`View details for decision ${decision.subjectId}`}
+          >
             View
           </button>
         ]
@@ -375,130 +398,146 @@ export function Decisions() {
           error ? (
             <p style={{ color: 'var(--color-error)' }}>{error}</p>
           ) : (
-            <MetricsTable columns={['Time', 'Agent', 'Subject', 'Source', 'Decision', 'Reasoning', '']} rows={rows} />
+            <MetricsTable
+              className="decisions-table"
+              ariaLabel="Recent decisions table"
+              columns={['Time', 'Agent', 'Subject', 'Source', 'Decision', 'Reasoning', 'View']}
+              columnClassNames={[
+                'decisions-col-time',
+                'decisions-col-agent',
+                'decisions-col-subject',
+                'decisions-col-source',
+                'decisions-col-decision',
+                'decisions-col-reasoning',
+                'decisions-col-action'
+              ]}
+              rows={rows}
+            />
           )
         }
       />
 
-      <Panel
-        title="Decision detail"
-        body={
-          !selected ? (
-            <p style={{ opacity: 0.75 }}>Select a row to inspect the raw JSON.</p>
-          ) : (
-            <div style={{ display: 'grid', gap: 12 }}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                <strong>{selected.agent}</strong>
-                <span style={{ opacity: 0.75 }}>|</span>
-                <span>{new Date(selected.timestamp).toLocaleString()}</span>
-                <span style={{ opacity: 0.75 }}>|</span>
-                <span style={{ fontFamily: 'monospace' }}>{selected.subjectId}</span>
-                <span style={{ opacity: 0.75 }}>|</span>
-                <span>{selected.source === 'persisted' ? 'Persisted' : 'Live'}</span>
-                <span style={{ opacity: 0.75 }}>|</span>
-                <span style={{ fontFamily: 'monospace' }}>{selected.id}</span>
-                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-                  {copyStatus ? <span style={{ opacity: 0.8 }}>{copyStatus}</span> : null}
-                  <button type="button" onClick={() => setSelectedKey(null)}>
-                    Close
+      <div ref={detailsRef} id="decision-detail" className="decisions-detail-anchor">
+        <Panel
+          title="Decision detail"
+          body={
+            !selected ? (
+              <p style={{ opacity: 0.75 }}>Select a row to inspect the raw JSON.</p>
+            ) : (
+              <div style={{ display: 'grid', gap: 12 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                  <strong>{selected.agent}</strong>
+                  <span style={{ opacity: 0.75 }}>|</span>
+                  <span>{new Date(selected.timestamp).toLocaleString()}</span>
+                  <span style={{ opacity: 0.75 }}>|</span>
+                  <span style={{ fontFamily: 'monospace' }}>{selected.subjectId}</span>
+                  <span style={{ opacity: 0.75 }}>|</span>
+                  <span>{selected.source === 'persisted' ? 'Persisted' : 'Live'}</span>
+                  <span style={{ opacity: 0.75 }}>|</span>
+                  <span style={{ fontFamily: 'monospace' }}>{selected.id}</span>
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+                    {copyStatus ? <span style={{ opacity: 0.8 }}>{copyStatus}</span> : null}
+                    <button type="button" onClick={() => setSelectedKey(null)}>
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <strong>Decision</strong>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await copyToClipboard(stringifyPretty(selected.decision));
+                            setCopyStatus('Copied decision JSON');
+                          } catch (err) {
+                            setCopyStatus(err instanceof Error ? err.message : 'Copy failed');
+                          }
+                        }}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <pre
+                      style={{
+                        margin: 0,
+                        padding: 12,
+                        borderRadius: 8,
+                        background: 'rgba(0,0,0,0.25)',
+                        maxHeight: 320,
+                        overflow: 'auto',
+                        fontSize: 12
+                      }}
+                    >
+                      {stringifyPretty(selected.decision)}
+                    </pre>
+                  </div>
+
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <strong>Reasoning</strong>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await copyToClipboard(stringifyPretty(selected.reasoning));
+                            setCopyStatus('Copied reasoning JSON');
+                          } catch (err) {
+                            setCopyStatus(err instanceof Error ? err.message : 'Copy failed');
+                          }
+                        }}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <pre
+                      style={{
+                        margin: 0,
+                        padding: 12,
+                        borderRadius: 8,
+                        background: 'rgba(0,0,0,0.25)',
+                        maxHeight: 320,
+                        overflow: 'auto',
+                        fontSize: 12
+                      }}
+                    >
+                      {stringifyPretty(selected.reasoning)}
+                    </pre>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await copyToClipboard(
+                          stringifyPretty({
+                            id: selected.id,
+                            subjectId: selected.subjectId,
+                            timestamp: selected.timestamp,
+                            agent: selected.agent,
+                            decision: selected.decision,
+                            reasoning: selected.reasoning
+                          })
+                        );
+                        setCopyStatus('Copied full record');
+                      } catch (err) {
+                        setCopyStatus(err instanceof Error ? err.message : 'Copy failed');
+                      }
+                    }}
+                  >
+                    Copy full record
                   </button>
                 </div>
               </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
-                <div style={{ display: 'grid', gap: 8 }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <strong>Decision</strong>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await copyToClipboard(stringifyPretty(selected.decision));
-                          setCopyStatus('Copied decision JSON');
-                        } catch (err) {
-                          setCopyStatus(err instanceof Error ? err.message : 'Copy failed');
-                        }
-                      }}
-                    >
-                      Copy
-                    </button>
-                  </div>
-                  <pre
-                    style={{
-                      margin: 0,
-                      padding: 12,
-                      borderRadius: 8,
-                      background: 'rgba(0,0,0,0.25)',
-                      maxHeight: 320,
-                      overflow: 'auto',
-                      fontSize: 12
-                    }}
-                  >
-                    {stringifyPretty(selected.decision)}
-                  </pre>
-                </div>
-
-                <div style={{ display: 'grid', gap: 8 }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <strong>Reasoning</strong>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await copyToClipboard(stringifyPretty(selected.reasoning));
-                          setCopyStatus('Copied reasoning JSON');
-                        } catch (err) {
-                          setCopyStatus(err instanceof Error ? err.message : 'Copy failed');
-                        }
-                      }}
-                    >
-                      Copy
-                    </button>
-                  </div>
-                  <pre
-                    style={{
-                      margin: 0,
-                      padding: 12,
-                      borderRadius: 8,
-                      background: 'rgba(0,0,0,0.25)',
-                      maxHeight: 320,
-                      overflow: 'auto',
-                      fontSize: 12
-                    }}
-                  >
-                    {stringifyPretty(selected.reasoning)}
-                  </pre>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      await copyToClipboard(
-                        stringifyPretty({
-                          id: selected.id,
-                          subjectId: selected.subjectId,
-                          timestamp: selected.timestamp,
-                          agent: selected.agent,
-                          decision: selected.decision,
-                          reasoning: selected.reasoning
-                        })
-                      );
-                      setCopyStatus('Copied full record');
-                    } catch (err) {
-                      setCopyStatus(err instanceof Error ? err.message : 'Copy failed');
-                    }
-                  }}
-                >
-                  Copy full record
-                </button>
-              </div>
-            </div>
-          )
-        }
-      />
+            )
+          }
+        />
+      </div>
     </Section>
   );
 }

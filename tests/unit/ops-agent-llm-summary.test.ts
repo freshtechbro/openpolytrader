@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -98,7 +98,12 @@ describe('OpsAgent LLM health summary', () => {
     const handler = (payload: unknown) => {
       received = payload;
     };
+    let decision: unknown = null;
+    const decisionHandler = (payload: unknown) => {
+      decision = payload;
+    };
     messageBus.on('ops:health_summary', handler);
+    messageBus.on('llm:decision', decisionHandler);
 
     const agent = new OpsAgent(
       {
@@ -117,9 +122,17 @@ describe('OpsAgent LLM health summary', () => {
     await agent.runOnce();
 
     messageBus.off('ops:health_summary', handler);
+    messageBus.off('llm:decision', decisionHandler);
 
     expect(received).toBeNull();
     expect(metrics.snapshot().counts.llm_decision).toBe(0);
+    expect(decision).toMatchObject({
+      decision: {
+        agent: 'OpsAgent',
+        output: { error: 'invalid_output' },
+        applied: false
+      }
+    });
   });
 
   it('persists LLM decisions and maps status across fallback/timeout/error', async () => {
@@ -311,5 +324,163 @@ describe('OpsAgent LLM health summary', () => {
 
       expect(summaryReceived).toBeNull();
     }
+  });
+
+  it('logs missing_output_text when LLM call has no output text', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_OPS_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+
+    const llmClient = new MockLLMClient({
+      defaultProviderId: 'openrouter',
+      defaultBaseUrl: llmConfig.providers.openrouter.baseUrl,
+      defaultTimeoutMs: llmConfig.agents.OpsAgent.timeoutMs
+    });
+    llmClient.enqueue('OpsAgent', {
+      status: 'success',
+      endpoint: 'chat.completions',
+      model: llmConfig.agents.OpsAgent.model,
+      outputText: null
+    });
+
+    let summaryReceived: unknown = null;
+    const handler = (payload: unknown) => {
+      summaryReceived = payload;
+    };
+    let decision: unknown = null;
+    const decisionHandler = (payload: unknown) => {
+      decision = payload;
+    };
+    messageBus.on('ops:health_summary', handler);
+    messageBus.on('llm:decision', decisionHandler);
+
+    const agent = new OpsAgent({
+      intervalMs: 1000,
+      checks: [{ name: 'ok', check: async () => ({ ok: true, info: 'ok' }) }],
+      llm: {
+        config: llmConfig,
+        client: llmClient,
+        promptVersion: 'test-v1',
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }
+    });
+
+    await agent.runOnce();
+    messageBus.off('ops:health_summary', handler);
+    messageBus.off('llm:decision', decisionHandler);
+    expect(summaryReceived).toBeNull();
+    expect(decision).toMatchObject({
+      decision: {
+        agent: 'OpsAgent',
+        output: { error: 'missing_output_text' },
+        applied: false
+      }
+    });
+  });
+
+  it('emits llm:error when invalid output includes call error metadata', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_OPS_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+
+    const llmClient = new MockLLMClient({
+      defaultProviderId: 'openrouter',
+      defaultBaseUrl: llmConfig.providers.openrouter.baseUrl,
+      defaultTimeoutMs: llmConfig.agents.OpsAgent.timeoutMs
+    });
+    llmClient.enqueue('OpsAgent', {
+      status: 'error',
+      endpoint: 'chat.completions',
+      model: llmConfig.agents.OpsAgent.model,
+      outputText: '{',
+      error: { type: 'provider_error', message: 'bad_json' }
+    });
+
+    let llmErrorPayload: unknown = null;
+    const errorHandler = (payload: unknown) => {
+      llmErrorPayload = payload;
+    };
+    messageBus.on('llm:error', errorHandler);
+
+    const agent = new OpsAgent({
+      intervalMs: 1000,
+      checks: [{ name: 'ok', check: async () => ({ ok: true, info: 'ok' }) }],
+      llm: {
+        config: llmConfig,
+        client: llmClient,
+        promptVersion: 'test-v1',
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }
+    });
+
+    await agent.runOnce();
+    messageBus.off('llm:error', errorHandler);
+
+    expect(llmErrorPayload).toMatchObject({
+      agent: 'OpsAgent',
+      provider_id: 'openrouter',
+      endpoint: 'chat.completions',
+      model: llmConfig.agents.OpsAgent.model,
+      error: { type: 'provider_error', message: 'bad_json' }
+    });
+  });
+
+  it('preserves explicit check latency in health summary prompts', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_OPS_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+
+    const call = vi.fn().mockResolvedValue({
+      status: 'success',
+      providerId: 'openrouter',
+      baseUrl: llmConfig.providers.openrouter.baseUrl,
+      endpoint: 'chat.completions',
+      model: llmConfig.agents.OpsAgent.model,
+      outputText: null,
+      startedAtMs: Date.now(),
+      latencyMs: 1,
+      timeoutMs: 1000,
+      maxRetries: 0,
+      attempt: 1
+    });
+
+    const agent = new OpsAgent({
+      intervalMs: 1000,
+      checks: [{ name: 'ok', check: async () => ({ ok: true, latencyMs: 12 }) }],
+      llm: {
+        config: llmConfig,
+        client: { call },
+        promptVersion: 'test-v1',
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }
+    });
+
+    await agent.runOnce();
+
+    expect(call).toHaveBeenCalledTimes(1);
+    const request = call.mock.calls[0][1] as {
+      messages: Array<{ role: string; content: string }>;
+      max_tokens?: number;
+      response_format?: { type?: string };
+    };
+    const userMessage = request.messages.find((message) => message.role === 'user');
+    const prompt = JSON.parse(userMessage?.content ?? '{}') as {
+      inputs?: { metrics?: { checks?: Record<string, { latencyMs: number | null }> } };
+    };
+    expect(prompt.inputs?.metrics?.checks?.ok?.latencyMs).toBe(12);
+    expect(request.max_tokens).toBe(350);
+    expect(request.response_format).toEqual({ type: 'json_object' });
   });
 });

@@ -7,12 +7,15 @@ cd "$ROOT_DIR"
 mkdir -p tmp
 
 TOKEN="${OPS_API_TOKEN:-}"
+if [[ -z "$TOKEN" && -f "$ROOT_DIR/.env" ]]; then
+  TOKEN=$(grep -m1 '^OPS_API_TOKEN=' "$ROOT_DIR/.env" | cut -d= -f2- | tr -d '\r')
+fi
 if [[ -z "$TOKEN" && -f "$ROOT_DIR/dashboard/.env" ]]; then
   TOKEN=$(grep -m1 '^VITE_OPS_API_TOKEN=' "$ROOT_DIR/dashboard/.env" | cut -d= -f2- | tr -d '\r')
 fi
 
 if [[ -z "$TOKEN" ]]; then
-  echo "Missing OPS token. Set OPS_API_TOKEN or add VITE_OPS_API_TOKEN to dashboard/.env." >&2
+  echo "Missing OPS token. Set OPS_API_TOKEN, add OPS_API_TOKEN to .env, or add VITE_OPS_API_TOKEN to dashboard/.env." >&2
   exit 1
 fi
 

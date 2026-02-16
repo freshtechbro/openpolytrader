@@ -46,6 +46,7 @@ export interface LLMConfig {
       model: string;
       backupModel: string | null;
       backupEndpoint?: LLMEndpoint;
+      fallbackProviderModel?: string | null;
       mode: LLMExecutionMode;
       timeoutMs: number;
     };
@@ -54,6 +55,7 @@ export interface LLMConfig {
       model: string;
       backupModel: string | null;
       backupEndpoint?: LLMEndpoint;
+      fallbackProviderModel?: string | null;
       mode: LLMExecutionMode;
       timeoutMs: number;
     };
@@ -62,6 +64,7 @@ export interface LLMConfig {
       model: string;
       backupModel: string | null;
       backupEndpoint?: LLMEndpoint;
+      fallbackProviderModel?: string | null;
       mode: LLMExecutionMode;
       timeoutMs: number;
       scoreTopN: number;
@@ -73,6 +76,7 @@ export interface LLMConfig {
       model: string;
       backupModel: string | null;
       backupEndpoint?: LLMEndpoint;
+      fallbackProviderModel?: string | null;
       mode: LLMLearningMode;
       timeoutMs: number;
     };
@@ -81,6 +85,7 @@ export interface LLMConfig {
       model: string;
       backupModel: string | null;
       backupEndpoint?: LLMEndpoint;
+      fallbackProviderModel?: string | null;
       mode: LLMAdvisoryMode;
       timeoutMs: number;
     };
@@ -89,6 +94,7 @@ export interface LLMConfig {
       model: string;
       backupModel: string | null;
       backupEndpoint?: LLMEndpoint;
+      fallbackProviderModel?: string | null;
       mode: LLMAdvisoryMode;
       timeoutMs: number;
     };
@@ -97,6 +103,7 @@ export interface LLMConfig {
       model: string;
       backupModel: string | null;
       backupEndpoint?: LLMEndpoint;
+      fallbackProviderModel?: string | null;
       mode: LLMAdvisoryMode;
       timeoutMs: number;
     };
@@ -199,6 +206,7 @@ export function loadLLMConfig(env: Env): LLMConfig {
         model: env.LLM_EXECUTION_MODEL,
         backupModel: normalizeOptionalString(env.LLM_EXECUTION_MODEL_BACKUP),
         backupEndpoint: env.LLM_EXECUTION_ENDPOINT_BACKUP,
+        fallbackProviderModel: normalizeOptionalString(env.LLM_EXECUTION_FALLBACK_PROVIDER_MODEL),
         mode: env.LLM_EXECUTION_MODE,
         timeoutMs: env.LLM_EXECUTION_TIMEOUT_MS
       },
@@ -207,6 +215,7 @@ export function loadLLMConfig(env: Env): LLMConfig {
         model: env.LLM_RISK_MODEL,
         backupModel: normalizeOptionalString(env.LLM_RISK_MODEL_BACKUP),
         backupEndpoint: env.LLM_RISK_ENDPOINT_BACKUP,
+        fallbackProviderModel: normalizeOptionalString(env.LLM_RISK_FALLBACK_PROVIDER_MODEL),
         mode: env.LLM_RISK_MODE,
         timeoutMs: env.LLM_RISK_TIMEOUT_MS
       },
@@ -215,6 +224,7 @@ export function loadLLMConfig(env: Env): LLMConfig {
         model: env.LLM_SCANNER_MODEL,
         backupModel: normalizeOptionalString(env.LLM_SCANNER_MODEL_BACKUP),
         backupEndpoint: env.LLM_SCANNER_ENDPOINT_BACKUP,
+        fallbackProviderModel: normalizeOptionalString(env.LLM_SCANNER_FALLBACK_PROVIDER_MODEL),
         mode: env.LLM_SCANNER_MODE,
         timeoutMs: env.LLM_SCANNER_TIMEOUT_MS,
         scoreTopN: env.LLM_SCANNER_SCORE_TOP_N,
@@ -226,6 +236,7 @@ export function loadLLMConfig(env: Env): LLMConfig {
         model: env.LLM_LEARNING_MODEL,
         backupModel: normalizeOptionalString(env.LLM_LEARNING_MODEL_BACKUP),
         backupEndpoint: env.LLM_LEARNING_ENDPOINT_BACKUP,
+        fallbackProviderModel: normalizeOptionalString(env.LLM_LEARNING_FALLBACK_PROVIDER_MODEL),
         mode: env.LLM_LEARNING_MODE,
         timeoutMs: env.LLM_LEARNING_TIMEOUT_MS
       },
@@ -234,6 +245,7 @@ export function loadLLMConfig(env: Env): LLMConfig {
         model: env.LLM_PORTFOLIO_MODEL,
         backupModel: normalizeOptionalString(env.LLM_PORTFOLIO_MODEL_BACKUP),
         backupEndpoint: env.LLM_PORTFOLIO_ENDPOINT_BACKUP,
+        fallbackProviderModel: normalizeOptionalString(env.LLM_PORTFOLIO_FALLBACK_PROVIDER_MODEL),
         mode: env.LLM_PORTFOLIO_MODE,
         timeoutMs: env.LLM_PORTFOLIO_TIMEOUT_MS
       },
@@ -242,6 +254,7 @@ export function loadLLMConfig(env: Env): LLMConfig {
         model: env.LLM_MARKETDATA_MODEL,
         backupModel: normalizeOptionalString(env.LLM_MARKETDATA_MODEL_BACKUP),
         backupEndpoint: env.LLM_MARKETDATA_ENDPOINT_BACKUP,
+        fallbackProviderModel: normalizeOptionalString(env.LLM_MARKETDATA_FALLBACK_PROVIDER_MODEL),
         mode: env.LLM_MARKETDATA_MODE,
         timeoutMs: env.LLM_MARKETDATA_TIMEOUT_MS
       },
@@ -250,6 +263,7 @@ export function loadLLMConfig(env: Env): LLMConfig {
         model: env.LLM_OPS_MODEL,
         backupModel: normalizeOptionalString(env.LLM_OPS_MODEL_BACKUP),
         backupEndpoint: env.LLM_OPS_ENDPOINT_BACKUP,
+        fallbackProviderModel: normalizeOptionalString(env.LLM_OPS_FALLBACK_PROVIDER_MODEL),
         mode: env.LLM_OPS_MODE,
         timeoutMs: env.LLM_OPS_TIMEOUT_MS
       }

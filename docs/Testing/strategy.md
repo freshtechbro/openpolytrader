@@ -4,6 +4,9 @@ This project follows MCAF verification principles: critical behavior is covered 
 
 ## Test Layers
 
+Coverage gate:
+- Global thresholds are enforced in `vitest.config.ts` at `>97%` for lines, functions, statements, and branches.
+
 ### Unit Tests (Vitest)
 - Target: deterministic logic and gate evaluation.
 - Location: `tests/unit/`

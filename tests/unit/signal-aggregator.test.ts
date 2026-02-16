@@ -127,6 +127,43 @@ describe('SignalAggregatorAgent', () => {
     agent.stop();
   });
 
+  it('caps fetched content URLs to reduce provider costs', async () => {
+    const pair: MarketPair = { marketId: 'm1', yesTokenId: 'y1', noTokenId: 'n1' };
+    const clob = {
+      getMarket: vi.fn().mockResolvedValue({
+        question: 'Will it rain tomorrow?',
+        tokens: [{ outcome: 'Yes' }, { outcome: 'No' }]
+      })
+    } as unknown as PolymarketClob;
+
+    const urls = Array.from({ length: 12 }, (_, index) => `https://example.com/${index}`);
+    const exa = new StubWebSearchClient(
+      urls.map((url) => ({ url, title: 'Example', publishedAt: new Date().toISOString() })),
+      urls.map((url) => ({ url, text: 'yes no yes' }))
+    );
+
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      signalMode: 'ev' as const,
+      evWebSearchExaEnabled: true,
+      evWebSearchFirecrawlEnabled: false,
+      evWebSearchMaxConcurrency: 1
+    };
+
+    const agent = new SignalAggregatorAgent({
+      policy,
+      marketPairs: [pair],
+      clob,
+      exa
+    });
+
+    await (agent as unknown as { runOnce: () => Promise<void> }).runOnce();
+
+    expect(exa.fetchContents).toHaveBeenCalledTimes(1);
+    const requestedUrls = exa.fetchContents.mock.calls[0]?.[0] as string[];
+    expect(requestedUrls).toEqual(urls.slice(0, 8));
+  });
+
   it('falls back to secondary provider when primary returns no results', async () => {
     const pair: MarketPair = { marketId: 'm2', yesTokenId: 'y2', noTokenId: 'n2' };
     const clob = {
@@ -342,6 +379,41 @@ describe('SignalAggregatorAgent', () => {
     expect(event?.data?.event).toBe('insight_failed');
   });
 
+  it('records insight_failed when provider throws non-error values', async () => {
+    const pair: MarketPair = { marketId: 'm4b', yesTokenId: 'y4', noTokenId: 'n4' };
+    const clob = {
+      getMarket: vi.fn().mockResolvedValue({ question: 'Will it storm?', tokens: [{ outcome: 'Yes' }, { outcome: 'No' }] })
+    } as unknown as PolymarketClob;
+
+    const exa = {
+      search: vi.fn().mockRejectedValue('boom'),
+      fetchContents: vi.fn()
+    } as unknown as WebSearchClient;
+
+    const metrics = new MetricsStore(1000);
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      signalMode: 'ev' as const,
+      evWebSearchExaEnabled: true,
+      evWebSearchFirecrawlEnabled: false,
+      evWebSearchMaxConcurrency: 1
+    };
+
+    const agent = new SignalAggregatorAgent({
+      policy,
+      marketPairs: [pair],
+      clob,
+      exa,
+      metrics
+    });
+
+    await (agent as unknown as { runOnce: () => Promise<void> }).runOnce();
+
+    const event = metrics.recent('web_search', 1)[0];
+    expect(event?.data?.event).toBe('insight_failed');
+    expect(event?.data?.error).toBe('boom');
+  });
+
   it('handles invalid publishedAt and cached outcomes safely', async () => {
     const pair: MarketPair = { marketId: 'm5', yesTokenId: 'y5', noTokenId: 'n5' };
     const clob = {
@@ -465,6 +537,42 @@ describe('SignalAggregatorAgent', () => {
     agent.stop();
   });
 
+  it('uses secondary provider when primary is missing and fetches contents from secondary', async () => {
+    const pair: MarketPair = { marketId: 'secondary-only', yesTokenId: 'y1', noTokenId: 'n1' };
+    const clob = {
+      getMarket: vi.fn().mockResolvedValue({
+        question: 'Will secondary provider run?',
+        tokens: [{ outcome: 'Yes' }, { outcome: 'No' }]
+      })
+    } as unknown as PolymarketClob;
+
+    const exa = new StubWebSearchClient(
+      [{ url: 'https://example.com', title: 'Example', publishedAt: new Date().toISOString() }],
+      [{ url: 'https://example.com', text: 'yes no' }]
+    );
+
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      signalMode: 'ev' as const,
+      evWebSearchPrimary: 'firecrawl' as const,
+      evWebSearchExaEnabled: true,
+      evWebSearchFirecrawlEnabled: false,
+      evWebSearchMaxConcurrency: 1
+    };
+
+    const agent = new SignalAggregatorAgent({
+      policy,
+      marketPairs: [pair],
+      clob,
+      exa
+    });
+
+    await (agent as unknown as { runOnce: () => Promise<void> }).runOnce();
+
+    expect(exa.search).toHaveBeenCalled();
+    expect(exa.fetchContents).toHaveBeenCalledTimes(1);
+  });
+
   it('updates policy and clears existing schedule when running', async () => {
     const pair: MarketPair = { marketId: 'policy-1', yesTokenId: 'y1', noTokenId: 'n1' };
     const clob = {
@@ -566,6 +674,43 @@ describe('SignalAggregatorAgent', () => {
 
     const event = metrics.recent('web_search', 1)[0];
     expect(event?.data?.event).toBe('insight_failed');
+  });
+
+  it('records insight_failed on fatal non-error runOnce errors', async () => {
+    const pair: MarketPair = { marketId: 'fatal-2', yesTokenId: 'y1', noTokenId: 'n1' };
+    const clob = {
+      getMarket: vi.fn()
+    } as unknown as PolymarketClob;
+
+    const exa = new StubWebSearchClient([], []);
+    const metrics = new MetricsStore(1000);
+
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      signalMode: 'ev' as const,
+      evWebSearchExaEnabled: true,
+      evWebSearchFirecrawlEnabled: false
+    };
+
+    const agent = new SignalAggregatorAgent({
+      policy,
+      marketPairs: [pair],
+      clob,
+      exa,
+      metrics
+    });
+
+    (agent as unknown as { marketPairs: { filter: () => never } }).marketPairs = {
+      filter: () => {
+        throw 'boom';
+      }
+    };
+
+    await (agent as unknown as { runOnce: () => Promise<void> }).runOnce();
+
+    const event = metrics.recent('web_search', 1)[0];
+    expect(event?.data?.event).toBe('insight_failed');
+    expect(event?.data?.error).toBe('boom');
   });
 
   it('falls back to yes/no outcomes when tokens are missing', async () => {

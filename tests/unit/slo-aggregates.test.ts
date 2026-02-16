@@ -163,6 +163,51 @@ describe('SQLite SLO aggregates', () => {
     }
   });
 
+  it('uses cumulative latency fallback and ignores malformed execution/delayed-ack payloads', () => {
+    const dbPath = `data/test-${randomUUID()}.db`;
+    const store = new EventStore({ dbPath });
+    const nowMs = 1_700_000_000_000;
+
+    try {
+      store.persistMetric({
+        type: 'latency',
+        timestamp: nowMs - 100,
+        data: { stage: 'submitted', cumulativeMs: 42 }
+      });
+      store.persistMetric({
+        type: 'execution_lifecycle',
+        timestamp: nowMs - 90,
+        data: { executionId: 'e1' }
+      });
+      store.persistMetric({
+        type: 'execution_lifecycle',
+        timestamp: nowMs - 80,
+        data: { executionId: 'e2', state: 'timeout' }
+      });
+      store.persistMetric({
+        type: 'order_attempt',
+        timestamp: nowMs - 70,
+        data: { marketId: 'm1' }
+      });
+      store.persistMetric({
+        type: 'delayed_ack',
+        timestamp: nowMs - 60,
+        data: {}
+      });
+
+      const response = computeSloAggregates(store, nowMs);
+      const oneHour = response.aggregates.find((agg) => agg.window === '1h');
+
+      expect(oneHour).toBeDefined();
+      expect(oneHour?.p95LatencyMs).toBe(42);
+      expect(oneHour?.samples.terminalExecutions).toBe(1);
+      expect(oneHour?.delayedAckRate).toBe(0);
+    } finally {
+      store.close();
+      rmSync(dbPath, { force: true });
+    }
+  });
+
   it('returns zeros when no metrics exist', () => {
     const dbPath = `data/test-${randomUUID()}.db`;
     const store = new EventStore({ dbPath });

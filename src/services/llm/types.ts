@@ -39,6 +39,10 @@ export interface LLMCallResult {
   fallbackReason?: string;
 }
 
+export interface LLMChatResponseFormat {
+  type: 'json_object';
+}
+
 export interface LLMChatRequest {
   endpoint: 'chat.completions';
   model: string;
@@ -46,6 +50,7 @@ export interface LLMChatRequest {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  response_format?: LLMChatResponseFormat;
 }
 
 export interface LLMResponsesRequest {
