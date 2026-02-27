@@ -180,6 +180,18 @@ export function Overview({ health, metrics, slo, intents, incidents, expanded, o
         </div>
       </Section>
 
+      <Section title="FW Telemetry" subtitle="Adaptive Frank-Wolfe dependency and oracle activity.">
+        <div className="grid">
+          <MetricCard title="FW Projections" value={metrics?.counts?.fw_projection ?? 0} />
+          <MetricCard title="FW Dependencies" value={metrics?.counts?.fw_dependency ?? 0} />
+          <MetricCard title="FW Oracle Calls" value={metrics?.counts?.fw_oracle ?? 0} />
+          <MetricCard title="FW Iterations" value={metrics?.counts?.fw_iteration ?? 0} />
+          <MetricCard title="FW Gap Events" value={metrics?.counts?.fw_gap ?? 0} />
+          <MetricCard title="FW Baskets" value={metrics?.counts?.fw_basket ?? 0} />
+          <MetricCard title="Gate Rejections" value={metrics?.counts?.gate_rejection ?? 0} />
+        </div>
+      </Section>
+
       <Section title="SLO Windows" subtitle="Rolling window aggregates backed by SQLite telemetry.">
         <Panel
           title="1h / 24h"

@@ -3,7 +3,8 @@ const DEFAULTS = {
   portfolioRefreshMs: 5000,
   sloRefreshMs: 30000,
   incidentsLimit: 100,
-  incidentsPreviewLimit: 6
+  incidentsPreviewLimit: 6,
+  publicRepoUrl: 'https' + '://github.com/freshtechbro/openpolytrader'
 };
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
@@ -19,11 +20,16 @@ function normalizeString(value: string | undefined, fallback: string): string {
   return trimmed.length > 0 ? trimmed : fallback;
 }
 
-export const OPS_BASE_URL = normalizeString(
+function normalizeBaseUrl(value: string | undefined, fallback: string): string {
+  const normalized = normalizeString(value, fallback);
+  if (normalized === '') return '';
+  return normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+}
+
+export const OPS_BASE_URL = normalizeBaseUrl(
   import.meta.env.VITE_OPS_BASE_URL,
   DEFAULTS.opsBaseUrl
 );
-export const OPS_TOKEN = (import.meta.env.VITE_OPS_API_TOKEN as string | undefined)?.trim();
 export const PORTFOLIO_REFRESH_MS = parsePositiveInt(
   import.meta.env.VITE_PORTFOLIO_REFRESH_MS,
   DEFAULTS.portfolioRefreshMs
@@ -39,4 +45,8 @@ export const INCIDENTS_LIMIT = parsePositiveInt(
 export const INCIDENTS_PREVIEW_LIMIT = parsePositiveInt(
   import.meta.env.VITE_INCIDENTS_PREVIEW_LIMIT,
   DEFAULTS.incidentsPreviewLimit
+);
+export const PUBLIC_REPO_URL = normalizeString(
+  import.meta.env.VITE_PUBLIC_REPO_URL,
+  DEFAULTS.publicRepoUrl
 );

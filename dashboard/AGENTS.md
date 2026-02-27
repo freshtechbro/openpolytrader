@@ -9,12 +9,13 @@ React 18 + Vite ops dashboard for monitoring trading system.
 ```
 dashboard/
 ├── src/
-│   ├── components/   # Reusable UI (6 files)
-│   ├── pages/        # View pages (6 files)
+│   ├── components/   # Reusable UI (14 files)
+│   ├── pages/        # Route pages (11 files)
 │   ├── hooks/        # Custom hooks
 │   ├── lib/          # Utilities (opsClient, config)
+│   ├── routes/       # React Router layouts/router
 │   └── styles/       # CSS (tokens.css, app.css)
-├── tests/e2e/        # Playwright
+├── tests/e2e/        # Playwright specs (4 files)
 └── index.html        # Vite entry
 ```
 
@@ -34,25 +35,29 @@ Local `AGENTS.md` files refine these rules:
 
 | Component | Purpose |
 |-----------|---------|
-| `TopNav` | Navigation + connection status |
-| `MetricCard` | Single metric display |
-| `MetricsTable` | Tabular data |
-| `StatusPill` | Status indicators |
-| `Section` | Content grouping |
-| `Panel` | Card containers |
+| `TopNav` | Ops header, health, trading mode controls |
+| `MetricCard`, `MetricsTable`, `StatusPill` | Metric and status presentation |
+| `Section`, `Panel`, `PageContainer` | Shared layout primitives |
+| `GitHubRepoLink` | Shared repo/brand link |
+| `components/public/*` | Landing page sections (`Hero`, `PipelineGrid`, `RiskPillars`, etc.) |
 
 ## Pages
 
-| Page | View Key | Content | Notes |
-|------|----------|---------|-------|
-| Overview | `overview` | System metrics, health | |
-| Markets | `markets` | Market allowlist | |
-| Incidents | `incidents` | Failure log | |
-| Positions | `positions` | Portfolio state | |
-| RiskGates | `risk-gates` | Gate status/config | 500+ lines - complexity hotspot |
-| Decisions | `decisions` | Decision stream and outcomes | |
+| Route | Page | Content | Notes |
+|------|------|---------|-------|
+| `/` | `HomePage` | Landing/overview | Public layout |
+| `/product` | `ProductPage` | Product details | Public layout |
+| `/risk-safety` | `RiskSafetyPage` | Risk controls and safety model | Public layout |
+| `/architecture` | `ArchitecturePage` | System architecture summary | Public layout |
+| `/get-started` | `GetStartedPage` | Setup + onboarding flow | Public layout |
+| `/ops/overview` | `Overview` | System metrics, health | Ops layout |
+| `/ops/markets` | `Markets` | Market allowlist | Ops layout |
+| `/ops/incidents` | `Incidents` | Failure log | Ops layout |
+| `/ops/positions` | `Positions` | Portfolio state | Ops layout |
+| `/ops/risk` | `RiskGates` | Gate status/config | 708 lines, 27694 bytes |
+| `/ops/decisions` | `Decisions` | Decision stream and outcomes | Ops layout |
 
-Navigation is currently in-app state switching (`useState`), not URL routing.
+Navigation uses React Router (`AppRouter`) with public routes and nested `/ops/*` routes.
 
 ## Patterns
 
@@ -77,15 +82,16 @@ Navigation is currently in-app state switching (`useState`), not URL routing.
 ```typescript
 // lib/opsClient.ts
 fetch(`${BASE_URL}/endpoint`, {
-  headers: { Authorization: `Bearer ${token}` }
+  credentials: 'include'
 })
 ```
 
-Env vars: `VITE_OPS_API_TOKEN`, `VITE_OPS_BASE_URL`
+Env vars: `VITE_OPS_BASE_URL`
 
 ## Commands
 
 ```bash
+(cd .. && npm run help) # root command/tool/flag reference
 npm run dev      # Vite :5173
 npm run build    # Production
 npm run test:e2e # Playwright

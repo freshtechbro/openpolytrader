@@ -13,8 +13,7 @@ test.afterAll(async () => {
 });
 
 test('risk profile dropdown applies selection', async ({ page }) => {
-  await page.goto(serverHandle.baseUrl);
-  await page.getByRole('button', { name: 'Risk Gates' }).click();
+  await page.goto(`${serverHandle.baseUrl}/ops/risk`);
   await page.selectOption('#risk-profile-select', 'extra_high');
   await page.getByRole('button', { name: 'Apply profile' }).click();
 

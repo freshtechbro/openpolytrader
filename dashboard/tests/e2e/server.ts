@@ -64,6 +64,42 @@ const schemaSnapshot = {
   ]
 };
 
+interface DecisionFixture {
+  id: string;
+  subjectId: string;
+  timestamp: number;
+  agent: string;
+  decision: Record<string, unknown>;
+  reasoning: Record<string, unknown>;
+}
+
+const decisionFixtures: DecisionFixture[] = [
+  {
+    id: 'd-100',
+    subjectId: 'market-1',
+    timestamp: Date.UTC(2026, 1, 17, 8, 0, 0),
+    agent: 'risk',
+    decision: { task: 'gate', verdict: 'approved' },
+    reasoning: { edge: 0.012 }
+  },
+  {
+    id: 'd-101',
+    subjectId: 'market-2',
+    timestamp: Date.UTC(2026, 1, 17, 10, 30, 0),
+    agent: 'execution',
+    decision: { task: 'route', verdict: 'submitted' },
+    reasoning: { venue: 'polymarket' }
+  },
+  {
+    id: 'd-102',
+    subjectId: 'market-1',
+    timestamp: Date.UTC(2026, 1, 17, 12, 15, 0),
+    agent: 'risk',
+    decision: { task: 'gate', verdict: 'approved' },
+    reasoning: { edge: 0.018 }
+  }
+];
+
 export type DashboardTestServer = {
   baseUrl: string;
   getAppliedProfile: () => string | null;
@@ -152,6 +188,30 @@ export const startDashboardServer = (): Promise<DashboardTestServer> => {
       return;
     }
 
+    if (url === '/ops/session' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ authenticated: true, authRequired: false }));
+      return;
+    }
+
+    if (url === '/ops/session' && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Set-Cookie': 'ops_session=test-session; Path=/; HttpOnly; SameSite=Lax'
+      });
+      res.end(JSON.stringify({ authenticated: true, authRequired: true, expiresAt: Date.now() + 1000 * 60 * 60 }));
+      return;
+    }
+
+    if (url === '/ops/session' && req.method === 'DELETE') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Set-Cookie': 'ops_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'
+      });
+      res.end(JSON.stringify({ authenticated: false, authRequired: true }));
+      return;
+    }
+
     if (url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'healthy', checks: {} }));
@@ -182,15 +242,43 @@ export const startDashboardServer = (): Promise<DashboardTestServer> => {
       return;
     }
 
-    if (url === '/positions') {
+    if (url === '/portfolio') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ positions: [] }));
+      res.end(
+        JSON.stringify({
+          totalCapital: 10000,
+          availableCapital: 9000,
+          dailyPnL: 0,
+          marketExposure: {}
+        })
+      );
       return;
     }
 
     if (url?.startsWith('/decisions')) {
+      const parsedUrl = new URL(req.url ?? '/decisions', 'http://127.0.0.1');
+      const agent = parsedUrl.searchParams.get('agent')?.trim() ?? '';
+      const subjectId = parsedUrl.searchParams.get('subjectId')?.trim() ?? '';
+      const limitRaw = parsedUrl.searchParams.get('limit');
+      const limitParsed = Number.parseInt(limitRaw ?? '', 10);
+      const limit = Number.isFinite(limitParsed) && limitParsed > 0 ? Math.min(limitParsed, 1000) : 200;
+      const sinceRaw = parsedUrl.searchParams.get('sinceMs');
+      const sinceParsed = Number.parseInt(sinceRaw ?? '', 10);
+      const sinceMs = Number.isFinite(sinceParsed) && sinceParsed >= 0 ? sinceParsed : null;
+      const untilRaw = parsedUrl.searchParams.get('untilMs');
+      const untilParsed = Number.parseInt(untilRaw ?? '', 10);
+      const untilMs = Number.isFinite(untilParsed) && untilParsed >= 0 ? untilParsed : null;
+
+      const filtered = decisionFixtures
+        .filter((row) => (agent.length > 0 ? row.agent === agent : true))
+        .filter((row) => (subjectId.length > 0 ? row.subjectId === subjectId : true))
+        .filter((row) => (sinceMs !== null ? row.timestamp >= sinceMs : true))
+        .filter((row) => (untilMs !== null ? row.timestamp <= untilMs : true))
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, limit);
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify([]));
+      res.end(JSON.stringify(filtered));
       return;
     }
 
@@ -209,6 +297,11 @@ export const startDashboardServer = (): Promise<DashboardTestServer> => {
     const relative = normalized === '/' ? '/index.html' : normalized;
     const filePath = resolve(distDir, `.${relative}`);
     if (!existsSync(filePath)) {
+      if (!extname(relative)) {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(readFileSync(indexPath));
+        return;
+      }
       res.writeHead(404);
       res.end('not found');
       return;

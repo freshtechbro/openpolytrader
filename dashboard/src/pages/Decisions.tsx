@@ -52,6 +52,10 @@ function asMs(value: string): number | null {
   return parsed;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException ? error.name === 'AbortError' : error instanceof Error && error.name === 'AbortError';
+}
+
 function getDecisionTask(decision: unknown): string {
   if (!decision || typeof decision !== 'object') return '';
   const record = decision as { task?: unknown };
@@ -176,10 +180,11 @@ export function Decisions() {
 
   useEffect(() => {
     let mounted = true;
+    const controller = new AbortController();
     const load = async () => {
       setLoading(true);
       try {
-        const response = await opsFetchJson<DecisionsResponse>(`/decisions${query}`);
+        const response = await opsFetchJson<DecisionsResponse>(`/decisions${query}`, { signal: controller.signal });
         if (!mounted) return;
 
         if (!Array.isArray(response)) {
@@ -188,11 +193,12 @@ export function Decisions() {
 
         const maxRows = parseInt(limit) || 200;
         const persistedRows = response.map((row) => toDecisionRow(row, 'persisted'));
-        setDecisions((prev) => mergeDecisions(prev, persistedRows, maxRows));
+        setDecisions(persistedRows.slice(0, maxRows));
         setSelectedKey((prev) => (prev && persistedRows.some((row) => row.key === prev) ? prev : null));
+        setNewDecisionKeys(new Set());
         setError(null);
       } catch (err) {
-        if (!mounted) return;
+        if (!mounted || isAbortError(err)) return;
         setDecisions([]);
         setError(err instanceof Error ? err.message : 'Failed to load decisions');
       } finally {
@@ -204,6 +210,7 @@ export function Decisions() {
     void load();
     return () => {
       mounted = false;
+      controller.abort();
     };
   }, [query, refreshKey]);
 
@@ -271,8 +278,8 @@ export function Decisions() {
       <Panel
         title="Filters"
         body={
-          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-            <label style={{ display: 'grid', gap: 6 }}>
+          <div className="decisions-filters">
+            <label className="decisions-filter-field">
               <span>Agent</span>
               <input
                 id="decisions-agent"
@@ -283,7 +290,7 @@ export function Decisions() {
               />
             </label>
 
-            <label style={{ display: 'grid', gap: 6 }}>
+            <label className="decisions-filter-field">
               <span>Subject ID</span>
               <input
                 id="decisions-subjectId"
@@ -294,7 +301,7 @@ export function Decisions() {
               />
             </label>
 
-            <label style={{ display: 'grid', gap: 6 }}>
+            <label className="decisions-filter-field">
               <span>Limit</span>
               <input
                 id="decisions-limit"
@@ -306,7 +313,7 @@ export function Decisions() {
               />
             </label>
 
-            <label style={{ display: 'grid', gap: 6 }}>
+            <label className="decisions-filter-field decisions-filter-field--date">
               <span>Since</span>
               <input
                 id="decisions-since"
@@ -317,7 +324,7 @@ export function Decisions() {
               />
             </label>
 
-            <label style={{ display: 'grid', gap: 6 }}>
+            <label className="decisions-filter-field decisions-filter-field--date">
               <span>Until</span>
               <input
                 id="decisions-until"
@@ -328,7 +335,7 @@ export function Decisions() {
               />
             </label>
 
-            <div style={{ display: 'flex', alignItems: 'end', gap: 12 }}>
+            <div className="decisions-filter-actions">
               <button type="button" onClick={() => setRefreshKey((prev) => prev + 1)} disabled={loading}>
                 {loading ? 'Loading…' : 'Refresh'}
               </button>
@@ -348,8 +355,8 @@ export function Decisions() {
               </button>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, gridColumn: '1 / -1' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <div className="decisions-filter-live">
+              <label className="decisions-filter-live-toggle">
                 <input
                   type="checkbox"
                   checked={liveEnabled}
