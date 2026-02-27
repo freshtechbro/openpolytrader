@@ -8,11 +8,11 @@ Vitest for backend (>97% thresholds across lines/functions/statements/branches),
 
 ```
 tests/
-├── unit/           # 78 test files
-└── integration/    # 4 test files
+├── unit/           # 84 test files
+└── integration/    # 5 test files
 
 dashboard/tests/
-└── e2e/            # Playwright specs (*.spec.ts)
+└── e2e/            # Playwright specs (*.spec.ts, 4 files)
 ```
 
 ## Local Instructions
@@ -46,6 +46,7 @@ Excluded from coverage:
 ## Commands
 
 ```bash
+npm run help           # root command/tool/flag reference
 npm run test           # vitest run
 npm run test:coverage  # with >97% thresholds
 
@@ -96,8 +97,8 @@ afterEach(() => {
 | File | Lines | Coverage |
 |------|-------|----------|
 | `execution.test.ts` | 2843 | ExecutionAgent state machine |
-| `portfolio.test.ts` | 1178 | PortfolioAgent reconciliation |
-| `gates.test.ts` | 600 | Risk gates |
+| `portfolio.test.ts` | 1283 | PortfolioAgent reconciliation |
+| `gates.test.ts` | 775 | Risk gates |
 
 ## Anti-Patterns
 

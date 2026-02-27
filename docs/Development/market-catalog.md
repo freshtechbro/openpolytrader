@@ -8,7 +8,7 @@ Market pairs are loaded from two sources:
 1. `src/config/markets.ts` (committed, curated defaults)
 2. JSON file at `MARKET_CATALOG_PATH` (local overrides or extensions)
 
-The loader merges the lists and deduplicates by `marketId`. When duplicates exist, the entry from `src/config/markets.ts` wins because it is loaded first.
+The loader merges the lists and deduplicates by `marketId`. When duplicates exist, the `MARKET_CATALOG_PATH` entry overrides committed defaults for token IDs and any provided optional metadata; omitted optional fields fall back to committed defaults.
 
 ## JSON Format
 `MARKET_CATALOG_PATH` must point to a JSON array of objects with the following schema:

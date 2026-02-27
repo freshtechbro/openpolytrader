@@ -55,10 +55,16 @@ Thank you for your interest in contributing to OpenPolyTrader! This document pro
 3. **Set up environment:**
    ```bash
    cp .env.example .env
-   # Edit .env with your settings (see docs/Development/setup.md)
+   # Set OPS_API_TOKEN in .env for npm run dev:ops and /ops/* auth
+   # See docs/Development/setup.md for full setup details
    ```
 
-4. **Verify setup:**
+4. **View the root command/tool/flag index:**
+   ```bash
+   npm run help
+   ```
+
+5. **Verify setup:**
    ```bash
    npm run typecheck
    npm run lint
@@ -68,7 +74,7 @@ Thank you for your interest in contributing to OpenPolyTrader! This document pro
 ### Development Modes
 
 - **Backend only:** `npm run dev`
-- **Backend + Dashboard:** `npm run dev:ops`
+- **Backend + Dashboard:** `npm run dev:ops` (requires `OPS_API_TOKEN`)
 - **Docker mode:** `npm run dev:live`
 
 See [docs/Development/setup.md](docs/Development/setup.md) for detailed setup instructions.
@@ -80,12 +86,14 @@ See [docs/Development/setup.md](docs/Development/setup.md) for detailed setup in
 ```
 openpolytrader/
 ├── src/
-│   ├── agents/        # Trading agents (8 agents)
+│   ├── agents/        # Trading agents (9 specialized agents)
+│   │   ├── dependency/  # Dependency extraction helpers
 │   │   ├── execution/   # Order execution logic
 │   │   ├── learning/    # RL model integration
 │   │   ├── market-data/ # WebSocket data handling
 │   │   ├── ops/         # Operations and health
 │   │   ├── portfolio/   # Position management
+│   │   ├── projection/  # Frank-Wolfe projection agent
 │   │   ├── risk/        # Risk evaluation
 │   │   ├── scanner/     # Opportunity detection
 │   │   └── signal/      # Signal aggregation

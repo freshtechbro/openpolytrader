@@ -35,4 +35,4 @@ Use this folder for runtime operations, controls, and incident handling.
 - `TRADING_MODE=paper`
 - `TRADING_ENABLED=true`
 - `OPS_API_TOKEN` set
-- `VITE_OPS_API_TOKEN` matched in dashboard env
+- Runtime session login on `/ops/*`

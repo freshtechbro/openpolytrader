@@ -25,6 +25,9 @@ tmp/
 data/*.bak-*
 data/*.db.bak
 data/*.db-journal
+services/ip-oracle/.venv/
+services/ip-oracle/__pycache__/
+services/ip-oracle/.pytest_cache/
 
 # Agent continuity ledgers (kept local, never committed)
 CONTINUITY.md
