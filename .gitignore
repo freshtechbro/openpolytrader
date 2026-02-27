@@ -3,16 +3,18 @@ dashboard/node_modules_stale*/
 dist/
 coverage/
 coverage*/
-playwright-report/
-test-results/
-dashboard/test-results*/
+**/playwright-report*/
+**/test-results*/
 .vite/
 .claude/
 .DS_Store
 *.log
 *.sqlite
+*.sqlite.*
+*.sqlite-*
 *.db
-data/*.db*
+*.db.*
+*.db-*
 .env
 .env.*
 !.env.example
@@ -26,8 +28,6 @@ data/market-catalog.json
 # Local artifacts
 tmp/
 data/*.bak-*
-data/*.db.bak
-data/*.db-journal
 services/ip-oracle/.venv/
 services/ip-oracle/__pycache__/
 services/ip-oracle/.pytest_cache/
