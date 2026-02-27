@@ -60,6 +60,13 @@ describe('book freshness quarantine', () => {
       })
     ).toBe(false);
     expect(
+      isOpsAlertPayload({
+        check: 'book_freshness',
+        timestamp: 1,
+        result: { ok: 'false' }
+      })
+    ).toBe(false);
+    expect(
       isOpsAlertPayload({ check: 'book_freshness', timestamp: 1, result: { ok: true } })
     ).toBe(true);
     expect(
@@ -242,5 +249,29 @@ describe('book freshness quarantine', () => {
     const incident = incidentTracker.recent(1)[0];
     expect(incident.timestamp).toBe(5555);
     expect(incident.detail?.stalenessMs).toBeNull();
+  });
+
+  it('skips alerts that do not include a token id in info', () => {
+    const allowlist = new MarketAllowlist({ autoResume: false });
+    allowlist.seed(['m1']);
+    const metrics = new MetricsStore(100);
+    const incidentTracker = new IncidentTracker(allowlist, metrics, {
+      cooldownMs: 60000,
+      maxIncidents: 100
+    });
+    const handler = createBookFreshnessQuarantine({
+      allowlist,
+      incidentTracker,
+      tokenToMarketId: { t1: 'm1' },
+      config: { threshold: 1, windowMs: 300000, cooldownMs: 0 }
+    });
+
+    handler.handle({
+      check: 'book_freshness',
+      result: { ok: false, info: 'stalenessMs=99999 thresholdMs=15000' },
+      timestamp: 1000
+    });
+
+    expect(incidentTracker.recent(10)).toHaveLength(0);
   });
 });

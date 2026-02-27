@@ -428,3 +428,159 @@ describe('Supervisor gate rejection dedupe', () => {
     expect((events[1].data as { reasons: string[] }).reasons).toContain('max_concurrent_markets');
   });
 });
+
+describe('Supervisor FW market metadata wiring', () => {
+  it('passes rich market metadata into FW scan universe', async () => {
+    const metrics = new MetricsStore(1000);
+    const allowlist = new MarketAllowlist({ autoResume: false });
+    const incidentTracker = new IncidentTracker(allowlist, metrics, {
+      cooldownMs: 1,
+      maxIncidents: 10
+    });
+    const portfolio = new PortfolioAgent(1000);
+    const realtime = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      subscribeMarkets: vi.fn()
+    } as unknown as PolymarketRealtime;
+
+    const supervisor = new Supervisor(
+      {
+        marketPairs: [
+          {
+            marketId: 'market-1',
+            yesTokenId: 'yes-1',
+            noTokenId: 'no-1',
+            question: 'Will Candidate A win election 2026?',
+            category: 'politics',
+            tags: ['election', 'candidate-a', 'usa']
+          }
+        ],
+        policy: { ...DEFAULT_TRADE_POLICY },
+        riskConfig: { ...DEFAULT_RISK_CONFIG },
+        capital: 1000,
+        tradingEnabled: false,
+        tradingMode: 'off'
+      },
+      {
+        clob: {} as unknown as PolymarketClob,
+        dataApi: {} as unknown as PolymarketDataApi,
+        realtime,
+        allowlist,
+        metrics,
+        incidentTracker,
+        portfolio
+      }
+    );
+
+    const scanFwPair = vi.fn().mockResolvedValue(null);
+    const internals = supervisor as unknown as {
+      scanner: {
+        scanPair: (...args: unknown[]) => unknown;
+        scanFwPair: (...args: unknown[]) => Promise<unknown>;
+      };
+      marketData: { getOrderBook: (tokenId: string) => unknown };
+      handleMarketUpdated: (event: { tokenId: string }) => Promise<void>;
+    };
+
+    internals.scanner = {
+      scanPair: () => null,
+      scanFwPair
+    };
+    internals.marketData = {
+      getOrderBook: () => undefined
+    };
+
+    await internals.handleMarketUpdated({ tokenId: 'yes-1' });
+
+    expect(scanFwPair).toHaveBeenCalledTimes(1);
+    expect(scanFwPair.mock.calls[0]?.[3]).toEqual([
+      {
+        marketId: 'market-1',
+        yesTokenId: 'yes-1',
+        noTokenId: 'no-1',
+        question: 'Will Candidate A win election 2026?',
+        category: 'politics',
+        tags: ['election', 'candidate-a', 'usa']
+      }
+    ]);
+  });
+});
+
+describe('Supervisor FW scan coalescing', () => {
+  it('coalesces concurrent market updates into serialized FW universe scans', async () => {
+    vi.useFakeTimers();
+
+    const metrics = new MetricsStore(1000);
+    const allowlist = new MarketAllowlist({ autoResume: false });
+    const incidentTracker = new IncidentTracker(allowlist, metrics, {
+      cooldownMs: 1,
+      maxIncidents: 10
+    });
+    const portfolio = new PortfolioAgent(1000);
+    const realtime = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      subscribeMarkets: vi.fn()
+    } as unknown as PolymarketRealtime;
+
+    const supervisor = new Supervisor(
+      {
+        marketPairs: [{ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }],
+        policy: { ...DEFAULT_TRADE_POLICY },
+        riskConfig: { ...DEFAULT_RISK_CONFIG },
+        capital: 1000,
+        tradingEnabled: true,
+        tradingMode: 'paper'
+      },
+      {
+        clob: {} as unknown as PolymarketClob,
+        dataApi: {} as unknown as PolymarketDataApi,
+        realtime,
+        allowlist,
+        metrics,
+        incidentTracker,
+        portfolio
+      }
+    );
+
+    let resolveFirst: ((value: unknown) => void) | null = null;
+    const firstScan = new Promise<unknown[]>((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    const scanFwUniverse = vi
+      .fn()
+      .mockReturnValueOnce(firstScan)
+      .mockResolvedValueOnce([]);
+
+    const internals = supervisor as unknown as {
+      started: boolean;
+      scanner: {
+        scanPair: (...args: unknown[]) => unknown;
+        scanFwUniverse: (...args: unknown[]) => Promise<unknown[]>;
+      };
+      marketData: { getOrderBook: (tokenId: string) => unknown };
+      handleMarketUpdated: (event: { tokenId: string }) => Promise<void>;
+    };
+    internals.started = true;
+    internals.scanner = {
+      scanPair: () => null,
+      scanFwUniverse
+    };
+    internals.marketData = {
+      getOrderBook: () => undefined
+    };
+
+    const firstUpdate = internals.handleMarketUpdated({ tokenId: 'yes-1' });
+    const secondUpdate = internals.handleMarketUpdated({ tokenId: 'yes-1' });
+
+    expect(scanFwUniverse).toHaveBeenCalledTimes(1);
+    resolveFirst?.([]);
+    await firstUpdate;
+    await secondUpdate;
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(scanFwUniverse).toHaveBeenCalledTimes(2);
+  });
+});

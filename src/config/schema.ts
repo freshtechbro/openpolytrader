@@ -131,7 +131,35 @@ const POLICY_FIELDS: ConfigField[] = [
   { key: 'evWebSearchCacheTtlSeconds', label: 'EV Web Search Cache TTL', type: 'number', min: 60, max: 86400, step: 60, unit: 's', integer: true },
   { key: 'evWebSearchMaxConcurrency', label: 'EV Web Search Max Concurrency', type: 'number', min: 1, max: 20, step: 1, unit: 'count', integer: true },
   { key: 'evWebSearchFirecrawlMaxDepth', label: 'EV Firecrawl Max Depth', type: 'number', min: 1, max: 10, step: 1, unit: 'depth', integer: true },
-  { key: 'evWebSearchFirecrawlMaxPages', label: 'EV Firecrawl Max Pages', type: 'number', min: 1, max: 100, step: 1, unit: 'pages', integer: true }
+  { key: 'evWebSearchFirecrawlMaxPages', label: 'EV Firecrawl Max Pages', type: 'number', min: 1, max: 100, step: 1, unit: 'pages', integer: true },
+  { key: 'fwDependencyMode', label: 'FW Dependency Mode', type: 'enum', options: ['deterministic', 'llm', 'hybrid'] },
+  { key: 'fwDependencyHybridMerge', label: 'FW Hybrid Merge', type: 'enum', options: ['consensus', 'union'] },
+  { key: 'fwDependencyMinConfidence', label: 'FW Min Dependency Confidence', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
+  { key: 'fwDependencyMaxEdgesPerMarket', label: 'FW Max Edges Per Market', type: 'number', min: 1, max: 100, step: 1, unit: 'count', integer: true },
+  { key: 'fwOracleTimeLimitMs', label: 'FW Oracle Time Limit', type: 'number', min: 1, max: 10000, step: 1, unit: 'ms', integer: true },
+  { key: 'fwOracleMaxConcurrency', label: 'FW Oracle Max Concurrency', type: 'number', min: 1, max: 32, step: 1, unit: 'count', integer: true },
+  { key: 'fwMaxIterations', label: 'FW Max Iterations', type: 'number', min: 1, max: 200, step: 1, unit: 'count', integer: true },
+  { key: 'fwMaxLoopRuntimeMs', label: 'FW Max Loop Runtime', type: 'number', min: 1, max: 60000, step: 1, unit: 'ms', integer: true },
+  { key: 'fwGapAbsTolerance', label: 'FW Abs Gap Tolerance', type: 'number', min: 0.00000001, max: 1, step: 0.00000001, unit: 'fraction' },
+  { key: 'fwGapRelTolerance', label: 'FW Rel Gap Tolerance', type: 'number', min: 0.00000001, max: 1, step: 0.00000001, unit: 'fraction' },
+  { key: 'fwContractionInitialEpsilon', label: 'FW Contraction Initial Epsilon', type: 'number', min: 0.00000001, max: 1, step: 0.00000001, unit: 'fraction' },
+  { key: 'fwContractionDecay', label: 'FW Contraction Decay', type: 'number', min: 0.00000001, max: 0.99999999, step: 0.00000001, unit: 'fraction' },
+  { key: 'fwContractionMinEpsilon', label: 'FW Contraction Min Epsilon', type: 'number', min: 0.00000001, max: 1, step: 0.00000001, unit: 'fraction' },
+  { key: 'fwStallIterationLimit', label: 'FW Stall Iteration Limit', type: 'number', min: 1, max: 100, step: 1, unit: 'count', integer: true },
+  { key: 'fwActiveSetMaxVertices', label: 'FW Active Set Max Vertices', type: 'number', min: 2, max: 200, step: 1, unit: 'count', integer: true },
+  { key: 'fwHullSolveMaxIterations', label: 'FW Hull Solve Max Iterations', type: 'number', min: 1, max: 1000, step: 1, unit: 'count', integer: true },
+  { key: 'fwHullSolveTolerance', label: 'FW Hull Solve Tolerance', type: 'number', min: 0.00000001, max: 1, step: 0.00000001, unit: 'fraction' },
+  { key: 'fwMaxProjectionAgeMs', label: 'FW Max Projection Age', type: 'number', min: 1, max: 60000, step: 1, unit: 'ms', integer: true },
+  { key: 'fwSlippageToleranceBps', label: 'FW Slippage Tolerance', type: 'number', min: 0, max: 10000, step: 1, unit: 'bps', integer: true },
+  { key: 'fwExecutionRiskBufferBps', label: 'FW Execution Risk Buffer', type: 'number', min: 0, max: 10000, step: 1, unit: 'bps', integer: true },
+  { key: 'fwMinEdgeThreshold', label: 'FW Min Edge Threshold', type: 'number', min: 0.0001, max: 1, step: 0.0001, unit: 'fraction' },
+  { key: 'fwSelectionWeightFloor', label: 'FW Selection Weight Floor', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
+  { key: 'fwSelectionTopK', label: 'FW Selection Top K', type: 'number', min: 0, max: 100, step: 1, unit: 'count', integer: true },
+  { key: 'fwMaxPerMarketNotional', label: 'FW Max Per Market', type: 'number', min: 0, max: 100000, step: 1, unit: 'usd' },
+  { key: 'fwMaxPortfolioNotional', label: 'FW Max Portfolio', type: 'number', min: 0, max: 100000, step: 1, unit: 'usd' },
+  { key: 'fwBasketMinMarkets', label: 'FW Basket Min Markets', type: 'number', min: 1, max: 100, step: 1, unit: 'count', integer: true },
+  { key: 'fwBasketMaxMarkets', label: 'FW Basket Max Markets', type: 'number', min: 1, max: 100, step: 1, unit: 'count', integer: true },
+  { key: 'fwBasketExecutionMode', label: 'FW Basket Execution Mode', type: 'enum', options: ['batch_best_effort', 'sequential_failfast'] }
 ];
 
 const RISK_FIELDS: ConfigField[] = [
@@ -151,7 +179,7 @@ const RISK_FIELDS: ConfigField[] = [
 ];
 
 export const CONFIG_SCHEMA: ConfigSchema = {
-  version: '1.2.0',
+  version: '1.5.0',
   sections: [
     { key: 'policy', label: 'Trade Policy', fields: POLICY_FIELDS },
     { key: 'risk', label: 'Risk Controls', fields: RISK_FIELDS }

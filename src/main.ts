@@ -41,6 +41,8 @@ import { ExaClient, FirecrawlClient, WebSearchCache } from './services/websearch
 import { PortfolioAgent } from './agents/portfolio/PortfolioAgent.js';
 import { LearningAgent } from './agents/learning/LearningAgent.js';
 import { SignalAggregatorAgent } from './agents/signal/SignalAggregatorAgent.js';
+import { createDependencyLLMExtractor } from './agents/dependency/DependencyLLMExtractor.js';
+import { FwProjectionAgent } from './agents/projection/FwProjectionAgent.js';
 import { EventStore } from './core/EventStore.js';
 import { messageBus } from './core/MessageBus.js';
 import { Supervisor } from './core/Supervisor.js';
@@ -51,6 +53,7 @@ import { getInfraConfigSnapshot } from './config/infra.js';
 import { LLMClient } from './services/llm/LLMClient.js';
 import type { LLMAgentId, LLMRequest } from './services/llm/types.js';
 import { RiskAdvisor } from './agents/risk/RiskAdvisor.js';
+import { IpOracleClient } from './services/ip-oracle/IpOracleClient.js';
 import { sha256 as sha256Hex } from './utils/crypto.js';
 
 const env = loadEnv();
@@ -170,6 +173,14 @@ const llmFacade = {
   promptVersion: llmPromptVersion,
   policyHashes
 };
+const fwDependencyLlmExtractor = createDependencyLLMExtractor({
+  llmConfig,
+  llmClient: { call: (agent, request, nowMs) => llmClient.call(agent, request, nowMs) },
+  promptVersion: llmPromptVersion,
+  policyHashes,
+  eventStore: store,
+  metrics
+});
 const executionAdvisor =
   llmConfig.enabled && llmConfig.agents.ExecutionAgent.mode !== 'disabled'
     ? new ExecutionAdvisor({ enabled: true })
@@ -475,6 +486,25 @@ const signalAggregator =
       })
     : undefined;
 
+const fwOracleClient = new IpOracleClient({
+  baseUrl: env.FW_ORACLE_BASE_URL,
+  timeoutMs: Math.max(1, env.FW_ORACLE_TIMEOUT_MS),
+  apiKey: env.FW_ORACLE_API_KEY,
+  circuitFailureThreshold: Math.max(1, env.FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD),
+  circuitCooldownMs: Math.max(0, env.FW_ORACLE_CIRCUIT_COOLDOWN_MS)
+});
+const fwProjectionAgent = new FwProjectionAgent({
+  resolverConfig: {
+    mode: policy.fwDependencyMode,
+    hybridMerge: policy.fwDependencyHybridMerge,
+    minConfidence: policy.fwDependencyMinConfidence,
+    maxEdgesPerMarket: policy.fwDependencyMaxEdgesPerMarket,
+    llmExtractor: fwDependencyLlmExtractor
+  },
+  oracleClient: fwOracleClient,
+  metrics
+});
+
 const tradingStateManager = new TradingStateManager(env.TRADING_ENABLED, env.TRADING_MODE);
 const blockTradingUntilCatalogRefresh =
   env.TRADING_ENABLED && (env.TRADING_MODE === 'paper' || env.TRADING_MODE === 'live');
@@ -519,7 +549,8 @@ const supervisor = new Supervisor(
     llm: llmConfig.enabled ? llmFacade : undefined,
     executionAdvisor,
     riskAdvisor,
-    signalAggregator
+    signalAggregator,
+    fwProjectionAgent
   }
 );
 
@@ -567,6 +598,20 @@ const syncRuntimeConfig = () => {
   catalogRefresher?.updateConfig({ refreshIntervalMs: nextRefresh.catalogRefreshMs });
   incidentTracker.updateConfig({
     cooldownMs: riskSnapshot.marketCooldownSeconds * 1000
+  });
+  fwProjectionAgent.updateResolverConfig({
+    mode: policySnapshot.fwDependencyMode,
+    hybridMerge: policySnapshot.fwDependencyHybridMerge,
+    minConfidence: policySnapshot.fwDependencyMinConfidence,
+    maxEdgesPerMarket: policySnapshot.fwDependencyMaxEdgesPerMarket,
+    llmExtractor: fwDependencyLlmExtractor
+  });
+  fwOracleClient.updateConfig({
+    baseUrl: env.FW_ORACLE_BASE_URL,
+    timeoutMs: Math.max(1, env.FW_ORACLE_TIMEOUT_MS),
+    apiKey: env.FW_ORACLE_API_KEY,
+    circuitFailureThreshold: Math.max(1, env.FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD),
+    circuitCooldownMs: Math.max(0, env.FW_ORACLE_CIRCUIT_COOLDOWN_MS)
   });
   policyHashes.tradePolicyHash = sha256(stableStringify(policySnapshot));
   policyHashes.riskConfigHash = sha256(stableStringify(riskSnapshot));
@@ -759,6 +804,7 @@ if (env.OPS_API_ENABLED) {
         port: env.PORT,
         host: env.OPS_API_HOST,
         authToken: env.OPS_API_TOKEN,
+        devSessionPrefillEnabled: env.OPS_DEV_SESSION_PREFILL_ENABLED,
         incidentsLimit: env.OPS_INCIDENTS_LIMIT,
         streamHeartbeatMs: env.OPS_STREAM_HEARTBEAT_MS
       }

@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 
-import { evaluateEvGates, evaluateGates, evaluateGatesWithFees } from '../../src/domain/gates.js';
+import {
+  evaluateEvGates,
+  evaluateFwBasketGates,
+  evaluateFwProjectionGates,
+  evaluateGates,
+  evaluateGatesWithFees
+} from '../../src/domain/gates.js';
 import type { OrderBookState, OrderBookSnapshot } from '../../src/domain/orderbook.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import type { OrderBookLevel } from '../../src/domain/types.js';
@@ -497,6 +503,93 @@ describe('evaluateGates', () => {
   });
 });
 
+describe('evaluateFwBasketGates', () => {
+  it('passes for valid basket markets', () => {
+    const now = Date.now();
+    const yes1 = makeBook('yes-1', { price: 0.47, size: 200 }, { price: 0.48, size: 200 }, now);
+    const no1 = makeBook('no-1', { price: 0.48, size: 200 }, { price: 0.49, size: 200 }, now);
+    const yes2 = makeBook('yes-2', { price: 0.46, size: 200 }, { price: 0.47, size: 200 }, now);
+    const no2 = makeBook('no-2', { price: 0.49, size: 200 }, { price: 0.5, size: 200 }, now);
+    const orderbooks = new Map<string, OrderBookState>([
+      ['yes-1', yes1],
+      ['no-1', no1],
+      ['yes-2', yes2],
+      ['no-2', no2]
+    ]);
+
+    const result = evaluateFwBasketGates({
+      policy: { ...DEFAULT_TRADE_POLICY, fwBasketMinMarkets: 2, fwBasketMaxMarkets: 3 },
+      nowMs: now,
+      markets: [
+        {
+          marketId: 'm1',
+          yesTokenId: 'yes-1',
+          noTokenId: 'no-1',
+          yesPrice: 0.48,
+          noPrice: 0.49,
+          costPerSet: 0.97,
+          projectedEdge: 0.03,
+          edgeLowerBound: 0.02,
+          maxSizeByDepth: 100,
+          minOrderSize: 0.001,
+          tickSize: 0.01
+        },
+        {
+          marketId: 'm2',
+          yesTokenId: 'yes-2',
+          noTokenId: 'no-2',
+          yesPrice: 0.47,
+          noPrice: 0.5,
+          costPerSet: 0.97,
+          projectedEdge: 0.03,
+          edgeLowerBound: 0.02,
+          maxSizeByDepth: 100,
+          minOrderSize: 0.001,
+          tickSize: 0.01
+        }
+      ],
+      orderbooks,
+      aggregateEdgeLowerBound: 0.04,
+      projectionAgeMs: 10,
+      desiredSize: 1
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.reasons).toEqual([]);
+    expect(result.maxSizeByDepth).toBeGreaterThan(0);
+  });
+
+  it('fails when a market book is missing', () => {
+    const now = Date.now();
+    const orderbooks = new Map<string, OrderBookState>();
+    const result = evaluateFwBasketGates({
+      policy: DEFAULT_TRADE_POLICY,
+      nowMs: now,
+      markets: [
+        {
+          marketId: 'm1',
+          yesTokenId: 'yes-missing',
+          noTokenId: 'no-missing',
+          yesPrice: 0.48,
+          noPrice: 0.49,
+          costPerSet: 0.97,
+          projectedEdge: 0.03,
+          edgeLowerBound: 0.02,
+          maxSizeByDepth: 100,
+          minOrderSize: 0.001,
+          tickSize: 0.01
+        }
+      ],
+      orderbooks,
+      aggregateEdgeLowerBound: 0.02,
+      projectionAgeMs: 10
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.reasons.some((reason) => reason.includes('missing_orderbook'))).toBe(true);
+  });
+});
+
 describe('evaluateEvGates', () => {
   it('returns base fatal errors for EV gate evaluation', () => {
     const now = Date.now();
@@ -701,5 +794,70 @@ describe('evaluateEvGates', () => {
 
     expect(result.reasons).toContain('ev_edge_above_max');
     expect(result.reasons).toContain('ev_confidence_below_min');
+  });
+});
+
+describe('evaluateFwProjectionGates', () => {
+  it('passes when base gates and FW projection checks pass', () => {
+    const now = Date.now();
+    const yesBook = makeBook('yes', { price: 0.47, size: 500 }, { price: 0.48, size: 500 }, now);
+    const noBook = makeBook('no', { price: 0.48, size: 500 }, { price: 0.49, size: 500 }, now);
+
+    const result = evaluateFwProjectionGates({
+      yesBook,
+      noBook,
+      policy: DEFAULT_TRADE_POLICY,
+      nowMs: now,
+      projection: {
+        projectionId: 'proj-1',
+        dependencyMode: 'hybrid',
+        dependencyConfidence: 0.9,
+        projectedEdge: 0.04,
+        edgeLowerBound: 0.02,
+        solverRuntimeMs: 20,
+        solverStatus: 'feasible',
+        projectionAgeMs: 50
+      }
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.edge).toBeCloseTo(0.02, 6);
+  });
+
+  it('adds FW-specific rejection reasons', () => {
+    const now = Date.now();
+    const stale = now - (DEFAULT_TRADE_POLICY.maxBookStalenessMs + 1000);
+    const yesBook = makeBook('yes', { price: 0.47, size: 500 }, { price: 0.48, size: 500 }, stale);
+    const noBook = makeBook('no', { price: 0.48, size: 500 }, { price: 0.49, size: 500 }, stale);
+
+    const result = evaluateFwProjectionGates({
+      yesBook,
+      noBook,
+      policy: {
+        ...DEFAULT_TRADE_POLICY,
+        fwDependencyMinConfidence: 0.8,
+        fwMaxProjectionAgeMs: 100,
+        fwMinEdgeThreshold: 0.01
+      },
+      nowMs: now,
+      projection: {
+        projectionId: 'proj-2',
+        dependencyMode: 'hybrid',
+        dependencyConfidence: 0.2,
+        projectedEdge: 0.02,
+        edgeLowerBound: 0.001,
+        solverRuntimeMs: 120,
+        solverStatus: 'timeout',
+        projectionAgeMs: 500
+      }
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.reasons).toContain('fw_dependency_low_confidence');
+    expect(result.reasons).toContain('fw_projection_stale');
+    expect(result.reasons).toContain('fw_edge_lower_bound_fail');
+    expect(result.reasons).toContain('fw_solver_status');
+    expect(result.reasons).toContain('yes_book_stale');
+    expect(result.reasons).toContain('no_book_stale');
   });
 });

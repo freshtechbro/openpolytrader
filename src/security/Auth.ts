@@ -43,3 +43,24 @@ export function queryFlag(request: FastifyRequest, key: string): boolean {
   if (typeof value !== 'string') return false;
   return value === '1' || value.toLowerCase() === 'true';
 }
+
+export function readCookieValue(request: FastifyRequest, key: string): string | undefined {
+  const header = request.headers.cookie;
+  if (typeof header !== 'string' || header.trim().length === 0) return undefined;
+
+  const cookies = header.split(';');
+  for (const cookie of cookies) {
+    const [name, ...valueParts] = cookie.split('=');
+    if (!name) continue;
+    if (name.trim() !== key) continue;
+    const rawValue = valueParts.join('=').trim();
+    if (rawValue.length === 0) return undefined;
+    try {
+      return decodeURIComponent(rawValue);
+    } catch {
+      return rawValue;
+    }
+  }
+
+  return undefined;
+}

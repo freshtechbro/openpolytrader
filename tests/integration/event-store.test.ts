@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
-import { renameSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 
 import { EventStore, type StoredEvent } from '../../src/core/EventStore.js';
 import type { IdempotencyRecord } from '../../src/domain/idempotency.js';
@@ -12,6 +13,13 @@ describe('EventStore integration', () => {
   const cleanupSqliteArtifacts = (path: string) => {
     for (const suffix of ['', '-wal', '-shm', '.bak', '.bak-wal', '.bak-shm']) {
       rmSync(`${path}${suffix}`, { force: true });
+    }
+    const parent = dirname(path);
+    const base = basename(path);
+    if (!existsSync(parent)) return;
+    for (const entry of readdirSync(parent)) {
+      if (!entry.startsWith(`${base}.corrupt-`)) continue;
+      rmSync(join(parent, entry), { force: true });
     }
   };
 
@@ -59,7 +67,7 @@ describe('EventStore integration', () => {
   });
 
   it('uses configured db path when provided', () => {
-    const path = 'data/openpolytrader.db';
+    const path = `data/configured-${randomUUID()}.db`;
     paths.push(path);
 
     const store = new EventStore({ dbPath: path });
@@ -71,6 +79,7 @@ describe('EventStore integration', () => {
       metadata: {}
     });
     store.close();
+    expect(existsSync(path)).toBe(true);
   });
 
   it('persists and prunes idempotency records', () => {
@@ -283,6 +292,36 @@ describe('EventStore integration', () => {
     const metrics = store.queryMetrics('info', 100000, 100000);
     const messages = metrics.map((event) => (event.data as { message?: string }).message);
     expect(messages).toContain('after_move');
+
+    store.close();
+  });
+
+  it('recovers writes when the replacement database file is malformed', () => {
+    const path = `data/test-${randomUUID()}.db`;
+    paths.push(path);
+
+    const store = new EventStore({ dbPath: path });
+
+    store.persistMetric({
+      type: 'info',
+      timestamp: 1000,
+      data: { message: 'before_corrupt_replace' }
+    });
+
+    renameSync(path, `${path}.bak`);
+    writeFileSync(path, Buffer.from('not-a-sqlite-database'));
+
+    expect(() =>
+      store.persistMetric({
+        type: 'info',
+        timestamp: 2000,
+        data: { message: 'after_corrupt_replace' }
+      })
+    ).not.toThrow();
+
+    const metrics = store.queryMetrics('info', 100000, 100000);
+    const messages = metrics.map((event) => (event.data as { message?: string }).message);
+    expect(messages).toContain('after_corrupt_replace');
 
     store.close();
   });

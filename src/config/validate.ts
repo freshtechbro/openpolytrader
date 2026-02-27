@@ -58,4 +58,36 @@ export function validateP0Config(policy: TradePolicy, risk: RiskConfig): void {
     throw new Error('Invalid config: evWebSearchPrimary=firecrawl requires evWebSearchFirecrawlEnabled');
   }
 
+  if (policy.fwMaxPerMarketNotional > 0 && policy.fwMaxPortfolioNotional > 0) {
+    if (policy.fwMaxPerMarketNotional > policy.fwMaxPortfolioNotional) {
+      throw new Error(
+        `Invalid config: fwMaxPerMarketNotional (${policy.fwMaxPerMarketNotional}) cannot exceed fwMaxPortfolioNotional (${policy.fwMaxPortfolioNotional})`
+      );
+    }
+  }
+
+  if (policy.fwDependencyMode !== 'hybrid' && policy.fwDependencyHybridMerge !== 'consensus') {
+    throw new Error(
+      'Invalid config: fwDependencyHybridMerge is only meaningful in hybrid mode and must be consensus otherwise'
+    );
+  }
+
+  if (policy.fwContractionInitialEpsilon <= policy.fwContractionMinEpsilon) {
+    throw new Error(
+      `Invalid config: fwContractionInitialEpsilon (${policy.fwContractionInitialEpsilon}) must be > fwContractionMinEpsilon (${policy.fwContractionMinEpsilon})`
+    );
+  }
+
+  if (policy.fwBasketMinMarkets > policy.fwBasketMaxMarkets) {
+    throw new Error(
+      `Invalid config: fwBasketMinMarkets (${policy.fwBasketMinMarkets}) cannot exceed fwBasketMaxMarkets (${policy.fwBasketMaxMarkets})`
+    );
+  }
+
+  if (policy.fwSelectionTopK < 0) {
+    throw new Error(
+      `Invalid config: fwSelectionTopK (${policy.fwSelectionTopK}) must be >= 0`
+    );
+  }
+
 }

@@ -11,11 +11,14 @@ import {
   buildFakSellOrder,
   buildFokBuyOrder,
   coerceOrderResponse,
+  createInitialBasketExecutionState,
   createInitialExecutionState,
   getRequiredAction,
   isDelayedOrderResponse,
   isOrderFailure,
+  type BasketExecutionLegState,
   toClobOrderPayload,
+  transitionBasketExecutionState,
   transitionExecutionState,
   type ExecutionEvent,
   type ExecutionState,
@@ -24,7 +27,7 @@ import {
 } from '../../domain/execution.js';
 import type { IncidentReason } from '../../domain/incident.js';
 import { createIdempotencyKey, type IdempotencyRecord } from '../../domain/idempotency.js';
-import type { ArbitrageOpportunity } from '../../domain/opportunity.js';
+import { fwOpportunityId, type ArbitrageOpportunity } from '../../domain/opportunity.js';
 import type { OrderBookState } from '../../domain/orderbook.js';
 import type { OrderResponse } from '../../domain/types.js';
 import { PolymarketClob, type CancelOrdersResponse } from '../../services/PolymarketClob.js';
@@ -42,6 +45,11 @@ export interface ExecutionResult {
   idempotencyKey: string;
   executionId: string;
   state: ExecutionState;
+  basket?: {
+    mode: 'batch_best_effort' | 'sequential_failfast';
+    fallbackUsed?: boolean;
+    legs: BasketExecutionLegState[];
+  };
 }
 
 export interface ExecutionAgentConfig {
@@ -102,6 +110,19 @@ interface FillWaiter {
   desiredSize: number;
   resolve: (outcome: UserFillOutcome) => void;
   timeout: ReturnType<typeof setTimeout>;
+}
+
+interface BasketBatchOrderMetadata {
+  marketId: string;
+  side: 'yes' | 'no';
+  idempotencyKey: string;
+}
+
+interface BasketBatchAcceptedOrder {
+  marketId: string;
+  side: 'yes' | 'no';
+  idempotencyKey: string;
+  orderId: string;
 }
 
 export class ExecutionAgent {
@@ -500,6 +521,237 @@ export class ExecutionAgent {
       this.userOrders.delete(orderId);
       this.seenTradesByOrder.delete(orderId);
     }
+  }
+
+  async executeBasketArbitrage(
+    opportunity: ArbitrageOpportunity,
+    size: number,
+    context?: ExecutionContext
+  ): Promise<ExecutionResult> {
+    const nowMs = context?.nowMs ?? Date.now();
+    const idempotencyKey = createIdempotencyKey(`${opportunity.id}:basket:${size.toFixed(8)}`);
+    const executionId = `${idempotencyKey}:basket`;
+
+    if (opportunity.type !== 'fw_basket' || !opportunity.fwBasket || opportunity.fwBasket.markets.length === 0) {
+      return {
+        status: 'blocked',
+        reason: 'fw_basket_missing',
+        idempotencyKey,
+        executionId,
+        state: 'idle'
+      };
+    }
+
+    const mode = opportunity.fwBasket.executionMode ?? this.policy.fwBasketExecutionMode;
+    const legs = opportunity.fwBasket.markets;
+    this.ensureIdempotencyRecord(idempotencyKey, nowMs);
+    let basketState = createInitialBasketExecutionState({
+      id: executionId,
+      opportunityId: opportunity.id,
+      markets: legs.map((leg) => ({
+        marketId: leg.marketId,
+        yesTokenId: leg.yesTokenId,
+        noTokenId: leg.noTokenId
+      })),
+      createdAtMs: nowMs
+    });
+    const applyBasketEvent = (event: Parameters<typeof transitionBasketExecutionState>[1]): void => {
+      basketState = transitionBasketExecutionState(basketState, event);
+    };
+    const finalizeBasketFailure = (
+      reason: string,
+      atMs = Date.now(),
+      finalMode: 'batch_best_effort' | 'sequential_failfast' = mode,
+      fallbackUsed = false
+    ): ExecutionResult => {
+      this.markIdempotencyFailed(idempotencyKey, atMs);
+      applyBasketEvent({ type: 'FAILED', atMs, reason });
+      this.metrics?.record({
+        type: 'fw_basket',
+        timestamp: atMs,
+        data: {
+          event: 'basket_failed',
+          basketId: opportunity.fwBasket?.basketId,
+          reason,
+          mode,
+          markets: legs.length
+        }
+      });
+      return {
+        status: 'failed',
+        reason,
+        idempotencyKey,
+        executionId,
+        state: 'failed',
+        basket: { mode: finalMode, fallbackUsed, legs: basketState.legs }
+      };
+    };
+    const finalizeBasketSuccess = (
+      finalMode: 'batch_best_effort' | 'sequential_failfast',
+      fallbackUsed: boolean,
+      atMs = Date.now()
+    ): ExecutionResult => {
+      const record = this.getIdempotencyRecord(idempotencyKey);
+      if (record) {
+        this.saveIdempotencyRecord({
+          ...record,
+          status: 'confirmed',
+          updatedAt: atMs
+        });
+      }
+      applyBasketEvent({ type: 'COMPLETE', atMs });
+      this.metrics?.record({
+        type: 'fw_basket',
+        timestamp: atMs,
+        data: {
+          event: 'basket_complete',
+          basketId: opportunity.fwBasket?.basketId,
+          mode: finalMode,
+          fallbackUsed,
+          markets: legs.length
+        }
+      });
+      return {
+        status: 'submitted',
+        idempotencyKey,
+        executionId,
+        state: 'complete',
+        basket: { mode: finalMode, fallbackUsed, legs: basketState.legs }
+      };
+    };
+
+    if (mode === 'batch_best_effort') {
+      const batch = await this.trySubmitBasketBatch(opportunity, size, nowMs, idempotencyKey);
+      basketState = {
+        ...basketState,
+        legs: basketState.legs.map((currentLeg) => {
+          const nextLeg = batch.legs.find((candidate) => candidate.marketId === currentLeg.marketId);
+          return nextLeg ? { ...currentLeg, ...nextLeg } : currentLeg;
+        })
+      };
+      for (const leg of batch.legs) {
+        if (leg.state === 'blocked') continue;
+        if (leg.state === 'failed') {
+          applyBasketEvent({
+            type: 'LEG_FAILED',
+            atMs: nowMs,
+            marketId: leg.marketId,
+            reason: leg.reason
+          });
+          continue;
+        }
+        applyBasketEvent({ type: 'LEG_SUBMITTED', atMs: nowMs, marketId: leg.marketId });
+        if (leg.state === 'acked' || leg.state === 'filled') {
+          applyBasketEvent({ type: 'LEG_ACKED', atMs: nowMs, marketId: leg.marketId });
+        }
+      }
+
+      if (batch.outcome === 'submitted') {
+        if (this.userRealtime?.isConnected() && this.timeouts.fillTimeoutMs > 0 && batch.acceptedOrders.length > 0) {
+          const wait = await this.waitForBatchFillOutcomes(
+            batch.acceptedOrders,
+            size,
+            this.timeouts.fillTimeoutMs
+          );
+          if (!wait.allFilled) {
+            applyBasketEvent({ type: 'PARTIAL_FILL', atMs: wait.observedAtMs, reason: 'partial_fill' });
+            await this.cancelOutstandingBatchOrders(wait.outcomes, opportunity.id, wait.observedAtMs);
+
+            const filledMarketIds = Array.from(
+              new Set(
+                wait.outcomes
+                  .filter(({ outcome }) => outcome.fullyFilled || outcome.sizeMatched > 0)
+                  .map(({ order }) => order.marketId)
+              )
+            );
+            const filledLegs = legs.filter((leg) => filledMarketIds.includes(leg.marketId));
+            if (filledLegs.length > 0) {
+              applyBasketEvent({ type: 'START_UNWIND', atMs: wait.observedAtMs });
+              await this.unwindBasketLegs(opportunity, filledLegs, size, wait.observedAtMs);
+            }
+            return finalizeBasketFailure('partial_fill', wait.observedAtMs, mode, false);
+          }
+
+          for (const accepted of batch.acceptedOrders) {
+            applyBasketEvent({ type: 'LEG_FILLED', atMs: wait.observedAtMs, marketId: accepted.marketId });
+            const existing = this.getIdempotencyRecord(accepted.idempotencyKey);
+            if (existing) {
+              this.saveIdempotencyRecord({
+                ...existing,
+                orderId: accepted.orderId,
+                status: 'confirmed',
+                updatedAt: wait.observedAtMs
+              });
+            }
+          }
+          return finalizeBasketSuccess(mode, false, wait.observedAtMs);
+        }
+
+        return finalizeBasketSuccess(mode, false, nowMs);
+      }
+      if (batch.outcome === 'partial') {
+        return finalizeBasketFailure('batch_partial_accepted', nowMs, mode, false);
+      }
+    }
+
+    const successfulLegs: typeof legs = [];
+    for (const leg of legs) {
+      const legOpportunity = this.toBasketLegOpportunity(opportunity, leg, nowMs);
+      const legResult = await this.executeArbitrage(legOpportunity, size, { nowMs });
+      const legState: BasketExecutionLegState = {
+        marketId: leg.marketId,
+        yesTokenId: leg.yesTokenId,
+        noTokenId: leg.noTokenId,
+        state:
+          legResult.status === 'submitted'
+            ? 'filled'
+            : legResult.status === 'blocked'
+              ? 'blocked'
+              : 'failed',
+        executionId: legResult.executionId,
+        idempotencyKey: legResult.idempotencyKey,
+        reason: legResult.reason
+      };
+      basketState = {
+        ...basketState,
+        legs: basketState.legs.map((currentLeg) =>
+          currentLeg.marketId === leg.marketId ? { ...currentLeg, ...legState } : currentLeg
+        )
+      };
+      if (legResult.status === 'submitted') {
+        applyBasketEvent({ type: 'LEG_FILLED', atMs: nowMs, marketId: leg.marketId });
+      } else if (legResult.status === 'blocked') {
+        applyBasketEvent({ type: 'LEG_CANCELLED', atMs: nowMs, marketId: leg.marketId, reason: legResult.reason });
+      } else {
+        applyBasketEvent({ type: 'LEG_FAILED', atMs: nowMs, marketId: leg.marketId, reason: legResult.reason });
+      }
+
+      if (legResult.status === 'submitted') {
+        successfulLegs.push(leg);
+        continue;
+      }
+
+      if (successfulLegs.length > 0) {
+        applyBasketEvent({ type: 'PARTIAL_FILL', atMs: nowMs, reason: 'partial_fill' });
+        applyBasketEvent({ type: 'START_UNWIND', atMs: nowMs });
+        await this.unwindBasketLegs(opportunity, successfulLegs, size, nowMs);
+        return finalizeBasketFailure(
+          'partial_fill',
+          nowMs,
+          'sequential_failfast',
+          mode === 'batch_best_effort'
+        );
+      }
+
+      return finalizeBasketFailure(
+        legResult.reason ?? 'order_failed',
+        nowMs,
+        'sequential_failfast',
+        mode === 'batch_best_effort'
+      );
+    }
+
+    return finalizeBasketSuccess('sequential_failfast', mode === 'batch_best_effort', nowMs);
   }
 
   async executeArbitrage(
@@ -1613,6 +1865,292 @@ export class ExecutionAgent {
     );
   }
 
+  private toBasketLegOpportunity(
+    basketOpportunity: ArbitrageOpportunity,
+    leg: NonNullable<ArbitrageOpportunity['fwBasket']>['markets'][number],
+    nowMs: number
+  ): ArbitrageOpportunity {
+    return {
+      id: fwOpportunityId(leg.marketId, leg.projectedEdge, leg.edgeLowerBound, nowMs),
+      marketId: leg.marketId,
+      yesTokenId: leg.yesTokenId,
+      noTokenId: leg.noTokenId,
+      yesPrice: leg.yesPrice,
+      noPrice: leg.noPrice,
+      costPerSet: leg.costPerSet,
+      edge: leg.edgeLowerBound,
+      tickSize: leg.tickSize,
+      maxSizeByDepth: leg.maxSizeByDepth,
+      minOrderSize: leg.minOrderSize,
+      detectedAt: basketOpportunity.detectedAt,
+      gateReasons: [],
+      pair: {
+        marketId: leg.marketId,
+        yesTokenId: leg.yesTokenId,
+        noTokenId: leg.noTokenId
+      },
+      type: 'fw_projection',
+      fw: basketOpportunity.fw
+    };
+  }
+
+  private async trySubmitBasketBatch(
+    opportunity: ArbitrageOpportunity,
+    size: number,
+    nowMs: number,
+    basketIdempotencyKey: string
+  ): Promise<{
+    outcome: 'submitted' | 'partial' | 'fallback';
+    legs: BasketExecutionLegState[];
+    acceptedOrders: BasketBatchAcceptedOrder[];
+  }> {
+    const legs = opportunity.fwBasket?.markets ?? [];
+    if (legs.length === 0) return { outcome: 'fallback', legs: [], acceptedOrders: [] };
+
+    const payloadOrders: Record<string, unknown>[] = [];
+    const orderMetadata: BasketBatchOrderMetadata[] = [];
+    const legStates: BasketExecutionLegState[] = [];
+    for (const leg of legs) {
+      const legIdempotencyKey = `${basketIdempotencyKey}:${leg.marketId}`;
+      const yesIdempotencyKey = `${legIdempotencyKey}:yes`;
+      const noIdempotencyKey = `${legIdempotencyKey}:no`;
+      const yesRecord = this.ensureIdempotencyRecord(yesIdempotencyKey, nowMs);
+      const noRecord = this.ensureIdempotencyRecord(noIdempotencyKey, nowMs);
+      legStates.push({
+        marketId: leg.marketId,
+        yesTokenId: leg.yesTokenId,
+        noTokenId: leg.noTokenId,
+        idempotencyKey: legIdempotencyKey,
+        state: 'pending'
+      });
+
+      payloadOrders.push(
+        {
+          ...toClobOrderPayload(
+            buildFokBuyOrder({
+              tokenId: leg.yesTokenId,
+              size,
+              price: leg.yesPrice,
+              clientOrderId: yesIdempotencyKey
+            })
+          ),
+          nonce: coerceNonceValue(yesRecord.nonce)
+        },
+        {
+          ...toClobOrderPayload(
+            buildFokBuyOrder({
+              tokenId: leg.noTokenId,
+              size,
+              price: leg.noPrice,
+              clientOrderId: noIdempotencyKey
+            })
+          ),
+          nonce: coerceNonceValue(noRecord.nonce)
+        }
+      );
+      orderMetadata.push(
+        { marketId: leg.marketId, side: 'yes', idempotencyKey: yesIdempotencyKey },
+        { marketId: leg.marketId, side: 'no', idempotencyKey: noIdempotencyKey }
+      );
+    }
+
+    try {
+      const response = await withTimeout(
+        this.clob.createBatchOrders({ orders: payloadOrders }),
+        this.timeouts.submitTimeoutMs,
+        'batch_submit'
+      );
+      const parsed = parseBatchOutcome(response, payloadOrders.length);
+      const accepted = new Set(parsed.acceptedIndices);
+      const acceptedOrders: BasketBatchAcceptedOrder[] = [];
+      const acceptedByMarket = new Map<string, Set<'yes' | 'no'>>();
+      for (const index of parsed.acceptedIndices) {
+        const metadata = orderMetadata[index];
+        if (!metadata) continue;
+        const record = this.getIdempotencyRecord(metadata.idempotencyKey);
+        const payload = parsed.candidateOrders?.[index];
+        const order = coerceOrderResponse(payload);
+        const orderId = extractOrderId(order) ?? record?.orderId;
+        if (record) {
+          this.saveIdempotencyRecord({
+            ...record,
+            orderId,
+            status: 'submitted',
+            updatedAt: nowMs
+          });
+        }
+        if (orderId) {
+          acceptedOrders.push({
+            marketId: metadata.marketId,
+            side: metadata.side,
+            idempotencyKey: metadata.idempotencyKey,
+            orderId
+          });
+        }
+        const perMarket = acceptedByMarket.get(metadata.marketId) ?? new Set<'yes' | 'no'>();
+        perMarket.add(metadata.side);
+        acceptedByMarket.set(metadata.marketId, perMarket);
+      }
+
+      for (let index = 0; index < orderMetadata.length; index += 1) {
+        if (accepted.has(index)) continue;
+        const metadata = orderMetadata[index];
+        this.markIdempotencyFailed(metadata.idempotencyKey, nowMs);
+      }
+
+      const nextLegStates = legStates.map((leg) => {
+        const acceptedSides = acceptedByMarket.get(leg.marketId);
+        if (acceptedSides?.has('yes') && acceptedSides?.has('no')) {
+          return { ...leg, state: 'acked' as const };
+        }
+        if (acceptedSides && acceptedSides.size > 0) {
+          return { ...leg, state: 'failed' as const, reason: 'batch_partial' };
+        }
+        return {
+          ...leg,
+          state: 'failed' as const,
+          reason: parsed.outcome === 'fallback' ? 'batch_fallback' : 'batch_partial'
+        };
+      });
+
+      if (parsed.outcome === 'fallback') {
+        this.metrics?.record({
+          type: 'fw_basket',
+          timestamp: nowMs,
+          data: { event: 'batch_fallback', basketId: opportunity.fwBasket?.basketId, legs: legs.length }
+        });
+      }
+
+      return { outcome: parsed.outcome, legs: nextLegStates, acceptedOrders };
+    } catch (error) {
+      for (const metadata of orderMetadata) {
+        this.markIdempotencyFailed(metadata.idempotencyKey, nowMs);
+      }
+      this.metrics?.record({
+        type: 'fw_basket',
+        timestamp: nowMs,
+        data: {
+          event: 'batch_fallback',
+          basketId: opportunity.fwBasket?.basketId,
+          legs: legs.length,
+          error: error instanceof Error ? error.message : String(error)
+        }
+      });
+      return {
+        outcome: 'fallback',
+        legs: legStates.map((leg) => ({ ...leg, state: 'failed', reason: 'batch_fallback' })),
+        acceptedOrders: []
+      };
+    }
+  }
+
+  private async waitForBatchFillOutcomes(
+    acceptedOrders: BasketBatchAcceptedOrder[],
+    size: number,
+    timeoutMs: number
+  ): Promise<{
+    allFilled: boolean;
+    outcomes: Array<{ order: BasketBatchAcceptedOrder; outcome: UserFillOutcome }>;
+    observedAtMs: number;
+  }> {
+    const outcomes = await Promise.all(
+      acceptedOrders.map(async (order) => {
+        const outcome = await this.waitForFillOutcome(order.orderId, size, timeoutMs);
+        return { order, outcome };
+      })
+    );
+    const observedAtMs = outcomes.reduce(
+      (max, entry) => Math.max(max, entry.outcome.observedAtMs),
+      Date.now()
+    );
+    return {
+      allFilled: outcomes.every((entry) => entry.outcome.fullyFilled),
+      outcomes,
+      observedAtMs
+    };
+  }
+
+  private async cancelOutstandingBatchOrders(
+    outcomes: Array<{ order: BasketBatchAcceptedOrder; outcome: UserFillOutcome }>,
+    opportunityId: string,
+    nowMs: number
+  ): Promise<void> {
+    const outstanding = outcomes.filter((entry) => !entry.outcome.fullyFilled);
+    for (const entry of outstanding) {
+      try {
+        await withTimeout(
+          this.clob.cancelOrder(entry.order.orderId),
+          this.timeouts.cancelTimeoutMs,
+          'batch_cancel'
+        );
+        this.markIdempotencyFailed(entry.order.idempotencyKey, nowMs);
+      } catch (error) {
+        this.incidentTracker?.record({
+          marketId: entry.order.marketId,
+          reason: 'order_cancel_failed',
+          timestamp: nowMs,
+          opportunityId,
+          detail: {
+            orderId: entry.order.orderId,
+            error: error instanceof Error ? error.message : String(error)
+          }
+        });
+      }
+    }
+  }
+
+  private async unwindBasketLegs(
+    basketOpportunity: ArbitrageOpportunity,
+    legs: NonNullable<ArbitrageOpportunity['fwBasket']>['markets'],
+    size: number,
+    nowMs: number
+  ): Promise<void> {
+    for (const leg of legs) {
+      const unwindYesPrice = this.calculateUnwindPrice(
+        leg.yesPrice,
+        leg.tickSize,
+        { marketId: leg.marketId, opportunityId: basketOpportunity.id, nowMs }
+      );
+      const unwindNoPrice = this.calculateUnwindPrice(
+        leg.noPrice,
+        leg.tickSize,
+        { marketId: leg.marketId, opportunityId: basketOpportunity.id, nowMs }
+      );
+      const yesPayload = toClobOrderPayload(
+        buildFakSellOrder({
+          tokenId: leg.yesTokenId,
+          size,
+          price: unwindYesPrice,
+          clientOrderId: `${basketOpportunity.id}:${leg.marketId}:yes:basket_unwind`
+        })
+      );
+      const noPayload = toClobOrderPayload(
+        buildFakSellOrder({
+          tokenId: leg.noTokenId,
+          size,
+          price: unwindNoPrice,
+          clientOrderId: `${basketOpportunity.id}:${leg.marketId}:no:basket_unwind`
+        })
+      );
+      try {
+        await Promise.all([
+          withTimeout(this.clob.createOrder(yesPayload), this.timeouts.submitTimeoutMs, 'basket_unwind_yes'),
+          withTimeout(this.clob.createOrder(noPayload), this.timeouts.submitTimeoutMs, 'basket_unwind_no')
+        ]);
+      } catch (error) {
+        this.incidentTracker?.record({
+          marketId: leg.marketId,
+          reason: 'unwind_failed',
+          timestamp: Date.now(),
+          opportunityId: basketOpportunity.id,
+          detail: {
+            message: error instanceof Error ? error.message : String(error ?? 'unwind_failed')
+          }
+        });
+      }
+    }
+  }
+
   private async executeEvOrder(
     opportunity: ArbitrageOpportunity,
     size: number,
@@ -2124,6 +2662,61 @@ export class ExecutionAgent {
 
     return next;
   }
+}
+
+function parseBatchOutcome(
+  response: unknown,
+  expectedOrders: number
+): {
+  outcome: 'submitted' | 'partial' | 'fallback';
+  acceptedIndices: number[];
+  candidateOrders?: unknown[];
+} {
+  const arrayPayload = Array.isArray(response) ? response : null;
+  const objectPayload = response && typeof response === 'object' ? (response as Record<string, unknown>) : null;
+  const candidateOrders =
+    arrayPayload ??
+    (Array.isArray(objectPayload?.orders)
+      ? (objectPayload!.orders as unknown[])
+      : Array.isArray(objectPayload?.results)
+      ? (objectPayload!.results as unknown[])
+      : null);
+  if (candidateOrders) {
+    const acceptedIndices: number[] = [];
+    for (let index = 0; index < candidateOrders.length; index += 1) {
+      const order = candidateOrders[index];
+      if (!isOrderFailure(order) && !isDelayedOrderResponse(order)) {
+        acceptedIndices.push(index);
+      }
+    }
+    const accepted = acceptedIndices.length;
+    if (accepted >= expectedOrders && expectedOrders > 0) {
+      return { outcome: 'submitted', acceptedIndices, candidateOrders };
+    }
+    if (accepted > 0) {
+      return { outcome: 'partial', acceptedIndices, candidateOrders };
+    }
+    return { outcome: 'fallback', acceptedIndices: [], candidateOrders };
+  }
+
+  const acceptedCountRaw = objectPayload?.acceptedCount ?? objectPayload?.accepted;
+  const acceptedCount =
+    typeof acceptedCountRaw === 'number' && Number.isFinite(acceptedCountRaw) ? acceptedCountRaw : undefined;
+  if (acceptedCount !== undefined) {
+    const bounded = Math.max(0, Math.min(expectedOrders, Math.floor(acceptedCount)));
+    const acceptedIndices = Array.from({ length: bounded }, (_unused, index) => index);
+    if (acceptedCount >= expectedOrders && expectedOrders > 0) {
+      return { outcome: 'submitted', acceptedIndices };
+    }
+    if (acceptedCount > 0) {
+      return { outcome: 'partial', acceptedIndices };
+    }
+    return { outcome: 'fallback', acceptedIndices: [] };
+  }
+
+  const success = objectPayload?.success;
+  if (success === true) return { outcome: 'partial', acceptedIndices: [] };
+  return { outcome: 'fallback', acceptedIndices: [] };
 }
 
 function applyMultiplier(timeoutMs: number, multiplier: number): number {

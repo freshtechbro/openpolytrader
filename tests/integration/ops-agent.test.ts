@@ -92,6 +92,26 @@ describe('Ops API auth', () => {
     await app.close();
   });
 
+  it('accepts session cookie auth after runtime login', async () => {
+    const app = buildServer();
+    const login = await app.inject({
+      method: 'POST',
+      url: '/ops/session',
+      payload: { token }
+    });
+    expect(login.statusCode).toBe(200);
+
+    const cookie = login.headers['set-cookie'];
+    const cookieHeader = Array.isArray(cookie) ? cookie[0] : cookie;
+    const response = await app.inject({
+      method: 'GET',
+      url: '/health',
+      headers: { cookie: cookieHeader ?? '' }
+    });
+    expect(response.statusCode).toBe(200);
+    await app.close();
+  });
+
   it('rejects stream requests without a token', async () => {
     const app = buildServer();
     const response = await app.inject({ method: 'GET', url: '/stream' });

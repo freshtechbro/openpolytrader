@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  createInitialBasketExecutionState,
   createInitialExecutionState,
   transitionExecutionState,
+  transitionBasketExecutionState,
   getRequiredAction,
   type ExecutionState,
   type ExecutionAction,
@@ -305,5 +307,83 @@ describe('execution state machine', () => {
 
   it('falls back to none for unknown states', () => {
     expect(getRequiredAction('bogus' as unknown as ExecutionState)).toBe('none');
+  });
+});
+
+describe('basket execution state machine', () => {
+  it('initializes basket state with pending legs', () => {
+    const state = createInitialBasketExecutionState({
+      id: 'basket-exec-1',
+      opportunityId: 'opp-basket-1',
+      createdAtMs: 2000,
+      markets: [
+        { marketId: 'm1', yesTokenId: 'yes-1', noTokenId: 'no-1', idempotencyKey: 'k1' },
+        { marketId: 'm2', yesTokenId: 'yes-2', noTokenId: 'no-2', idempotencyKey: 'k2' }
+      ]
+    });
+
+    expect(state.state).toBe('submitted');
+    expect(state.legs).toHaveLength(2);
+    expect(state.legs.every((leg) => leg.state === 'pending')).toBe(true);
+  });
+
+  it('transitions leg lifecycle and completes', () => {
+    const initial = createInitialBasketExecutionState({
+      id: 'basket-exec-2',
+      opportunityId: 'opp-basket-2',
+      createdAtMs: 2100,
+      markets: [{ marketId: 'm1', yesTokenId: 'yes-1', noTokenId: 'no-1' }]
+    });
+
+    const submitted = transitionBasketExecutionState(initial, {
+      type: 'LEG_SUBMITTED',
+      atMs: 2101,
+      marketId: 'm1'
+    });
+    expect(submitted.legs[0]?.state).toBe('submitted');
+
+    const acked = transitionBasketExecutionState(submitted, {
+      type: 'LEG_ACKED',
+      atMs: 2102,
+      marketId: 'm1'
+    });
+    expect(acked.legs[0]?.state).toBe('acked');
+
+    const filled = transitionBasketExecutionState(acked, {
+      type: 'LEG_FILLED',
+      atMs: 2103,
+      marketId: 'm1'
+    });
+    expect(filled.legs[0]?.state).toBe('filled');
+
+    const complete = transitionBasketExecutionState(filled, { type: 'COMPLETE', atMs: 2104 });
+    expect(complete.state).toBe('complete');
+  });
+
+  it('handles partial-fill unwind failure path', () => {
+    const initial = createInitialBasketExecutionState({
+      id: 'basket-exec-3',
+      opportunityId: 'opp-basket-3',
+      createdAtMs: 2200,
+      markets: [{ marketId: 'm1', yesTokenId: 'yes-1', noTokenId: 'no-1' }]
+    });
+
+    const partial = transitionBasketExecutionState(initial, {
+      type: 'PARTIAL_FILL',
+      atMs: 2201,
+      reason: 'partial_fill'
+    });
+    expect(partial.state).toBe('partial_fill');
+
+    const unwinding = transitionBasketExecutionState(partial, { type: 'START_UNWIND', atMs: 2202 });
+    expect(unwinding.state).toBe('unwinding');
+
+    const failed = transitionBasketExecutionState(unwinding, {
+      type: 'UNWIND_FAILED',
+      atMs: 2203,
+      reason: 'unwind_failed'
+    });
+    expect(failed.state).toBe('failed');
+    expect(failed.error).toBe('unwind_failed');
   });
 });

@@ -5,7 +5,12 @@ import type { MarketPair } from '../domain/market.js';
 import { opportunityId, type ArbitrageOpportunity } from '../domain/opportunity.js';
 import { depthAtTopLevels } from '../domain/orderbook.js';
 import type { OrderBookState } from '../domain/orderbook.js';
-import { evaluateEvGates, evaluateGatesWithFees } from '../domain/gates.js';
+import {
+  evaluateEvGates,
+  evaluateFwBasketGates,
+  evaluateFwProjectionGates,
+  evaluateGatesWithFees
+} from '../domain/gates.js';
 import { createUniformTakerFeeModel } from '../domain/feeModel.js';
 import { MarketDataAgent, type MarketUpdateEvent } from '../agents/market-data/MarketDataAgent.js';
 import { ScannerAgent } from '../agents/scanner/ScannerAgent.js';
@@ -27,6 +32,7 @@ import type { LLMCallResult, LLMAgentId, LLMRequest } from '../services/llm/type
 import type { ExecutionAdvisor } from '../agents/execution/ExecutionAdvisor.js';
 import type { RiskAdvisor } from '../agents/risk/RiskAdvisor.js';
 import type { SignalAggregatorAgent } from '../agents/signal/SignalAggregatorAgent.js';
+import type { FwProjectionAgent } from '../agents/projection/FwProjectionAgent.js';
 import { normalizeReasonKey, shouldEmitScopedReason } from '../utils/eventDedupe.js';
 
 const GATE_REJECTION_EMISSION_COOLDOWN_MS = 3000;
@@ -98,6 +104,7 @@ export interface SupervisorDeps {
   executionAdvisor?: ExecutionAdvisor;
   riskAdvisor?: RiskAdvisor;
   signalAggregator?: SignalAggregatorAgent;
+  fwProjectionAgent?: FwProjectionAgent;
 }
 
 export class Supervisor {
@@ -117,6 +124,11 @@ export class Supervisor {
   private started = false;
   private nearZeroFeeModel = createUniformTakerFeeModel(0);
   private gateRejectionEmissionState = new Map<string, { reasonKey: string; timestampMs: number }>();
+  private fwScanInFlight = false;
+  private fwScanPending = false;
+  private fwDeferredScanTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastFwScanStartedAtMs = 0;
+  private readonly fwScanMinIntervalMs = 250;
   private metricIncidentHandler: ((event: MetricEvent) => void) | null = null;
   private marketUpdatedHandler: ((payload: unknown) => void) | null = null;
   private opportunityDetectedHandler: ((payload: unknown) => void) | null = null;
@@ -149,6 +161,7 @@ export class Supervisor {
       tradingMode: config.tradingMode,
       metrics: deps.metrics,
       eventStore: deps.eventStore,
+      fwProjectionAgent: deps.fwProjectionAgent,
       llm: deps.llm
         ? {
             config: deps.llm.config,
@@ -165,7 +178,9 @@ export class Supervisor {
         fallbackTickSize: config.policy.fallbackTickSize,
         depthBufferMultiplier: config.policy.depthBufferMultiplier,
         evMaxPerMarketNotional: config.policy.evMaxPerMarketNotional,
-        evMaxPortfolioNotional: config.policy.evMaxPortfolioNotional
+        evMaxPortfolioNotional: config.policy.evMaxPortfolioNotional,
+        fwMaxPerMarketNotional: config.policy.fwMaxPerMarketNotional,
+        fwMaxPortfolioNotional: config.policy.fwMaxPortfolioNotional
       },
       { advisor: deps.riskAdvisor }
     );
@@ -272,6 +287,13 @@ export class Supervisor {
       clearInterval(this.bookRefreshInterval);
       this.bookRefreshInterval = null;
     }
+
+    if (this.fwDeferredScanTimer) {
+      clearTimeout(this.fwDeferredScanTimer);
+      this.fwDeferredScanTimer = null;
+    }
+    this.fwScanPending = false;
+    this.fwScanInFlight = false;
 
     if (this.reconciliationAfterIncident) {
       clearTimeout(this.reconciliationAfterIncident);
@@ -438,27 +460,118 @@ export class Supervisor {
     for (const pair of pairs) {
       const opportunity = this.scanner.scanPair(pair, orderbooks, now);
       if (opportunity) {
-        this.deps.metrics.record({
-          type: 'opportunity',
-          timestamp: now,
-          data: {
-            id: opportunity.id,
-            marketId: opportunity.marketId,
-            edge: opportunity.edge,
-            maxSizeByDepth: opportunity.maxSizeByDepth
-          }
-        });
+        this.recordOpportunity(now, opportunity);
         opportunities.push(opportunity);
       }
     }
 
-    if (opportunities.length === 0) return;
+    const fwOpportunities = await this.scanFwUniverseCoalesced(orderbooks, pairs, now);
+    for (const fwOpportunity of fwOpportunities) {
+      this.recordOpportunity(now, fwOpportunity);
+      opportunities.push(fwOpportunity);
+    }
 
-    const ordered = await this.scanner.prioritizeOpportunities(opportunities, now);
-    if (this.config.tradingMode !== 'shadow') {
-      for (const opportunity of ordered) {
-        messageBus.emit('opportunity:detected', { opportunity });
+    await this.emitOrderedOpportunities(opportunities, now);
+  }
+
+  private async scanFwUniverseCoalesced(
+    orderbooks: Map<string, OrderBookState>,
+    pairs: MarketPair[],
+    now: number
+  ): Promise<ArbitrageOpportunity[]> {
+    if (this.fwScanInFlight) {
+      this.fwScanPending = true;
+      return [];
+    }
+
+    const sinceLastStart = now - this.lastFwScanStartedAtMs;
+    if (sinceLastStart < this.fwScanMinIntervalMs) {
+      this.fwScanPending = true;
+      this.scheduleDeferredFwScan(this.fwScanMinIntervalMs - sinceLastStart);
+      return [];
+    }
+
+    this.lastFwScanStartedAtMs = now;
+    this.fwScanInFlight = true;
+    try {
+      return await this.scanFwUniverse(orderbooks, pairs, now);
+    } finally {
+      this.fwScanInFlight = false;
+      if (this.fwScanPending) {
+        this.fwScanPending = false;
+        this.scheduleDeferredFwScan(this.fwScanMinIntervalMs);
       }
+    }
+  }
+
+  private scheduleDeferredFwScan(delayMs: number): void {
+    if (this.fwDeferredScanTimer) return;
+    this.fwDeferredScanTimer = setTimeout(() => {
+      this.fwDeferredScanTimer = null;
+      void this.runDeferredFwScan();
+    }, Math.max(0, delayMs));
+  }
+
+  private async runDeferredFwScan(): Promise<void> {
+    if (!this.started) return;
+    const now = Date.now();
+    const fwOpportunities = await this.scanFwUniverseCoalesced(
+      this.getOrderbookMap(),
+      this.config.marketPairs,
+      now
+    );
+    for (const fwOpportunity of fwOpportunities) {
+      this.recordOpportunity(now, fwOpportunity);
+    }
+    await this.emitOrderedOpportunities(fwOpportunities, now);
+  }
+
+  private async scanFwUniverse(
+    orderbooks: Map<string, OrderBookState>,
+    pairs: MarketPair[],
+    now: number
+  ): Promise<ArbitrageOpportunity[]> {
+    const marketUniverse = this.config.marketPairs.map((pair) => ({
+      marketId: pair.marketId,
+      yesTokenId: pair.yesTokenId,
+      noTokenId: pair.noTokenId,
+      question: pair.question,
+      category: pair.category,
+      tags: pair.tags
+    }));
+
+    if (typeof (this.scanner as unknown as { scanFwUniverse?: unknown }).scanFwUniverse === 'function') {
+      return this.scanner.scanFwUniverse(orderbooks, marketUniverse, now);
+    }
+
+    const opportunities: ArbitrageOpportunity[] = [];
+    for (const pair of pairs) {
+      const fwOpportunity = await this.scanner.scanFwPair(pair, orderbooks, now, marketUniverse);
+      if (!fwOpportunity) continue;
+      opportunities.push(fwOpportunity);
+    }
+    return opportunities;
+  }
+
+  private recordOpportunity(now: number, opportunity: ArbitrageOpportunity): void {
+    this.deps.metrics.record({
+      type: 'opportunity',
+      timestamp: now,
+      data: {
+        id: opportunity.id,
+        marketId: opportunity.marketId,
+        edge: opportunity.edge,
+        maxSizeByDepth: opportunity.maxSizeByDepth
+      }
+    });
+  }
+
+  private async emitOrderedOpportunities(opportunities: ArbitrageOpportunity[], now: number): Promise<void> {
+    if (opportunities.length === 0) return;
+    const ordered = await this.scanner.prioritizeOpportunities(opportunities, now);
+    if (this.config.tradingMode === 'shadow') return;
+    for (const opportunity of ordered) {
+      messageBus.emit('opportunity:detected', { opportunity });
     }
   }
 
@@ -499,12 +612,17 @@ export class Supervisor {
 
   private async handleRiskApproved(payload: { opportunity: ArbitrageOpportunity; size: number }): Promise<void> {
     const now = Date.now();
-    const marketId = payload.opportunity.marketId;
+    const isBasket = payload.opportunity.type === 'fw_basket' && Array.isArray(payload.opportunity.fwBasket?.markets);
+    const basketMarkets = isBasket
+      ? payload.opportunity.fwBasket!.markets.map((market) => market.marketId)
+      : [payload.opportunity.marketId];
+    const marketId = basketMarkets[0] ?? payload.opportunity.marketId;
 
-    if (this.marketCircuitBreakers.isOpen(marketId)) {
+    const openCircuitMarket = basketMarkets.find((candidate) => this.marketCircuitBreakers.isOpen(candidate));
+    if (openCircuitMarket) {
       this.recordGateRejection(now, payload.opportunity.id, marketId, ['circuit_breaker']);
       this.deps.incidentTracker.record({
-        marketId,
+        marketId: openCircuitMarket,
         reason: 'circuit_breaker',
         timestamp: now,
         opportunityId: payload.opportunity.id,
@@ -514,24 +632,34 @@ export class Supervisor {
     }
 
     const maxConcurrentMarkets = this.config.maxConcurrentMarkets ?? 0;
-    if (maxConcurrentMarkets > 0 && this.inFlightMarkets.size >= maxConcurrentMarkets) {
+    const newReservations = basketMarkets.filter((candidate) => !this.inFlightMarkets.has(candidate));
+    const projectedInFlight = this.inFlightMarkets.size + newReservations.length;
+    if (maxConcurrentMarkets > 0 && projectedInFlight > maxConcurrentMarkets) {
       this.recordGateRejection(now, payload.opportunity.id, marketId, ['max_concurrent_markets']);
       return;
     }
 
-    const requiredCapital = Math.max(0, payload.size * payload.opportunity.costPerSet);
+    const requiredCapital = Math.max(
+      0,
+      isBasket
+        ? payload.size *
+            payload.opportunity.fwBasket!.markets.reduce((sum, market) => sum + market.costPerSet, 0)
+        : payload.size * payload.opportunity.costPerSet
+    );
     const maxCapitalInFlight = this.config.maxCapitalInFlight ?? 0;
     if (maxCapitalInFlight > 0 && requiredCapital > 0 && this.capitalInFlight + requiredCapital > maxCapitalInFlight) {
       this.recordGateRejection(now, payload.opportunity.id, marketId, ['capital_in_flight']);
       return;
     }
 
-    if (this.inFlightMarkets.has(marketId)) {
+    if (basketMarkets.some((candidate) => this.inFlightMarkets.has(candidate))) {
       this.recordGateRejection(now, payload.opportunity.id, marketId, ['market_in_flight']);
       return;
     }
 
-    this.inFlightMarkets.add(marketId);
+    for (const reservation of basketMarkets) {
+      this.inFlightMarkets.add(reservation);
+    }
     this.capitalInFlight += requiredCapital;
     try {
       const yesBook = this.marketData.getOrderBook(payload.opportunity.yesTokenId);
@@ -542,37 +670,61 @@ export class Supervisor {
       }
 
       const isEv = payload.opportunity.type === 'ev';
+      const isFw = payload.opportunity.type === 'fw_projection';
       if (isEv && !payload.opportunity.side) {
         this.recordGateRejection(now, payload.opportunity.id, marketId, ['ev_missing_side']);
         return;
       }
+      if (isFw && !payload.opportunity.fw) {
+        this.recordGateRejection(now, payload.opportunity.id, marketId, ['fw_projection_missing']);
+        return;
+      }
 
-      const gateDecision = isEv
-        ? evaluateEvGates({
-            yesBook,
-            noBook,
+      const gateDecision = isBasket
+        ? evaluateFwBasketGates({
             policy: this.config.policy,
             nowMs: now,
             desiredSize: payload.size,
-            side: payload.opportunity.side as 'yes' | 'no',
-            evEdge:
-              typeof payload.opportunity.evNet === 'number'
-                ? payload.opportunity.evNet
-                : typeof payload.opportunity.evRaw === 'number'
-                  ? payload.opportunity.evRaw
-                  : 0,
-            confidence:
-              typeof payload.opportunity.modelConfidence === 'number' ? payload.opportunity.modelConfidence : 0
+            projectionAgeMs: payload.opportunity.fw?.projectionAgeMs ?? 0,
+            aggregateEdgeLowerBound: payload.opportunity.edge,
+            markets: payload.opportunity.fwBasket!.markets,
+            orderbooks: this.getOrderbookMap()
           })
-        : evaluateGatesWithFees({
-            yesBook,
-            noBook,
-            policy: this.config.policy,
-            nowMs: now,
-            desiredSize: payload.size,
-            venue: 'polymarket',
-            feeModel: this.nearZeroFeeModel
-          });
+        : isFw
+          ? evaluateFwProjectionGates({
+              yesBook,
+              noBook,
+              policy: this.config.policy,
+              nowMs: now,
+              desiredSize: payload.size,
+              projection: payload.opportunity.fw!
+            })
+          : isEv
+            ? evaluateEvGates({
+              yesBook,
+              noBook,
+              policy: this.config.policy,
+              nowMs: now,
+              desiredSize: payload.size,
+              side: payload.opportunity.side as 'yes' | 'no',
+              evEdge:
+                typeof payload.opportunity.evNet === 'number'
+                  ? payload.opportunity.evNet
+                  : typeof payload.opportunity.evRaw === 'number'
+                    ? payload.opportunity.evRaw
+                    : 0,
+              confidence:
+                typeof payload.opportunity.modelConfidence === 'number' ? payload.opportunity.modelConfidence : 0
+              })
+            : evaluateGatesWithFees({
+              yesBook,
+              noBook,
+              policy: this.config.policy,
+              nowMs: now,
+              desiredSize: payload.size,
+              venue: 'polymarket',
+              feeModel: this.nearZeroFeeModel
+              });
 
       if (!gateDecision.passed) {
         this.recordGateRejection(now, payload.opportunity.id, marketId, gateDecision.reasons, gateDecision);
@@ -589,30 +741,36 @@ export class Supervisor {
         cumulativeMs: Math.max(0, gateMs - payload.opportunity.detectedAt)
       });
 
-      const result = await this.execution.executeArbitrage(payload.opportunity, payload.size, {
-        yesBook,
-        noBook,
-        nowMs: now
-      });
+      const result = isBasket
+        ? await this.execution.executeBasketArbitrage(payload.opportunity, payload.size, {
+            nowMs: now
+          })
+        : await this.execution.executeArbitrage(payload.opportunity, payload.size, {
+            yesBook,
+            noBook,
+            nowMs: now
+          });
 
-      const beforeState = this.marketCircuitBreakers.get(marketId).getState();
-      if (result.status === 'submitted') {
-        this.marketCircuitBreakers.recordSuccess(marketId);
-      } else if (result.status === 'failed') {
-        this.marketCircuitBreakers.recordFailure(marketId);
-      }
-      const afterState = this.marketCircuitBreakers.get(marketId).getState();
-      if (beforeState !== 'open' && afterState === 'open') {
-        this.deps.incidentTracker.record({
-          marketId,
-          reason: 'circuit_breaker',
-          timestamp: Date.now(),
-          opportunityId: payload.opportunity.id,
-          detail: {
-            message: 'market circuit breaker opened',
-            failures: this.marketCircuitBreakers.get(marketId).getFailureCount()
-          }
-        });
+      for (const affectedMarket of basketMarkets) {
+        const beforeState = this.marketCircuitBreakers.get(affectedMarket).getState();
+        if (result.status === 'submitted') {
+          this.marketCircuitBreakers.recordSuccess(affectedMarket);
+        } else if (result.status === 'failed') {
+          this.marketCircuitBreakers.recordFailure(affectedMarket);
+        }
+        const afterState = this.marketCircuitBreakers.get(affectedMarket).getState();
+        if (beforeState !== 'open' && afterState === 'open') {
+          this.deps.incidentTracker.record({
+            marketId: affectedMarket,
+            reason: 'circuit_breaker',
+            timestamp: Date.now(),
+            opportunityId: payload.opportunity.id,
+            detail: {
+              message: 'market circuit breaker opened',
+              failures: this.marketCircuitBreakers.get(affectedMarket).getFailureCount()
+            }
+          });
+        }
       }
 
       this.deps.metrics.record({
@@ -628,7 +786,9 @@ export class Supervisor {
         data: { message }
       });
     } finally {
-      this.inFlightMarkets.delete(marketId);
+      for (const reservation of basketMarkets) {
+        this.inFlightMarkets.delete(reservation);
+      }
       this.capitalInFlight = Math.max(0, this.capitalInFlight - requiredCapital);
     }
   }
@@ -709,7 +869,9 @@ export class Supervisor {
       fallbackTickSize: policy.fallbackTickSize,
       depthBufferMultiplier: policy.depthBufferMultiplier,
       evMaxPerMarketNotional: policy.evMaxPerMarketNotional,
-      evMaxPortfolioNotional: policy.evMaxPortfolioNotional
+      evMaxPortfolioNotional: policy.evMaxPortfolioNotional,
+      fwMaxPerMarketNotional: policy.fwMaxPerMarketNotional,
+      fwMaxPortfolioNotional: policy.fwMaxPortfolioNotional
     });
     this.execution.updatePolicy(policy);
     this.execution.updateRiskConfig(risk);

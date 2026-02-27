@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 BACKEND_PID_FILE="$ROOT_DIR/tmp/backend.pid"
 DASHBOARD_PID_FILE="$ROOT_DIR/tmp/dashboard.pid"
+ORACLE_PID_FILE="$ROOT_DIR/tmp/ip-oracle.pid"
 
 stop_pid() {
   local name="$1"
@@ -87,6 +88,7 @@ stop_listeners_on_port() {
 
 stop_pid "Backend" "$BACKEND_PID_FILE"
 stop_pid "Dashboard" "$DASHBOARD_PID_FILE"
+stop_pid "IP oracle" "$ORACLE_PID_FILE"
 
 # Best-effort cleanup for tmux-based dev session and stray Vite servers.
 if command -v tmux >/dev/null 2>&1; then
@@ -98,3 +100,4 @@ fi
 
 stop_listeners_on_port "Backend" "3000"
 stop_listeners_on_port "Vite" "5174"
+stop_listeners_on_port "IP oracle" "7071"

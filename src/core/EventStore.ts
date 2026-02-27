@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import type { IdempotencyRecord } from '../domain/idempotency.js';
@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS idempotency (
 
 CREATE INDEX IF NOT EXISTS idx_idempotency_updated_at ON idempotency (updated_at);
 `;
+
+const SQLITE_FILE_SUFFIXES = ['', '-wal', '-shm'] as const;
 
 export class EventStore {
   private db!: Database.Database;
@@ -421,12 +423,34 @@ export class EventStore {
     try {
       return operation();
     } catch (error) {
-      if (!isReadonlyDatabaseMovedError(error)) {
+      if (isReadonlyDatabaseMovedError(error)) {
+        try {
+          this.reopenAfterDatabaseMove();
+        } catch (reopenError) {
+          if (!isCorruptDatabaseError(reopenError)) {
+            throw reopenError;
+          }
+          this.recoverFromCorruptDatabase();
+        }
+        return operation();
+      }
+      if (!isCorruptDatabaseError(error)) {
         throw error;
       }
-      this.reopenAfterDatabaseMove();
+      this.recoverFromCorruptDatabase();
       return operation();
     }
+  }
+
+  private recoverFromCorruptDatabase(): void {
+    const backupBase = `${this.dbPath}.corrupt-${Date.now()}`;
+    try {
+      this.db.close();
+    } catch {
+      // Intentionally ignore close failures during recovery.
+    }
+    rotateSqliteFiles(this.dbPath, backupBase);
+    this.openDatabase();
   }
 
   private reopenAfterDatabaseMove(): void {
@@ -443,4 +467,32 @@ function isReadonlyDatabaseMovedError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const code = (error as { code?: unknown }).code;
   return code === 'SQLITE_READONLY_DBMOVED';
+}
+
+function isCorruptDatabaseError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = String((error as { code?: unknown }).code ?? '').toUpperCase();
+  if (
+    code === 'SQLITE_CORRUPT' ||
+    code === 'SQLITE_NOTADB' ||
+    code.includes('CORRUPT') ||
+    code.includes('NOTADB') ||
+    code === 'UNKNOWN_SQLITE_ERROR_779'
+  ) {
+    return true;
+  }
+  const message = String((error as { message?: unknown }).message ?? '').toLowerCase();
+  return (
+    message.includes('database disk image is malformed') ||
+    message.includes('file is not a database') ||
+    message.includes('database is corrupt')
+  );
+}
+
+function rotateSqliteFiles(sourceBase: string, backupBase: string): void {
+  for (const suffix of SQLITE_FILE_SUFFIXES) {
+    const sourcePath = `${sourceBase}${suffix}`;
+    if (!existsSync(sourcePath)) continue;
+    renameSync(sourcePath, `${backupBase}${suffix}`);
+  }
 }

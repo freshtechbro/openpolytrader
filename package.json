@@ -5,9 +5,13 @@
   "type": "module",
   "main": "dist/main.js",
   "scripts": {
+    "help": "bash scripts/help.sh",
+    "h": "npm run help",
+    "postinstall": "node scripts/postinstall-arch-guard.mjs",
     "dev": "tsx src/main.ts",
     "dev:ops": "bash scripts/dev-up.sh",
     "dev:ops:down": "bash scripts/dev-down.sh",
+    "dev:ops:status": "bash scripts/dev-status.sh",
     "dev:live": "docker compose up -d && npm --prefix dashboard run dev",
     "dev:live:down": "docker compose down",
     "build": "tsc -p tsconfig.json",

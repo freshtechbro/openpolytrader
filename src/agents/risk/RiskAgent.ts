@@ -16,6 +16,8 @@ export interface RiskDecision {
     maxByExposure: number;
     maxByEvMarket: number;
     maxByEvPortfolio: number;
+    maxByFwMarket: number;
+    maxByFwPortfolio: number;
     binding:
       | 'trade_fraction'
       | 'depth'
@@ -23,7 +25,9 @@ export interface RiskDecision {
       | 'daily_loss'
       | 'exposure'
       | 'ev_per_market'
-      | 'ev_portfolio';
+      | 'ev_portfolio'
+      | 'fw_per_market'
+      | 'fw_portfolio';
   };
   worstCaseLoss?: number;
 }
@@ -34,6 +38,8 @@ export interface RiskAgentOptions {
   depthBufferMultiplier: number;
   evMaxPerMarketNotional: number;
   evMaxPortfolioNotional: number;
+  fwMaxPerMarketNotional: number;
+  fwMaxPortfolioNotional: number;
 }
 
 export class RiskAgent {
@@ -53,7 +59,14 @@ export class RiskAgent {
   }
 
   evaluate(opportunity: ArbitrageOpportunity, snapshot: PortfolioSnapshot): RiskDecision {
-    const costPerSet = opportunity.costPerSet;
+    const isFwBasket =
+      opportunity.type === 'fw_basket' &&
+      Array.isArray(opportunity.fwBasket?.markets) &&
+      opportunity.fwBasket.markets.length > 0;
+    const basketMarkets = isFwBasket ? opportunity.fwBasket!.markets : [];
+    const costPerSet = isFwBasket
+      ? basketMarkets.reduce((sum, market) => sum + market.costPerSet, 0)
+      : opportunity.costPerSet;
     const openInventoryAgeMs = snapshot.openInventoryAgeMs ?? 0;
     const maxOpenInventoryMs = this.options.maxOpenInventorySeconds * 1000;
 
@@ -80,14 +93,31 @@ export class RiskAgent {
     }
 
     const maxMarketExposure = snapshot.totalCapital * this.config.maxMarketExposureFraction;
-    const currentExposure = snapshot.marketExposure[opportunity.marketId] ?? 0;
-    const exposureHeadroomNotional = maxMarketExposure - currentExposure;
-    if (exposureHeadroomNotional <= 0) {
+    const exposureHeadroomByMarket = isFwBasket
+      ? basketMarkets.map((market) => ({
+          marketId: market.marketId,
+          costPerSet: market.costPerSet,
+          headroom: maxMarketExposure - (snapshot.marketExposure[market.marketId] ?? 0)
+        }))
+      : [
+          {
+            marketId: opportunity.marketId,
+            costPerSet: costPerSet,
+            headroom: maxMarketExposure - (snapshot.marketExposure[opportunity.marketId] ?? 0)
+          }
+        ];
+    if (exposureHeadroomByMarket.some((entry) => entry.headroom <= 0)) {
       return { approved: false, reason: 'market_exposure_limit' };
     }
 
     const effectiveTickSize = opportunity.tickSize > 0 ? opportunity.tickSize : this.options.fallbackTickSize;
-    const lossPerSet = effectiveTickSize * this.config.maxUnwindLossTicks;
+    const lossPerSet = isFwBasket
+      ? basketMarkets.reduce(
+          (sum, market) =>
+            sum + Math.max(market.tickSize, this.options.fallbackTickSize) * this.config.maxUnwindLossTicks,
+          0
+        )
+      : effectiveTickSize * this.config.maxUnwindLossTicks;
     if (lossPerSet <= 0) {
       return { approved: false, reason: 'unwind_loss_unbounded' };
     }
@@ -101,10 +131,13 @@ export class RiskAgent {
     const maxSizeByTradeFraction =
       snapshot.availableCapital > 0 ? (snapshot.availableCapital * targetFraction) / costPerSet : 0;
     const depthBufferMultiplier = this.options.depthBufferMultiplier;
+    const rawDepthLimit = isFwBasket
+      ? Math.min(...basketMarkets.map((market) => market.maxSizeByDepth))
+      : opportunity.maxSizeByDepth;
     const maxSizeByDepth =
       depthBufferMultiplier > 0
-        ? opportunity.maxSizeByDepth / depthBufferMultiplier
-        : opportunity.maxSizeByDepth;
+        ? rawDepthLimit / depthBufferMultiplier
+        : rawDepthLimit;
     const maxSizeByUnwindBudget = calculateMaxSizeByUnwindBudget(
       opportunity.edge,
       opportunity.tickSize,
@@ -120,9 +153,12 @@ export class RiskAgent {
           ? snapshot.availableCapital / costPerSet
           : 0;
 
-    const maxSizeByExposure = exposureHeadroomNotional / costPerSet;
+    const maxSizeByExposure = Math.min(
+      ...exposureHeadroomByMarket.map((entry) => entry.headroom / Math.max(entry.costPerSet, 1e-9))
+    );
 
     const isEv = opportunity.type === 'ev';
+    const isFw = opportunity.type === 'fw_projection' || opportunity.type === 'fw_basket';
     const totalExposureNotional = Object.values(snapshot.marketExposure).reduce(
       (sum, value) => sum + Math.max(0, value),
       0
@@ -135,9 +171,27 @@ export class RiskAgent {
       isEv && this.options.evMaxPortfolioNotional > 0
         ? (this.options.evMaxPortfolioNotional - totalExposureNotional) / costPerSet
         : Number.POSITIVE_INFINITY;
+    const maxSizeByFwMarket =
+      isFw && this.options.fwMaxPerMarketNotional > 0
+        ? isFwBasket
+          ? Math.min(
+              ...basketMarkets.map((market) => {
+                const used = snapshot.marketExposure[market.marketId] ?? 0;
+                return (this.options.fwMaxPerMarketNotional - used) / Math.max(market.costPerSet, 1e-9);
+              })
+            )
+          : this.options.fwMaxPerMarketNotional / costPerSet
+        : Number.POSITIVE_INFINITY;
+    const maxSizeByFwPortfolio =
+      isFw && this.options.fwMaxPortfolioNotional > 0
+        ? (this.options.fwMaxPortfolioNotional - totalExposureNotional) / costPerSet
+        : Number.POSITIVE_INFINITY;
 
     if (isEv && (maxSizeByEvMarket <= 0 || maxSizeByEvPortfolio <= 0)) {
       return { approved: false, reason: 'ev_notional_cap' };
+    }
+    if (isFw && (maxSizeByFwMarket <= 0 || maxSizeByFwPortfolio <= 0)) {
+      return { approved: false, reason: 'fw_notional_cap' };
     }
 
     const hardCap = Math.min(
@@ -146,7 +200,9 @@ export class RiskAgent {
       maxSizeByDailyLoss,
       maxSizeByExposure,
       maxSizeByEvMarket,
-      maxSizeByEvPortfolio
+      maxSizeByEvPortfolio,
+      maxSizeByFwMarket,
+      maxSizeByFwPortfolio
     );
 
     let positionSize = Math.min(maxSizeByTradeFraction, hardCap);
@@ -155,7 +211,9 @@ export class RiskAgent {
       return { approved: false, reason: 'position_size_zero' };
     }
 
-    const minOrderSize = Math.max(opportunity.minOrderSize, 0);
+    const minOrderSize = isFwBasket
+      ? Math.max(...basketMarkets.map((market) => market.minOrderSize), 0)
+      : Math.max(opportunity.minOrderSize, 0);
     let reason = 'within_risk_limits';
 
     if (minOrderSize > 0 && positionSize < minOrderSize) {
@@ -178,6 +236,8 @@ export class RiskAgent {
       maxByExposure: maxSizeByExposure,
       maxByEvMarket: maxSizeByEvMarket,
       maxByEvPortfolio: maxSizeByEvPortfolio,
+      maxByFwMarket: maxSizeByFwMarket,
+      maxByFwPortfolio: maxSizeByFwPortfolio,
       binding: pickBindingConstraint({
         tradeFraction: maxSizeByTradeFraction,
         depth: maxSizeByDepth,
@@ -185,7 +245,9 @@ export class RiskAgent {
         dailyLoss: maxSizeByDailyLoss,
         exposure: maxSizeByExposure,
         evMarket: maxSizeByEvMarket,
-        evPortfolio: maxSizeByEvPortfolio
+        evPortfolio: maxSizeByEvPortfolio,
+        fwMarket: maxSizeByFwMarket,
+        fwPortfolio: maxSizeByFwPortfolio
       }, reason === 'min_order_size_bump')
     } satisfies RiskDecision['constraints'];
 
@@ -258,6 +320,8 @@ function pickBindingConstraint(
     exposure: number;
     evMarket: number;
     evPortfolio: number;
+    fwMarket: number;
+    fwPortfolio: number;
   },
   ignoreTradeFraction: boolean
 ): NonNullable<RiskDecision['constraints']>['binding'] {
@@ -267,7 +331,9 @@ function pickBindingConstraint(
     ['daily_loss', values.dailyLoss],
     ['exposure', values.exposure],
     ['ev_per_market', values.evMarket],
-    ['ev_portfolio', values.evPortfolio]
+    ['ev_portfolio', values.evPortfolio],
+    ['fw_per_market', values.fwMarket],
+    ['fw_portfolio', values.fwPortfolio]
   ];
 
   if (!ignoreTradeFraction) {

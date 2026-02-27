@@ -26,7 +26,6 @@ const createValidBook = (bestBid = 0.49, bestAsk = 0.50) => ({
 
 const createGammaMarket = (overrides: Partial<GammaMarket> = {}): GammaMarket => ({
   condition_id: 'market-123',
-  question: 'Test Market?',
   volume24hr: 100000,
   active: true,
   closed: false,
@@ -1296,6 +1295,39 @@ describe('MarketCatalogRefresher', () => {
       expect(pairs[0]).toEqual(existingPair);
     });
 
+    it('enriches existing pairs with metadata without re-fetching books', async () => {
+      const existingPair: MarketPair = {
+        marketId: 'market-123',
+        yesTokenId: 'existing-yes',
+        noTokenId: 'existing-no'
+      };
+      refresher.seed([existingPair]);
+
+      const market = createGammaMarket({
+        condition_id: 'market-123',
+        question: 'Will Candidate A win?',
+        category: ' Politics ',
+        tags: [' All ', 'Politics', 'Elections', 'Politics', '', 3]
+      });
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+
+      await refresher.refresh();
+
+      expect(mockClob.getOrderBook).not.toHaveBeenCalled();
+      expect(refresher.getPairs()[0]).toEqual({
+        marketId: 'market-123',
+        yesTokenId: 'existing-yes',
+        noTokenId: 'existing-no',
+        question: 'Will Candidate A win?',
+        category: 'Politics',
+        tags: ['All', 'Politics', 'Elections']
+      });
+    });
+
     it('skips duplicate markets seen within the same refresh pass', async () => {
       const marketA = createGammaMarket({ condition_id: 'dup-market', clobTokenIds: ['yes-a', 'no-a'] });
       const marketB = createGammaMarket({ condition_id: 'dup-market', clobTokenIds: ['yes-b', 'no-b'] });
@@ -1716,6 +1748,33 @@ describe('MarketCatalogRefresher', () => {
       const result = await refresher.refresh();
 
       expect(result.totalPairs).toBe(0);
+    });
+
+    it('propagates question/category/tags metadata onto refreshed market pairs', async () => {
+      const market = createGammaMarket({
+        condition_id: 'meta-1',
+        question: 'Will Candidate A win?',
+        tags: [' All ', 'Politics', 'Elections', 'Politics', '', 3],
+        clobTokenIds: ['yes-meta-1', 'no-meta-1']
+      });
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve([market])
+      });
+      mockClob.getOrderBook.mockResolvedValue(createValidBook());
+
+      const result = await refresher.refresh();
+
+      expect(result.totalPairs).toBe(1);
+      expect(refresher.getPairs()[0]).toEqual({
+        marketId: 'meta-1',
+        yesTokenId: 'yes-meta-1',
+        noTokenId: 'no-meta-1',
+        question: 'Will Candidate A win?',
+        category: 'Politics',
+        tags: ['All', 'Politics', 'Elections']
+      });
     });
   });
 });

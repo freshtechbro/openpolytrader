@@ -38,6 +38,34 @@ describe('MetricsStore', () => {
     expect(snapshot.counts.web_search).toBe(1);
   });
 
+  it('tracks FW projection/dependency/oracle counts', () => {
+    const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    store.record({ type: 'fw_projection', timestamp: 1, data: {} });
+    store.record({ type: 'fw_dependency', timestamp: 2, data: {} });
+    store.record({ type: 'fw_oracle', timestamp: 3, data: {} });
+
+    const snapshot = store.snapshot();
+    expect(snapshot.counts.fw_projection).toBe(1);
+    expect(snapshot.counts.fw_dependency).toBe(1);
+    expect(snapshot.counts.fw_oracle).toBe(1);
+  });
+
+  it('tracks FW loop and basket execution counters', () => {
+    const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    store.record({ type: 'fw_iteration', timestamp: 1, data: {} });
+    store.record({ type: 'fw_gap', timestamp: 2, data: {} });
+    store.record({ type: 'fw_active_set', timestamp: 3, data: {} });
+    store.record({ type: 'fw_contraction', timestamp: 4, data: {} });
+    store.record({ type: 'fw_basket', timestamp: 5, data: {} });
+
+    const snapshot = store.snapshot();
+    expect(snapshot.counts.fw_iteration).toBe(1);
+    expect(snapshot.counts.fw_gap).toBe(1);
+    expect(snapshot.counts.fw_active_set).toBe(1);
+    expect(snapshot.counts.fw_contraction).toBe(1);
+    expect(snapshot.counts.fw_basket).toBe(1);
+  });
+
   it('tracks rollout guardrail events under existing metric types', () => {
     const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
     store.record({ type: 'info', timestamp: 1, data: { message: 'market_catalog_funnel' } });

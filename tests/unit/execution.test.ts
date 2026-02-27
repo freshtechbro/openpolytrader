@@ -2841,3 +2841,350 @@ describe('execution utilities', () => {
     expect(isOrderFailure({ success: true, status: 'LIVE' })).toBe(false);
   });
 });
+
+describe('ExecutionAgent basket execution', () => {
+  function makeBasketOpportunity(
+    overrides: Partial<ArbitrageOpportunity> = {}
+  ): ArbitrageOpportunity {
+    return makeOpportunity({
+      id: 'opp-basket-1',
+      type: 'fw_basket',
+      fwBasket: {
+        basketId: 'basket-1',
+        executionMode: 'sequential_failfast',
+        aggregateEdgeLowerBound: 0.04,
+        aggregateProjectedEdge: 0.05,
+        loop: {
+          loopId: 'loop-1',
+          iterationCount: 3,
+          activeSetSize: 2,
+          contractionSteps: 0,
+          terminalGapAbs: 0.0001,
+          terminalGapRel: 0.0001,
+          terminalReason: 'gap_converged',
+          converged: true,
+          runtimeMs: 10
+        },
+        markets: [
+          {
+            marketId: 'market-1',
+            yesTokenId: 'yes-token',
+            noTokenId: 'no-token',
+            yesPrice: 0.48,
+            noPrice: 0.49,
+            costPerSet: 0.97,
+            projectedEdge: 0.03,
+            edgeLowerBound: 0.02,
+            maxSizeByDepth: 100,
+            minOrderSize: 1,
+            tickSize: 0.01
+          },
+          {
+            marketId: 'market-2',
+            yesTokenId: 'yes-token-2',
+            noTokenId: 'no-token-2',
+            yesPrice: 0.47,
+            noPrice: 0.49,
+            costPerSet: 0.96,
+            projectedEdge: 0.03,
+            edgeLowerBound: 0.02,
+            maxSizeByDepth: 100,
+            minOrderSize: 1,
+            tickSize: 0.01
+          }
+        ]
+      },
+      ...overrides
+    });
+  }
+
+  it('executes basket legs sequentially in failfast mode', async () => {
+    const clob = makeMockClob({ yes: { status: 'LIVE' }, no: { status: 'LIVE' } });
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
+      tradingEnabled: true,
+      tradingMode: 'live'
+    });
+    const spy = vi
+      .spyOn(agent, 'executeArbitrage')
+      .mockResolvedValue({
+        status: 'submitted',
+        idempotencyKey: 'id',
+        executionId: 'exec',
+        state: 'complete'
+      } as unknown as Awaited<ReturnType<ExecutionAgent['executeArbitrage']>>);
+
+    const result = await agent.executeBasketArbitrage(makeBasketOpportunity(), 10, {
+      nowMs: Date.now()
+    });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe('submitted');
+    expect(result.basket?.mode).toBe('sequential_failfast');
+    expect(result.basket?.legs).toHaveLength(2);
+  });
+
+  it('falls back from batch mode to sequential failfast', async () => {
+    const clob = makeMockClob({ yes: { status: 'LIVE' }, no: { status: 'LIVE' } }) as unknown as {
+      createBatchOrders: ReturnType<typeof vi.fn>;
+      createOrder: ReturnType<typeof vi.fn>;
+      reserveNonce: ReturnType<typeof vi.fn>;
+      cancelOrder: ReturnType<typeof vi.fn>;
+      cancelOrders: ReturnType<typeof vi.fn>;
+      cancelAll: ReturnType<typeof vi.fn>;
+      cancelMarketOrders: ReturnType<typeof vi.fn>;
+    };
+    clob.createBatchOrders = vi.fn().mockRejectedValue(new Error('unsupported'));
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob as unknown as PolymarketClob, undefined, undefined, {
+      tradingEnabled: true,
+      tradingMode: 'live'
+    });
+    const spy = vi
+      .spyOn(agent, 'executeArbitrage')
+      .mockResolvedValue({
+        status: 'submitted',
+        idempotencyKey: 'id',
+        executionId: 'exec',
+        state: 'complete'
+      } as unknown as Awaited<ReturnType<ExecutionAgent['executeArbitrage']>>);
+
+    const result = await agent.executeBasketArbitrage(
+      makeBasketOpportunity({
+        fwBasket: {
+          ...makeBasketOpportunity().fwBasket!,
+          executionMode: 'batch_best_effort'
+        }
+      }),
+      10,
+      { nowMs: Date.now() }
+    );
+
+    expect(clob.createBatchOrders).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe('submitted');
+    expect(result.basket?.fallbackUsed).toBe(true);
+  });
+
+  it('fails batch mode on partial acceptance without sequential fallback', async () => {
+    const clob = makeMockClob({ yes: { status: 'LIVE' }, no: { status: 'LIVE' } }) as unknown as {
+      createBatchOrders: ReturnType<typeof vi.fn>;
+      reserveNonce: ReturnType<typeof vi.fn>;
+      createOrder: ReturnType<typeof vi.fn>;
+      cancelOrder: ReturnType<typeof vi.fn>;
+      cancelOrders: ReturnType<typeof vi.fn>;
+      cancelAll: ReturnType<typeof vi.fn>;
+      cancelMarketOrders: ReturnType<typeof vi.fn>;
+    };
+    clob.createBatchOrders = vi.fn().mockResolvedValue([
+      { orderId: 'batch-yes-1', status: 'LIVE' },
+      { status: 'rejected' },
+      { status: 'rejected' },
+      { status: 'rejected' }
+    ]);
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob as unknown as PolymarketClob, undefined, undefined, {
+      tradingEnabled: true,
+      tradingMode: 'live'
+    });
+    const sequentialSpy = vi.spyOn(agent, 'executeArbitrage');
+
+    const result = await agent.executeBasketArbitrage(
+      makeBasketOpportunity({
+        fwBasket: {
+          ...makeBasketOpportunity().fwBasket!,
+          executionMode: 'batch_best_effort'
+        }
+      }),
+      10,
+      { nowMs: Date.now() }
+    );
+
+    expect(clob.createBatchOrders).toHaveBeenCalledTimes(1);
+    expect(sequentialSpy).not.toHaveBeenCalled();
+    expect(result.status).toBe('failed');
+    expect(result.reason).toBe('batch_partial_accepted');
+    expect(result.basket?.mode).toBe('batch_best_effort');
+    expect(result.basket?.fallbackUsed).toBe(false);
+  });
+
+  it('waits for batch fill outcomes and confirms basket plus leg idempotency records', async () => {
+    const nowMs = Date.now();
+    const userRealtime = new MockUserRealtime(true);
+    const opportunity = makeBasketOpportunity({
+      id: 'opp-basket-confirm',
+      fwBasket: {
+        ...makeBasketOpportunity().fwBasket!,
+        executionMode: 'batch_best_effort'
+      }
+    });
+    const clob = makeMockClob({ yes: { status: 'LIVE' }, no: { status: 'LIVE' } }) as unknown as {
+      createBatchOrders: ReturnType<typeof vi.fn>;
+      reserveNonce: ReturnType<typeof vi.fn>;
+      createOrder: ReturnType<typeof vi.fn>;
+      cancelOrder: ReturnType<typeof vi.fn>;
+      cancelOrders: ReturnType<typeof vi.fn>;
+      cancelAll: ReturnType<typeof vi.fn>;
+      cancelMarketOrders: ReturnType<typeof vi.fn>;
+    };
+    clob.createBatchOrders = vi.fn().mockResolvedValue([
+      { orderId: 'batch-1-yes', status: 'LIVE' },
+      { orderId: 'batch-1-no', status: 'LIVE' },
+      { orderId: 'batch-2-yes', status: 'LIVE' },
+      { orderId: 'batch-2-no', status: 'LIVE' }
+    ]);
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob as unknown as PolymarketClob, undefined, undefined, {
+      tradingEnabled: true,
+      tradingMode: 'live',
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+
+    const waitSpy = vi.spyOn(
+      agent as unknown as {
+        waitForBatchFillOutcomes: (
+          acceptedOrders: Array<{ orderId: string; marketId: string; idempotencyKey: string; side: 'yes' | 'no' }>,
+          size: number,
+          timeoutMs: number
+        ) => Promise<{
+          allFilled: boolean;
+          outcomes: Array<{
+            order: { orderId: string; marketId: string; idempotencyKey: string; side: 'yes' | 'no' };
+            outcome: {
+              orderId: string;
+              sizeMatched: number;
+              fullyFilled: boolean;
+              cancelled: boolean;
+              timedOut: boolean;
+              observedAtMs: number;
+            };
+          }>;
+          observedAtMs: number;
+        }>;
+      },
+      'waitForBatchFillOutcomes'
+    ).mockImplementation(async (acceptedOrders) => ({
+      allFilled: true,
+      observedAtMs: nowMs + 25,
+      outcomes: acceptedOrders.map((order) => ({
+        order,
+        outcome: {
+          orderId: order.orderId,
+          sizeMatched: 10,
+          fullyFilled: true,
+          cancelled: false,
+          timedOut: false,
+          observedAtMs: nowMs + 25
+        }
+      }))
+    }));
+
+    const result = await agent.executeBasketArbitrage(opportunity, 10, { nowMs });
+    const basketKey = createIdempotencyKey(`${opportunity.id}:basket:${(10).toFixed(8)}`);
+    const reader = agent as unknown as {
+      getIdempotencyRecord: (key: string) => IdempotencyRecord | undefined;
+    };
+
+    expect(waitSpy).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('submitted');
+    expect(result.basket?.mode).toBe('batch_best_effort');
+    expect(reader.getIdempotencyRecord(basketKey)?.status).toBe('confirmed');
+    for (const market of opportunity.fwBasket!.markets) {
+      expect(reader.getIdempotencyRecord(`${basketKey}:${market.marketId}:yes`)?.status).toBe('confirmed');
+      expect(reader.getIdempotencyRecord(`${basketKey}:${market.marketId}:no`)?.status).toBe('confirmed');
+    }
+  });
+
+  it('cancels outstanding batch orders and fails basket idempotency on partial fill wait', async () => {
+    const nowMs = Date.now();
+    const userRealtime = new MockUserRealtime(true);
+    const opportunity = makeBasketOpportunity({
+      id: 'opp-basket-partial-fill',
+      fwBasket: {
+        ...makeBasketOpportunity().fwBasket!,
+        executionMode: 'batch_best_effort'
+      }
+    });
+    const clob = makeMockClob({ yes: { status: 'LIVE' }, no: { status: 'LIVE' } }) as unknown as {
+      createBatchOrders: ReturnType<typeof vi.fn>;
+      reserveNonce: ReturnType<typeof vi.fn>;
+      createOrder: ReturnType<typeof vi.fn>;
+      cancelOrder: ReturnType<typeof vi.fn>;
+      cancelOrders: ReturnType<typeof vi.fn>;
+      cancelAll: ReturnType<typeof vi.fn>;
+      cancelMarketOrders: ReturnType<typeof vi.fn>;
+    };
+    clob.createBatchOrders = vi.fn().mockResolvedValue([
+      { orderId: 'batch-1-yes', status: 'LIVE' },
+      { orderId: 'batch-1-no', status: 'LIVE' },
+      { orderId: 'batch-2-yes', status: 'LIVE' },
+      { orderId: 'batch-2-no', status: 'LIVE' }
+    ]);
+
+    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob as unknown as PolymarketClob, undefined, undefined, {
+      tradingEnabled: true,
+      tradingMode: 'live',
+      userRealtime: asPolymarketRealtime(userRealtime)
+    });
+    const waitSpy = vi.spyOn(
+      agent as unknown as {
+        waitForBatchFillOutcomes: (
+          acceptedOrders: Array<{ orderId: string; marketId: string; idempotencyKey: string; side: 'yes' | 'no' }>,
+          size: number,
+          timeoutMs: number
+        ) => Promise<{
+          allFilled: boolean;
+          outcomes: Array<{
+            order: { orderId: string; marketId: string; idempotencyKey: string; side: 'yes' | 'no' };
+            outcome: {
+              orderId: string;
+              sizeMatched: number;
+              fullyFilled: boolean;
+              cancelled: boolean;
+              timedOut: boolean;
+              observedAtMs: number;
+            };
+          }>;
+          observedAtMs: number;
+        }>;
+      },
+      'waitForBatchFillOutcomes'
+    ).mockImplementation(async (acceptedOrders) => ({
+      allFilled: false,
+      observedAtMs: nowMs + 40,
+      outcomes: acceptedOrders.map((order) => ({
+        order,
+        outcome: {
+          orderId: order.orderId,
+          sizeMatched: order.marketId === 'market-1' ? 10 : 0,
+          fullyFilled: order.marketId === 'market-1',
+          cancelled: false,
+          timedOut: order.marketId !== 'market-1',
+          observedAtMs: nowMs + 40
+        }
+      }))
+    }));
+    const unwindSpy = vi.spyOn(
+      agent as unknown as {
+        unwindBasketLegs: (
+          basketOpportunity: ArbitrageOpportunity,
+          legs: NonNullable<ArbitrageOpportunity['fwBasket']>['markets'],
+          size: number,
+          nowMs: number
+        ) => Promise<void>;
+      },
+      'unwindBasketLegs'
+    ).mockResolvedValue();
+
+    const result = await agent.executeBasketArbitrage(opportunity, 10, { nowMs });
+    const basketKey = createIdempotencyKey(`${opportunity.id}:basket:${(10).toFixed(8)}`);
+    const reader = agent as unknown as {
+      getIdempotencyRecord: (key: string) => IdempotencyRecord | undefined;
+    };
+
+    expect(waitSpy).toHaveBeenCalledTimes(1);
+    expect(clob.cancelOrder).toHaveBeenCalledTimes(2);
+    expect(unwindSpy).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('failed');
+    expect(result.reason).toBe('partial_fill');
+    expect(reader.getIdempotencyRecord(basketKey)?.status).toBe('failed');
+    expect(reader.getIdempotencyRecord(`${basketKey}:market-2:yes`)?.status).toBe('failed');
+    expect(reader.getIdempotencyRecord(`${basketKey}:market-2:no`)?.status).toBe('failed');
+  });
+});

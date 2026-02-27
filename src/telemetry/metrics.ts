@@ -7,6 +7,14 @@ export type MetricEventType =
   | 'opportunity'
   | 'ev_signal'
   | 'web_search'
+  | 'fw_projection'
+  | 'fw_dependency'
+  | 'fw_oracle'
+  | 'fw_basket'
+  | 'fw_iteration'
+  | 'fw_gap'
+  | 'fw_active_set'
+  | 'fw_contraction'
   | 'order_attempt'
   | 'order'
   | 'fill'
@@ -129,6 +137,14 @@ export class MetricsStore extends EventEmitter {
       opportunity: 0,
       ev_signal: 0,
       web_search: 0,
+      fw_projection: 0,
+      fw_dependency: 0,
+      fw_oracle: 0,
+      fw_basket: 0,
+      fw_iteration: 0,
+      fw_gap: 0,
+      fw_active_set: 0,
+      fw_contraction: 0,
       order_attempt: 0,
       order: 0,
       fill: 0,

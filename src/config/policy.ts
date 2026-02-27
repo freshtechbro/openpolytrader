@@ -52,6 +52,34 @@ export interface TradePolicy {
   evWebSearchMaxConcurrency: number;
   evWebSearchFirecrawlMaxDepth: number;
   evWebSearchFirecrawlMaxPages: number;
+  fwDependencyMode: 'deterministic' | 'llm' | 'hybrid';
+  fwDependencyHybridMerge: 'consensus' | 'union';
+  fwDependencyMinConfidence: number;
+  fwDependencyMaxEdgesPerMarket: number;
+  fwOracleTimeLimitMs: number;
+  fwOracleMaxConcurrency: number;
+  fwMaxIterations: number;
+  fwMaxLoopRuntimeMs: number;
+  fwGapAbsTolerance: number;
+  fwGapRelTolerance: number;
+  fwContractionInitialEpsilon: number;
+  fwContractionDecay: number;
+  fwContractionMinEpsilon: number;
+  fwStallIterationLimit: number;
+  fwActiveSetMaxVertices: number;
+  fwHullSolveMaxIterations: number;
+  fwHullSolveTolerance: number;
+  fwMaxProjectionAgeMs: number;
+  fwSlippageToleranceBps: number;
+  fwExecutionRiskBufferBps: number;
+  fwMinEdgeThreshold: number;
+  fwSelectionWeightFloor: number;
+  fwSelectionTopK: number;
+  fwMaxPerMarketNotional: number;
+  fwMaxPortfolioNotional: number;
+  fwBasketMinMarkets: number;
+  fwBasketMaxMarkets: number;
+  fwBasketExecutionMode: 'batch_best_effort' | 'sequential_failfast';
 }
 
 
@@ -108,7 +136,35 @@ export const DEFAULT_TRADE_POLICY: TradePolicy = {
   evWebSearchCacheTtlSeconds: 7200,
   evWebSearchMaxConcurrency: 3,
   evWebSearchFirecrawlMaxDepth: 2,
-  evWebSearchFirecrawlMaxPages: 10
+  evWebSearchFirecrawlMaxPages: 10,
+  fwDependencyMode: 'hybrid',
+  fwDependencyHybridMerge: 'consensus',
+  fwDependencyMinConfidence: 0.6,
+  fwDependencyMaxEdgesPerMarket: 8,
+  fwOracleTimeLimitMs: 120,
+  fwOracleMaxConcurrency: 4,
+  fwMaxIterations: 12,
+  fwMaxLoopRuntimeMs: 350,
+  fwGapAbsTolerance: 0.0005,
+  fwGapRelTolerance: 0.05,
+  fwContractionInitialEpsilon: 0.1,
+  fwContractionDecay: 0.5,
+  fwContractionMinEpsilon: 0.01,
+  fwStallIterationLimit: 2,
+  fwActiveSetMaxVertices: 12,
+  fwHullSolveMaxIterations: 60,
+  fwHullSolveTolerance: 0.000001,
+  fwMaxProjectionAgeMs: 250,
+  fwSlippageToleranceBps: 60,
+  fwExecutionRiskBufferBps: 10,
+  fwMinEdgeThreshold: 0.003,
+  fwSelectionWeightFloor: 0.5,
+  fwSelectionTopK: 0,
+  fwMaxPerMarketNotional: 75,
+  fwMaxPortfolioNotional: 200,
+  fwBasketMinMarkets: 2,
+  fwBasketMaxMarkets: 4,
+  fwBasketExecutionMode: 'sequential_failfast'
 };
 
 export function isNearZeroRiskMode(policy: TradePolicy): boolean {
