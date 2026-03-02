@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Panel } from '../components/Panel';
 import { Section } from '../components/Section';
@@ -114,6 +114,7 @@ interface InfraConfigSnapshot {
 }
 
 export function RiskGates() {
+  const profileDraftDirtyRef = useRef(false);
   const [schema, setSchema] = useState<ConfigSchema | null>(null);
   const [config, setConfig] = useState<ConfigSnapshot | null>(null);
   const [draft, setDraft] = useState<ConfigSnapshot | null>(null);
@@ -168,7 +169,7 @@ export function RiskGates() {
         setDraft(configResponse as ConfigSnapshot);
         setRiskProfiles(profileSnapshot);
         const profile = profileSnapshot.activeProfile ?? (configResponse as ConfigSnapshot).riskProfile;
-        if (profile) {
+        if (profile && !profileDraftDirtyRef.current) {
           setProfileDraft(profile);
         }
         setInfra(infraResponse as InfraConfigSnapshot);
@@ -304,6 +305,7 @@ export function RiskGates() {
       setConfig(nextConfig);
       setDraft(nextConfig);
       if (response.profile?.id) {
+        profileDraftDirtyRef.current = false;
         setProfileDraft(response.profile.id);
       }
       setRiskProfiles((prev) => {
@@ -350,7 +352,10 @@ export function RiskGates() {
                   <select
                     id="risk-profile-select"
                     value={profileDraft}
-                    onChange={(event) => setProfileDraft(event.target.value as RiskProfileId)}
+                    onChange={(event) => {
+                      profileDraftDirtyRef.current = true;
+                      setProfileDraft(event.target.value as RiskProfileId);
+                    }}
                   >
                     {availableProfiles.map((profileId) => (
                       <option key={profileId} value={profileId}>
