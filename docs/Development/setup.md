@@ -42,6 +42,18 @@ View the root command/tool/flag index:
 npm run help
 ```
 
+Full command inventory (including start/help/stop/kill paths):
+
+- `docs/Development/commands.md`
+
+Toolchain references used during setup/build:
+
+- `package.json` + `dashboard/package.json` for script entrypoints
+- `package-lock.json` + `dashboard/package-lock.json` for reproducible installs
+- `tsconfig.json` + `dashboard/tsconfig.json` for typecheck/build behavior
+- `.eslintrc.cjs` for backend lint rules
+- `Dockerfile` for production backend container build/runtime contract
+
 Set local-safe defaults before first run:
 
 ```bash
@@ -67,6 +79,7 @@ VITE_OPS_BASE_URL=http://localhost:3000
 
 ```bash
 npm run dev:ops
+npm run dev:up
 ```
 
 Behavior:
@@ -76,6 +89,7 @@ Behavior:
 - Starts dashboard on `http://localhost:5174`
 - Forces backend runtime to `TRADING_MODE=paper` in script startup
 - Defaults `OPS_DEV_SESSION_PREFILL_ENABLED=true` for localhost token prefill convenience
+- Treats dashboard startup probe timeout as warning (keeps oracle/backend up; verify with `npm run dev:ops:status`)
 - Writes logs to `tmp/backend.log` and `tmp/dashboard.log`
 
 To disable prefill for a run:
@@ -88,6 +102,12 @@ Stop:
 
 ```bash
 npm run dev:ops:down
+```
+
+Repeatable lifecycle smoke:
+
+```bash
+npm run dev:ops:smoke
 ```
 
 ### Backend Only
@@ -132,7 +152,7 @@ Confirm:
 
 - `tradingMode` is `paper` (or your expected mode)
 - dashboard loads at `http://localhost:5174`
-- `/ops/overview` prompts for runtime token and loads after sign-in
+- `/ops/overview` auto-authenticates when localhost prefill is enabled (default under `dev:ops`), or prompts for runtime token when prefill is disabled
 
 ## Quality Gate Commands
 

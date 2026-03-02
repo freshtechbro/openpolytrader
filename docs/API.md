@@ -18,6 +18,10 @@ Dashboard runtime session endpoints:
 - `DELETE /ops/session` clears the session cookie
 - Dev-only prefill: `GET /ops/session?prefill=1` may include `prefillToken` only when
   `OPS_DEV_SESSION_PREFILL_ENABLED=true` and request originates from localhost.
+- Dashboard API requests include `x-ops-token` automatically when a runtime token is present
+  and no explicit auth header was provided.
+- For cross-host UI/API setups (for example `127.0.0.1` UI -> `localhost` API),
+  dashboard stream URLs append `?token=<token>` so `EventSource` remains authenticated.
 
 ## Endpoints
 
@@ -45,6 +49,27 @@ Dashboard runtime session endpoints:
 - metric event names mirror metric types
 - metric type `error` is emitted as SSE event name `metric_error`
 
+Dashboard stream subscriptions (`useEventStream`) register listeners for:
+
+- `health`
+- `incident`
+- `opportunity`
+- `order`
+- `fill`
+- `risk`
+- `info`
+- `metric_error`
+- `latency`
+- `execution_lifecycle`
+- `book_staleness`
+- `slo_violation`
+- `gate_rejection`
+- `shadow_decision`
+- `llm_decision`
+- `allowlist_updated`
+- `trading_mode_changed`
+- `trading_enabled_changed`
+
 FWMM metric counters exposed in `GET /metrics` `counts` include:
 
 - `fw_iteration`
@@ -54,6 +79,13 @@ FWMM metric counters exposed in `GET /metrics` `counts` include:
 - `fw_basket`
 
 When present, these same metric types are emitted on `GET /stream` as SSE event names.
+
+Ops intent-table semantics in dashboard:
+
+- `latency` events with `stage=gated` create/update "All intents (gated)" rows.
+- `order` events update order outcome/status and drive "Executed intents" rows.
+- Strategy labels shown in UI normalize to `near_zero`, `ev`, `fw_projection`, `fw_basket`;
+  `ev_single_side` is normalized to `ev`.
 
 ### Markets + Incidents + Portfolio
 

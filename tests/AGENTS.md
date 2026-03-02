@@ -8,8 +8,9 @@ Vitest for backend (>97% thresholds across lines/functions/statements/branches),
 
 ```
 tests/
-├── unit/           # 84 test files
-└── integration/    # 5 test files
+├── unit/           # 93 test files
+├── integration/    # reserved for dedicated integration suites (currently empty)
+└── fixtures/       # shared fixture payloads
 
 dashboard/tests/
 └── e2e/            # Playwright specs (*.spec.ts, 4 files)
@@ -19,7 +20,6 @@ dashboard/tests/
 
 Local `AGENTS.md` files refine these rules:
 - `tests/unit/AGENTS.md`
-- `tests/integration/AGENTS.md`
 - `dashboard/tests/AGENTS.md`
 - `dashboard/tests/e2e/AGENTS.md`
 
@@ -40,7 +40,6 @@ Excluded from coverage:
 | Type | Pattern | Example |
 |------|---------|---------|
 | Unit | `*.test.ts` | `execution.test.ts` |
-| Integration | `*.test.ts` | `event-store.test.ts` |
 | E2E | `*.spec.ts` | `smoke.spec.ts` |
 
 ## Commands
@@ -83,7 +82,7 @@ vi.mock('../services/PolymarketClob', () => ({
 }));
 ```
 
-### Integration Cleanup
+### File-System Cleanup
 ```typescript
 afterEach(() => {
   if (fs.existsSync(tempDbPath)) {
@@ -102,7 +101,7 @@ afterEach(() => {
 
 ## Anti-Patterns
 
-- Don't mock internal systems in integration tests without justification
+- Don't mock internal runtime flows in broad end-to-end validations without justification
 - Don't delete failing tests to "pass"
 - Don't skip coverage on critical paths
 - Don't use `as any` to bypass type errors in tests

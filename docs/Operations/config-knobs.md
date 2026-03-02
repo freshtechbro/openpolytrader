@@ -4,6 +4,10 @@ This document is the final inventory of configurable knobs and where they live.
 
 For minimum required keys and the complete environment variable index, see `docs/Operations/environment-reference.md`.
 
+Command references:
+- Full CLI matrix: `docs/Development/commands.md`
+- Ops procedures: `docs/Operations/runbook.md`
+
 ## Principles
 
 - **Infra knobs are env-only** to avoid runtime/UI drift.
@@ -33,7 +37,10 @@ These are edited via `PATCH /config/policy` and `PATCH /config/risk` and rendere
   - `fillTimeoutMs` must be > 0 in `near_zero_risk` mode; `0` skips waiting for user fills (optimistic completion).
 - Fallback market metadata (used only when venue data missing): `fallbackTickSize`, `fallbackMinOrderSize`
 - FW projection + execution:
-  - Dependency/oracle: `fwDependencyMode`, `fwDependencyHybridMerge`, `fwDependencyMinConfidence`, `fwDependencyMaxEdgesPerMarket`, `fwOracleTimeLimitMs`, `fwOracleMaxConcurrency`
+  - Dependency/oracle: `fwDependencyMode`, `fwDependencyHybridMerge`, `fwDependencyMinConfidence`, `fwDependencyMaxEdgesPerMarket`, `fwDependencyCacheTtlMs`, `fwDependencyCacheGraceMs`, `fwDependencyCacheMaxEntries`, `fwDependencyBackoffInvalidMs`, `fwDependencyBackoffTimeoutMs`, `fwDependencyBackoffErrorMs`, `fwOracleTimeLimitMs`, `fwOracleMaxConcurrency`
+    - `fwDependencyMode=deterministic` removes LLM dependency extraction from the FW hot path and is the safest low-latency default for paper/live rollout.
+    - `fwDependencyMode=hybrid` should be used only when dependency extractor cache/backoff controls are enabled and monitored.
+    - `fwDependencyHybridMerge` is only meaningful in `hybrid`; validation requires `consensus` for non-hybrid modes.
   - Fully-corrective loop: `fwMaxIterations`, `fwMaxLoopRuntimeMs`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwContractionInitialEpsilon`, `fwContractionDecay`, `fwContractionMinEpsilon`, `fwStallIterationLimit`, `fwActiveSetMaxVertices`, `fwHullSolveMaxIterations`, `fwHullSolveTolerance`
   - Projection/risk bounds: `fwMaxProjectionAgeMs`, `fwSlippageToleranceBps`, `fwExecutionRiskBufferBps`, `fwMinEdgeThreshold`, `fwSelectionWeightFloor`, `fwSelectionTopK`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional`
   - Basket execution: `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwBasketExecutionMode`
@@ -73,6 +80,9 @@ Use `.env.example` for the full list; the most operationally relevant groups are
 - Polymarket auth derivation: `POLYMARKET_L1_PRIVATE_KEY`, `POLYMARKET_L1_NONCE` (optional; derive API creds at boot)
 - Market catalog filters: `MARKET_CATALOG_PATH`, `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS`, `MARKET_CATALOG_MIN_VOLUME_24H`, `MARKET_CATALOG_MAX_SPREAD`, `MARKET_CATALOG_PAGE_SIZE`, `MARKET_CATALOG_MAX_PAGES`, `MARKET_CATALOG_ORDER`, `MARKET_CATALOG_EXCLUDE_ENDED_MARKETS`, `MARKET_CATALOG_EXPLORATION_*`, `MARKET_CATALOG_PRESTART_MAX_AGE_MS`
 - EV web search (direct API): `EXA_*` (including `EXA_COOLDOWN_MS`, `EXA_COOLDOWN_FAILURE_THRESHOLD`), `FIRECRAWL_*`, `EV_WEBSEARCH_*`
+- FW oracle sidecar connectivity: `FW_ORACLE_BASE_URL`, `FW_ORACLE_TIMEOUT_MS`, `FW_ORACLE_API_KEY`, `FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD`, `FW_ORACLE_CIRCUIT_COOLDOWN_MS`
+  - Paper-mode startup contract: when `TRADING_MODE=paper` and `TRADING_ENABLED=true`, backend startup fails fast if `${FW_ORACLE_BASE_URL}/health` is unavailable.
+  - Preferred paper orchestration commands: `npm run paper:up`, `npm run paper:status`, `npm run paper:down` (aliases of `dev:ops` commands).
 - RPC providers + wait defaults: `*_RPC_URL`, `*_WS_URL`, `*_RPC_RPS`, `RPC_RATE_LIMIT_WINDOW_MS`, `RPC_WAIT_CONFIRMATIONS`, `RPC_WAIT_TIMEOUT_MS`, `RPC_CIRCUIT_*`
 - Live trading credentials: `ALCHEMY_API_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_PASSPHRASE`, `POLYMARKET_POSITIONS_USER`
 

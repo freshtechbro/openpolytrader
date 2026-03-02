@@ -108,9 +108,9 @@ openpolytrader/
 │   ├── db/            # SQLite migrations
 │   └── main.ts        # Entry point
 ├── dashboard/         # React/Vite ops dashboard
-├── tests/             # Vitest unit + integration tests
+├── tests/             # Vitest suites + fixtures
 │   ├── unit/          # Unit tests
-│   ├── integration/   # Integration tests
+│   ├── integration/   # Reserved integration suites (currently empty)
 │   └── fixtures/      # Test fixtures
 ├── docs/              # Documentation
 │   ├── ARCHITECTURE.md
@@ -231,8 +231,8 @@ npm run test:coverage
    - Mock external dependencies with `vi.mock()`
    - Fast, deterministic execution
 
-2. **Integration Tests** (`tests/integration/*.test.ts`)
-   - Test multi-component flows
+2. **Integration Suites** (`tests/integration/*.test.ts`, when present)
+   - Reserved for targeted multi-component flows that need dedicated isolation
    - Use real internal systems (don't mock unless justified)
    - Isolate external integrations (Polymarket, RPC)
 

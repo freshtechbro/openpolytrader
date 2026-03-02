@@ -21,7 +21,8 @@ Optional alerts:
 
 ## Ops API authentication
 
-If `OPS_API_TOKEN` is set, the ops API requires a token for all routes.
+If `OPS_API_TOKEN` is set, the ops API requires auth for operational routes.
+Session bootstrap routes (`/ops/session`) remain reachable to establish/inspect session state.
 Supported token locations:
 - `Authorization: Bearer <token>`
 - `x-ops-token: <token>`

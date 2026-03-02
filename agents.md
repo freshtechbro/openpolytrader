@@ -30,11 +30,11 @@
 Near-zero-risk Polymarket CLOB arbitrage bot. TypeScript + Fastify backend, React dashboard. Agent-based architecture with event-sourced state.
 
 **Project Stats:**
-- 99 TypeScript source files
+- 108 TypeScript source files
 - 33 Dashboard TypeScript/TSX files
 - 9 Specialized agents
 - >97% test coverage requirement
-- 210 environment configuration options
+- 209 environment configuration options
 
 ---
 
@@ -74,9 +74,9 @@ openpolytrader/
 │   │   ├── lib/         # Utilities (opsClient, config)
 │   │   └── styles/      # CSS (tokens.css, app.css)
 │   └── tests/e2e/       # Playwright E2E tests
-├── tests/             # Vitest unit + integration
-│   ├── unit/            # 84 test files
-│   ├── integration/     # 5 test files
+├── tests/             # Vitest unit tests + shared fixtures
+│   ├── unit/            # 93 test files
+│   ├── integration/     # Reserved for integration suites (currently empty)
 │   └── fixtures/        # Test fixtures
 ├── docs/              # Comprehensive documentation
 │   ├── ARCHITECTURE.md
@@ -116,7 +116,7 @@ openpolytrader/
 | **Orchestration** | `src/core/Supervisor.ts` | Agent lifecycle, pipeline flow (1054 lines / 36589 bytes) |
 | **Dashboard UI** | `dashboard/src/` | React components + pages |
 | **Risk config UI** | `dashboard/src/pages/RiskGates.tsx` | 708 lines / 27694 bytes |
-| **Tests** | `tests/unit/`, `tests/integration/` | >97% coverage requirement |
+| **Tests** | `tests/unit/`, `tests/integration/` | >97% coverage requirement (integration directory currently empty) |
 
 ---
 
@@ -224,6 +224,7 @@ flowchart TD
 | Document | Purpose |
 |----------|---------|
 | [`docs/Development/setup.md`](docs/Development/setup.md) | Dev environment setup |
+| [`docs/Development/commands.md`](docs/Development/commands.md) | Complete CLI command reference |
 | [`docs/Development/market-catalog.md`](docs/Development/market-catalog.md) | Market catalog generation |
 | [`docs/API.md`](docs/API.md) | Full Ops API reference |
 
@@ -246,13 +247,28 @@ flowchart TD
 ### 📚 Local AGENTS.md Files
 
 Local context files throughout the codebase:
+- `.github/AGENTS.md` - CI workflow guidance
 - `src/AGENTS.md` - Source code overview
 - `src/agents/AGENTS.md` - Agent architecture
+- `src/agents/dependency/AGENTS.md` - FW dependency extraction/resolution
+- `src/agents/projection/AGENTS.md` - FW projection loop and basket shaping
+- `src/agents/projection/fw/AGENTS.md` - FW math primitives
 - `src/core/AGENTS.md` - Core systems
+- `src/services/AGENTS.md` - Backend service clients
 - `src/services/llm/AGENTS.md` - LLM integration
+- `src/services/ip-oracle/AGENTS.md` - FW oracle client contract
+- `docs/AGENTS.md` - Documentation maintenance rules
+- `services/AGENTS.md` - Sidecar service guidance
+- `settings/AGENTS.md` - Risk profile persistence guidance
 - `dashboard/src/AGENTS.md` - Dashboard overview
+- `dashboard/src/routes/AGENTS.md` - Dashboard route composition
+- `dashboard/src/components/public/AGENTS.md` - Public UI components
+- `dashboard/src/pages/public/AGENTS.md` - Public route pages
+- `dashboard/public/AGENTS.md` - Static dashboard assets
+- `dashboard/scripts/AGENTS.md` - Dashboard script guidance
 - `tests/unit/AGENTS.md` - Testing patterns
-- `tests/integration/AGENTS.md` - Integration testing
+- `tests/fixtures/AGENTS.md` - Shared test fixture constraints
+- `tests/fixtures/llm/AGENTS.md` - LLM fixture payload constraints
 
 ---
 
@@ -277,7 +293,7 @@ Local context files throughout the codebase:
 - Mix unrelated changes in commits
 - Use `as any`, `@ts-ignore`, `@ts-expect-error`
 - Guess - mark uncertainties as UNCONFIRMED
-- Mock internal systems in integration tests without justification
+- Mock internal runtime systems in broad end-to-end tests without justification
 
 ### ⚙️ Operations - ALWAYS
 
@@ -310,14 +326,14 @@ Local context files throughout the codebase:
 
 - **Internal code:** camelCase
 - **External API fields:** snake_case
-- **Tests:** `*.test.ts` for unit/integration, `*.spec.ts` for e2e
+- **Tests:** `*.test.ts` for Vitest suites, `*.spec.ts` for e2e
 
 ### Testing
 
 - **Framework:** Vitest
 - **Coverage:** >97% requirement
 - **Mocking:** `vi.mock()` for external dependencies
-- **Cleanup:** `afterEach` for integration tests
+- **Cleanup:** `afterEach` for deterministic test cleanup
 
 ---
 
@@ -328,22 +344,37 @@ Local context files throughout the codebase:
 ```bash
 npm run help             # root command/tool/flag reference
 npm run h                # alias for help
+npm run postinstall      # arch guard for local esbuild binaries
 npm run dev              # tsx src/main.ts
 npm run dev:ops          # backend + dashboard (scripts/dev-up.sh)
+npm run dev:up           # alias for dev:ops
+npm run dev:ops:status   # check oracle/backend/dashboard health
 npm run dev:ops:down     # stop dev:ops processes
+npm run dev:ops:smoke    # deterministic lifecycle smoke (up -> status -> down -> status)
+npm run paper:up         # alias for dev:ops
+npm run paper:status     # alias for dev:ops:status
+npm run paper:down       # alias for dev:ops:down
+npm run paper:smoke      # alias for dev:ops:smoke
 npm run dev:live         # Docker backend + local dashboard dev server
 npm run dev:live:down    # Stop Docker backend
 npm run build            # tsc compilation
 npm run build:all        # build backend + dashboard + Docker images
 npm run build:all:up     # build everything and start Docker containers
 npm run build:all:live   # build everything and start backend + dashboard dev server
+npm run prestart         # market-catalog preflight before start
 npm run start            # node dist/main.js
 npm run lint             # eslint --max-warnings=0
 npm run typecheck        # tsc --noEmit
 npm run test             # vitest run
 npm run test:coverage    # >97% thresholds
+npm run polymarket:check # Polymarket connectivity smoke check
+npm run polymarket:authcheck # Polymarket auth validation
+npm run polymarket:derive-creds # derive CLOB creds from L1 key
+npm run llm:smoke        # LLM routing smoke test
 npm run catalog:refresh  # refresh market catalog
 npm run catalog:refresh:dev -- --help # show market catalog generator CLI help
+npm run catalog:relations # build dependency relation catalog
+npm run catalog:relations:dev # run dependency relation catalog via tsx
 ```
 
 ### Dashboard

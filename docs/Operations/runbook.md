@@ -29,7 +29,12 @@ Root command/tool/flag index:
 
 ```bash
 npm run help
+npm run h
 ```
+
+Full command inventory:
+
+- `docs/Development/commands.md`
 
 ### Backend + dashboard
 
@@ -41,22 +46,49 @@ npm --prefix dashboard install
 npm run dev:ops
 ```
 
+Preferred alias:
+
+```bash
+npm run dev:up
+# or
+npm run paper:up
+```
+
 `dev:ops` starts all FW-coupled local components:
 - backend API (`:3000`)
 - dashboard (`:5174`)
 - IP oracle sidecar (`127.0.0.1:7071`)
 
-`dev:ops` now blocks on startup health checks for all three. Re-check status with:
+`dev:ops` requires oracle/backend readiness. Dashboard probe timeout is warning-only (oracle/backend stay up). Re-check full status with:
 
 ```bash
 npm run dev:ops:status
+# or
+npm run paper:status
+```
+
+Deterministic lifecycle smoke:
+
+```bash
+npm run dev:ops:smoke
+# or
+npm run paper:smoke
 ```
 
 Stop:
 
 ```bash
 npm run dev:ops:down
+# or
+npm run paper:down
 ```
+
+`npm run dev:ops:down` sends `SIGTERM` first, escalates to `SIGKILL` when needed, and performs best-effort cleanup on ports `3000`, `5174`, and `7071`.
+
+Dashboard startup noise control knobs:
+- `OPS_DASHBOARD_READY_RETRY_ATTEMPTS`
+- `OPS_DASHBOARD_READY_RETRY_BACKOFF_SECONDS`
+- `OPS_DASHBOARD_READY_RETRY_WINDOW_SECONDS`
 
 ### Backend only
 
@@ -64,10 +96,37 @@ npm run dev:ops:down
 npm run dev
 ```
 
+When `TRADING_MODE=paper` and `TRADING_ENABLED=true`, backend startup fails fast if `FW_ORACLE_BASE_URL/health` is unavailable. Use `npm run dev:ops`/`npm run paper:up` for reliable paper runs.
+
 ### Dashboard only
 
 ```bash
 npm --prefix dashboard run dev
+```
+
+### Docker backend + local dashboard
+
+```bash
+npm run dev:live
+```
+
+Stop:
+
+```bash
+npm run dev:live:down
+```
+
+### Compiled runtime
+
+```bash
+npm run build
+npm run start
+```
+
+Manual fallback process kill (only when PID tracking is stale):
+
+```bash
+lsof -ti tcp:3000,tcp:5174,tcp:7071 | xargs kill
 ```
 
 ## Ops API Surface
@@ -121,6 +180,27 @@ curl -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/health
 Dashboard operators authenticate via runtime session at `/ops/*` by submitting `OPS_API_TOKEN` once per session.
 `npm run dev:ops` defaults `OPS_DEV_SESSION_PREFILL_ENABLED=true`, so localhost token prefill is enabled automatically via `GET /ops/session?prefill=1`.
 To run without prefill, start with `OPS_DEV_SESSION_PREFILL_ENABLED=false npm run dev:ops`.
+When dashboard/API hostnames differ (for example `127.0.0.1` vs `localhost`), dashboard requests still authenticate via
+`x-ops-token` header fallback and stream URLs append `?token=<token>` for `EventSource`.
+
+## Ops UI Intent Semantics
+
+The Overview page exposes two intent tables sourced from stream events:
+
+- **All intents (gated):** driven by `latency` events with `stage=gated`.
+- **Executed intents:** driven by `order` events, especially `status=submitted`.
+
+Displayed strategy labels are normalized to:
+
+- `near_zero`
+- `ev`
+- `fw_projection`
+- `fw_basket`
+
+Normalization details:
+
+- `ev_single_side` is displayed as `ev`.
+- Opportunity IDs can infer strategy when explicit strategy metadata is missing (`:fw:`, `:fwb:`, `:yes:`, `:no:`).
 
 ## Incident Response
 
@@ -190,12 +270,39 @@ Monitor these in `/metrics` and `/stream`:
 - `fw_active_set`
 - `fw_contraction`
 - `fw_basket`
+- `fw_dependency` (`event=llm_extraction`, `reason`, and edge counts)
 
 Correlate with:
 
 - `gate_rejection` reasons (`fw_*`, `fw_basket:*`),
 - `execution_lifecycle` transitions,
 - `incident` events (`partial_fill`, `unwind_failed`, `circuit_breaker`).
+
+### FW dependency mode verification checklist
+
+1. Confirm active runtime mode is deterministic:
+
+```bash
+curl -s -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/config | jq '.policy.fwDependencyMode'
+```
+
+2. Confirm FW dependency extraction is no longer on the hot path:
+
+```bash
+curl -s -H "Authorization: Bearer $OPS_API_TOKEN" "http://localhost:3000/metrics" | jq '.events[]? | select(.type=="fw_dependency") | select(.data.event=="llm_extraction")'
+```
+
+Expected: no new `llm_extraction` events while `fwDependencyMode=deterministic`.
+
+3. If throughput drops after enabling deterministic mode, revert using risk-profile apply or policy patch and re-check `/config`:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $OPS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"profile":"extra_high"}' \
+  http://localhost:3000/config/risk-profile
+```
 
 ### Failure playbooks
 

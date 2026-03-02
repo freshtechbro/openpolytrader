@@ -5,6 +5,7 @@ Use this folder for runtime operations, controls, and incident handling.
 ## Start Here
 
 - Runbook: `docs/Operations/runbook.md`
+- Command reference: `docs/Development/commands.md`
 - Environment reference (minimum requirements + all keys): `docs/Operations/environment-reference.md`
 - Runtime config knobs: `docs/Operations/config-knobs.md`
 - Security guidance: `docs/Operations/security.md`

@@ -27,6 +27,7 @@ This project is an **experimental, research-focused trading tool**.
 - [Minimum Requirements](#minimum-requirements)
 - [Priority Keys (Live Trading)](#priority-keys-live-trading)
 - [Quickstart](#quickstart)
+- [CLI Command Reference](#cli-command-reference)
 - [FW Strategy Summary](#fw-strategy-summary)
 - [Environment Variables (Complete Index)](#environment-variables-complete-index)
 - [AI Agent Setup Prompt](#ai-agent-setup-prompt)
@@ -88,7 +89,7 @@ Also required operationally for near-zero live mode:
 ### Other Market Integrations
 
 - **Active venue now:** Polymarket
-- **Scaffolded, not active by default:** Kalshi (`PHASE2_CROSS_VENUE_ENABLED=false`)
+- **Scaffolded, not active by default:** Kalshi client/env wiring exists, but no active cross-venue execution path.
 - If cross-venue is enabled later, configure:
   - `KALSHI_API_KEY_ID`
   - `KALSHI_PRIVATE_KEY_PEM` or `KALSHI_PRIVATE_KEY_PATH`
@@ -134,6 +135,10 @@ VITE_OPS_BASE_URL=http://localhost:3000
 
 ```bash
 npm run dev:ops
+# alias
+npm run dev:up
+# alias
+npm run paper:up
 ```
 
 Access:
@@ -142,12 +147,23 @@ Access:
 - Dashboard: `http://localhost:5174`
 - Oracle sidecar: `http://127.0.0.1:7071`
 - `dev:ops` enables localhost token prefill by default (`OPS_DEV_SESSION_PREFILL_ENABLED=true`)
-- `dev:ops` runs startup health checks for oracle, backend, and dashboard.
+- `dev:ops` hard-gates oracle/backend startup and warns (non-fatal) if dashboard probe times out.
+- `dev:ops` uses short bounded dashboard re-probes before warning.
 
 Verify component status at any time:
 
 ```bash
 npm run dev:ops:status
+# alias
+npm run paper:status
+```
+
+Deterministic lifecycle smoke:
+
+```bash
+npm run dev:ops:smoke
+# alias
+npm run paper:smoke
 ```
 
 Disable prefill for a run:
@@ -160,7 +176,13 @@ Stop:
 
 ```bash
 npm run dev:ops:down
+# alias
+npm run paper:down
 ```
+
+Paper-mode startup contract:
+- In `TRADING_MODE=paper` with `TRADING_ENABLED=true`, backend startup now fails fast if `FW_ORACLE_BASE_URL/health` is unavailable.
+- Use `dev:ops`/`paper:up` so oracle sidecar, backend, and dashboard are brought up and health-checked together.
 
 ### 4. Validate
 
@@ -172,6 +194,45 @@ npm run test
 npm run test:coverage
 npm --prefix dashboard run build
 ```
+
+## CLI Command Reference
+
+Canonical command inventory (all root + dashboard scripts):
+
+- `docs/Development/commands.md`
+
+Tooling source-of-truth files used by those commands:
+
+- `package.json` and `dashboard/package.json` (script surfaces)
+- `package-lock.json` and `dashboard/package-lock.json` (reproducible installs, `npm ci`, Docker build inputs)
+- `tsconfig.json` and `dashboard/tsconfig.json` (TypeScript build/typecheck contracts)
+- `.eslintrc.cjs` (backend lint rules)
+- `Dockerfile` (production backend container build + `/health/live` healthcheck)
+
+Key workflows:
+
+```bash
+# help
+npm run help
+npm run h
+
+# start
+npm run dev
+npm run dev:ops
+npm run dev:up
+npm run paper:up
+npm run dev:ops:smoke
+npm run paper:smoke
+npm run dev:live
+npm run start
+
+# stop/kill
+npm run dev:ops:down
+npm run paper:down
+npm run dev:live:down
+```
+
+`npm run dev:ops:down` performs graceful termination and escalates to `SIGKILL` when needed, then cleans up listeners on `3000`, `5174`, and `7071`.
 
 ## FW Strategy Summary
 
@@ -186,6 +247,25 @@ Operational visibility:
 
 - `/metrics` and `/stream` expose `fw_iteration`, `fw_gap`, `fw_active_set`, `fw_contraction`, and `fw_basket`.
 - Dashboard Overview surfaces FW convergence and basket counters.
+
+## Ops Intent Strategy Labels
+
+Ops Overview intent rows represent two runtime milestones:
+
+- **Gated intents** are derived from `latency` events where `stage=gated`.
+- **Executed intents** are derived from `order` events where `status=submitted`.
+
+Dashboard strategy labels normalize runtime values into:
+
+- `near_zero`
+- `ev`
+- `fw_projection`
+- `fw_basket`
+
+Normalization details:
+
+- `ev_single_side` is displayed as `ev`.
+- ID hinting is used when strategy is missing (`:fw:` -> `fw_projection`, `:fwb:` -> `fw_basket`, `:yes:`/`:no:` -> `ev`).
 
 ## Environment Variables (Complete Index)
 
@@ -220,7 +300,7 @@ Source of truth files:
 <details>
 <summary>Market catalog + trading modes</summary>
 
-`TOTAL_CAPITAL`, `MARKET_CATALOG_PATH`, `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS`, `MARKET_CATALOG_MIN_VOLUME_24H`, `MARKET_CATALOG_MAX_SPREAD`, `MARKET_CATALOG_PAGE_SIZE`, `MARKET_CATALOG_MAX_PAGES`, `MARKET_CATALOG_ORDER`, `MARKET_CATALOG_EXCLUDE_ENDED_MARKETS`, `MARKET_CATALOG_EXPLORATION_ENABLED`, `MARKET_CATALOG_EXPLORATION_MAX_PAIRS`, `MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H`, `MARKET_CATALOG_EXPLORATION_MAX_PAGES`, `MARKET_CATALOG_PRESTART_MAX_AGE_MS`, `GAMMA_API_BASE_URL`, `TRADING_ENABLED`, `TRADING_MODE`, `RISK_PROFILE`, `RISK_PROFILE_PATH`, `RISK_PROFILE_ACTIVE_PATH`, `MAX_CONCURRENT_MARKETS`, `MAX_CAPITAL_IN_FLIGHT`, `PHASE2_CROSS_VENUE_ENABLED`
+`TOTAL_CAPITAL`, `MARKET_CATALOG_PATH`, `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS`, `MARKET_CATALOG_MIN_VOLUME_24H`, `MARKET_CATALOG_MAX_SPREAD`, `MARKET_CATALOG_PAGE_SIZE`, `MARKET_CATALOG_MAX_PAGES`, `MARKET_CATALOG_ORDER`, `MARKET_CATALOG_EXCLUDE_ENDED_MARKETS`, `MARKET_CATALOG_EXPLORATION_ENABLED`, `MARKET_CATALOG_EXPLORATION_MAX_PAIRS`, `MARKET_CATALOG_EXPLORATION_MIN_VOLUME_24H`, `MARKET_CATALOG_EXPLORATION_MAX_PAGES`, `MARKET_CATALOG_PRESTART_MAX_AGE_MS`, `GAMMA_API_BASE_URL`, `TRADING_ENABLED`, `TRADING_MODE`, `RISK_PROFILE`, `RISK_PROFILE_PATH`, `RISK_PROFILE_ACTIVE_PATH`, `MAX_CONCURRENT_MARKETS`, `MAX_CAPITAL_IN_FLIGHT`
 
 </details>
 
@@ -271,11 +351,11 @@ Requirements:
 2) Create .env and dashboard/.env from examples.
 3) Set TRADING_MODE=paper, TRADING_ENABLED=true.
 4) Set OPS_API_TOKEN and use runtime ops session login on /ops/*.
-5) Start with npm run dev:ops.
+5) Start with `npm run paper:up` (alias: `npm run dev:ops`).
 6) Verify:
    - GET /health returns healthy
    - dashboard loads on :5174
-   - /ops/overview prompts for token and loads after sign-in
+   - /ops/overview auto-authenticates in localhost prefill mode or prompts for token when prefill is disabled
    - authenticated /config works with Authorization: Bearer $OPS_API_TOKEN
 7) Run quality checks: npm run lint, npm run typecheck, npm run build, npm run test, npm run test:coverage.
 8) Do not switch to live mode unless ALCHEMY_API_KEY, POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_PASSPHRASE, and POLYMARKET_POSITIONS_USER are configured.
@@ -309,6 +389,7 @@ curl -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/health
 - API reference: `docs/API.md`
 - Architecture (with end-to-end event flow diagrams): `docs/ARCHITECTURE.md`
 - Local setup spec and quickstart details: `docs/Development/setup.md`
+- Full command reference (start/help/stop/kill + diagnostics): `docs/Development/commands.md`
 - Environment variable descriptions and defaults: `docs/Operations/environment-reference.md`
 - Runtime/ops procedures: `docs/Operations/runbook.md`
 - Config knobs: `docs/Operations/config-knobs.md`

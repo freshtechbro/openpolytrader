@@ -100,9 +100,26 @@ Common message-bus events emitted by runtime components:
 
 - `TRADING_MODE=off|shadow|paper|live`
 - `TRADING_ENABLED=true|false`
+- Paper-mode startup contract: with `TRADING_MODE=paper` and `TRADING_ENABLED=true`, backend boot performs FW oracle `/health` preflight and fails fast when sidecar is unavailable.
+- Recommended local paper orchestration: `npm run paper:up` / `npm run paper:status` / `npm run paper:down` (aliases for `dev:ops` scripts).
 - Live mode requires strict key validation in `src/config/env.ts`.
 - `POST /config/trading-mode` requires `?confirm=true` to switch to `live`.
 - Near-zero mode is fail-closed when required live prerequisites are missing.
+
+## Runtime Command Surface
+
+- Full command inventory: `docs/Development/commands.md`
+- Help: `npm run help` (`npm run h` alias)
+- Core start paths:
+  - `npm run dev` (backend only)
+  - `npm run dev:ops` / `npm run dev:up` / `npm run paper:up` (oracle + backend + dashboard)
+  - `npm run dev:live` (Docker backend + local dashboard)
+  - `npm run start` (compiled runtime)
+- Core stop/kill paths:
+  - `npm run dev:ops:down` / `npm run paper:down` (includes escalation to `SIGKILL` and port cleanup when required)
+  - `npm run dev:live:down` (Docker shutdown)
+- Lifecycle smoke:
+  - `npm run dev:ops:smoke` / `npm run paper:smoke`
 
 ## Persistence + Telemetry
 
@@ -110,6 +127,16 @@ Common message-bus events emitted by runtime components:
 - In-memory metrics stream: `src/telemetry/metrics.ts`
 - SLO aggregates computed from event store: `src/agents/ops/sloAggregates.ts`
 - SSE stream available at `GET /stream`
+
+## Dashboard Intent Semantics
+
+The Ops Overview intent tables are fed by stream events:
+
+- "All intents (gated)" rows are created from `latency` events where `stage=gated`.
+- "Executed intents" rows are updated from `order` events.
+- Strategy labels shown to operators are normalized to `near_zero`, `ev`, `fw_projection`, and `fw_basket`.
+  - `ev_single_side` is normalized to `ev`.
+  - Opportunity-id hints are used when explicit strategy is missing (`:fw:`, `:fwb:`, `:yes:`, `:no:`).
 
 ## Ops and Control Plane
 
