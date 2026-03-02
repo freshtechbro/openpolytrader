@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { STREAM_WATCHDOG_MS } from '../lib/dashboardConfig';
 
 export interface StreamEvent {
   type: string;
@@ -18,12 +19,15 @@ export function useEventStream(url: string | null, onEvent?: (event: StreamEvent
     }
 
     const source = new EventSource(url, { withCredentials: true });
+    let lastActivityAt = Date.now();
 
-    source.onopen = () => setConnected(true);
+    source.onopen = () => {
+      lastActivityAt = Date.now();
+      setConnected(true);
+    };
     source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) {
-        setConnected(false);
-      }
+      // Treat any stream error as a disconnected state; UI debounce handles reconnect jitter.
+      setConnected(false);
     };
 
     source.addEventListener('health', handle);
@@ -44,6 +48,13 @@ export function useEventStream(url: string | null, onEvent?: (event: StreamEvent
     source.addEventListener('allowlist_updated', handle);
     source.addEventListener('trading_mode_changed', handle);
     source.addEventListener('trading_enabled_changed', handle);
+    source.addEventListener('stream_ping', handle);
+
+    const watchdog = window.setInterval(() => {
+      if (Date.now() - lastActivityAt > STREAM_WATCHDOG_MS) {
+        setConnected(false);
+      }
+    }, 1000);
 
     function handle(event: Event) {
       const data = (event as MessageEvent).data;
@@ -55,12 +66,14 @@ export function useEventStream(url: string | null, onEvent?: (event: StreamEvent
       } catch {
         return;
       }
+      lastActivityAt = Date.now();
       setConnected(true);
       setLastEvent(parsed);
       onEvent?.(parsed);
     }
 
     return () => {
+      window.clearInterval(watchdog);
       source.close();
     };
   }, [url, onEvent]);

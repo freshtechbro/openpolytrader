@@ -4,7 +4,8 @@ import { Panel } from '../components/Panel';
 import { Section } from '../components/Section';
 import { MetricsTable, type TableRow } from '../components/MetricsTable';
 import { useEventStream, StreamEvent } from '../hooks/useEventStream';
-import { opsFetchJson, OPS_STREAM_URL } from '../lib/opsClient';
+import { getOpsStreamUrl, opsFetchJson } from '../lib/opsClient';
+import { STREAM_OFFLINE_DEBOUNCE_MS } from '../lib/dashboardConfig';
 
 import type { AllowlistEntry } from './Overview';
 
@@ -14,6 +15,32 @@ interface EnrichedMarketEntry extends AllowlistEntry {
 }
 
 const MARKETS_PREVIEW_LIMIT = 30;
+
+type MarketsStreamBadgeState = 'connecting' | 'live' | 'offline';
+
+const STREAM_BADGE_META: Record<
+  MarketsStreamBadgeState,
+  { label: string; background: string; color: string; dot: string }
+> = {
+  connecting: {
+    label: 'Connecting',
+    background: 'rgba(148, 163, 184, 0.2)',
+    color: '#64748b',
+    dot: '#64748b'
+  },
+  live: {
+    label: 'Live',
+    background: 'rgba(34, 197, 94, 0.2)',
+    color: '#22c55e',
+    dot: '#22c55e'
+  },
+  offline: {
+    label: 'Offline',
+    background: 'rgba(239, 68, 68, 0.2)',
+    color: '#ef4444',
+    dot: '#ef4444'
+  }
+};
 
 export function Markets({ allowlist: initialAllowlist }: { allowlist: AllowlistEntry[] }) {
   const [markets, setMarkets] = useState<EnrichedMarketEntry[]>(
@@ -26,10 +53,8 @@ export function Markets({ allowlist: initialAllowlist }: { allowlist: AllowlistE
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [showAllMarkets, setShowAllMarkets] = useState(false);
-
-  useEffect(() => {
-    fetchMarkets();
-  }, []);
+  const [hasInitialFetchSettled, setHasInitialFetchSettled] = useState(false);
+  const [streamOfflineDebounced, setStreamOfflineDebounced] = useState(false);
 
   const fetchMarkets = useCallback(async () => {
     setLoading(true);
@@ -38,19 +63,45 @@ export function Markets({ allowlist: initialAllowlist }: { allowlist: AllowlistE
       setMarkets(data);
       setLastUpdate(new Date());
     } catch {
+      // Keep existing market rows when refresh fails.
+    } finally {
       setLoading(false);
-      return;
+      setHasInitialFetchSettled(true);
     }
-    setLoading(false);
   }, []);
+
+  useEffect(() => {
+    void fetchMarkets();
+  }, [fetchMarkets]);
 
   const handleStreamEvent = useCallback((event: StreamEvent) => {
     if (event.type === 'allowlist_updated') {
-      fetchMarkets();
+      void fetchMarkets();
     }
   }, [fetchMarkets]);
 
-  const [{ connected }] = useEventStream(OPS_STREAM_URL, handleStreamEvent);
+  const [{ connected }] = useEventStream(getOpsStreamUrl(), handleStreamEvent);
+
+  useEffect(() => {
+    if (connected) {
+      setStreamOfflineDebounced(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setStreamOfflineDebounced(true);
+    }, STREAM_OFFLINE_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [connected]);
+
+  const streamBadgeState = useMemo<MarketsStreamBadgeState>(() => {
+    if (!hasInitialFetchSettled) return 'connecting';
+    if (connected) return 'live';
+    return streamOfflineDebounced ? 'offline' : 'connecting';
+  }, [hasInitialFetchSettled, connected, streamOfflineDebounced]);
+  const streamBadgeMeta = STREAM_BADGE_META[streamBadgeState];
+
   const visibleMarkets = useMemo(
     () => (showAllMarkets ? markets : markets.slice(0, MARKETS_PREVIEW_LIMIT)),
     [markets, showAllMarkets]
@@ -101,19 +152,20 @@ export function Markets({ allowlist: initialAllowlist }: { allowlist: AllowlistE
                   borderRadius: 10,
                   fontSize: 11,
                   fontWeight: 600,
-                  background: connected ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)',
-                  color: connected ? '#22c55e' : '#ef4444'
+                  background: streamBadgeMeta.background,
+                  color: streamBadgeMeta.color
                 }}
+                aria-live="polite"
               >
                 <span
                   style={{
                     width: 6,
                     height: 6,
                     borderRadius: '50%',
-                    background: connected ? '#22c55e' : '#ef4444'
+                    background: streamBadgeMeta.dot
                   }}
                 />
-                {connected ? 'Live' : 'Offline'}
+                {streamBadgeMeta.label}
               </span>
               {lastUpdate && (
                 <span style={{ fontSize: 11, opacity: 0.6 }} aria-live="polite">

@@ -612,6 +612,14 @@ export function createOpsServer(
     let pingCount = 0;
     const heartbeat = setInterval(() => {
       reply.raw.write(': ping\n\n');
+      reply.raw.write('event: stream_ping\n');
+      reply.raw.write(
+        `data: ${JSON.stringify({
+          type: 'stream_ping',
+          timestamp: Date.now(),
+          data: { message: 'stream_ping' }
+        })}\n\n`
+      );
       pingCount += 1;
 
       if (maxPings !== null && pingCount >= maxPings) {

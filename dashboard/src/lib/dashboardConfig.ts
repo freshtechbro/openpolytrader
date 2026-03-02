@@ -2,6 +2,8 @@ const DEFAULTS = {
   opsBaseUrl: '',
   portfolioRefreshMs: 5000,
   sloRefreshMs: 30000,
+  streamOfflineDebounceMs: 3000,
+  streamWatchdogMs: 45000,
   incidentsLimit: 100,
   incidentsPreviewLimit: 6,
   publicRepoUrl: 'https' + '://github.com/freshtechbro/openpolytrader'
@@ -37,6 +39,14 @@ export const PORTFOLIO_REFRESH_MS = parsePositiveInt(
 export const SLO_REFRESH_MS = parsePositiveInt(
   import.meta.env.VITE_SLO_REFRESH_MS,
   DEFAULTS.sloRefreshMs
+);
+export const STREAM_OFFLINE_DEBOUNCE_MS = parsePositiveInt(
+  import.meta.env.VITE_STREAM_OFFLINE_DEBOUNCE_MS,
+  DEFAULTS.streamOfflineDebounceMs
+);
+export const STREAM_WATCHDOG_MS = parsePositiveInt(
+  import.meta.env.VITE_STREAM_WATCHDOG_MS,
+  DEFAULTS.streamWatchdogMs
 );
 export const INCIDENTS_LIMIT = parsePositiveInt(
   import.meta.env.VITE_INCIDENTS_LIMIT,
