@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { TopNav } from '../components/TopNav';
+import type { TopNavStreamState } from '../components/TopNav';
 import { useEventStream } from '../hooks/useEventStream';
 import {
   clearOpsAuthToken,
@@ -14,7 +15,7 @@ import {
   opsFetchJson,
   setOpsAuthToken
 } from '../lib/opsClient';
-import { INCIDENTS_LIMIT, SLO_REFRESH_MS } from '../lib/dashboardConfig';
+import { INCIDENTS_LIMIT, SLO_REFRESH_MS, STREAM_OFFLINE_DEBOUNCE_MS } from '../lib/dashboardConfig';
 import {
   Overview,
   type AllowlistEntry,
@@ -143,6 +144,8 @@ export function OpsLayout() {
   const [expanded, setExpanded] = useState(false);
   const [tradingMode, setTradingMode] = useState<TradingMode | null>(null);
   const [tradingEnabled, setTradingEnabled] = useState<boolean | null>(null);
+  const [allowlistBootstrapSettled, setAllowlistBootstrapSettled] = useState(false);
+  const [streamOfflineDebounced, setStreamOfflineDebounced] = useState(false);
 
   const allowlistRef = useRef<AllowlistEntry[]>([]);
 
@@ -156,6 +159,8 @@ export function OpsLayout() {
       authRequired: true,
       error: null
     });
+    setAllowlistBootstrapSettled(false);
+    setStreamOfflineDebounced(false);
     setFinalIntents([]);
     setIncidents([]);
   }, []);
@@ -220,14 +225,16 @@ export function OpsLayout() {
       const data = await opsFetchJson<unknown>('/markets');
       if (Array.isArray(data)) {
         setAllowlist(data as AllowlistEntry[]);
-        return;
+      } else {
+        setAllowlist([]);
       }
-      setAllowlist([]);
     } catch (error) {
       if (isOpsUnauthorizedError(error)) {
         handleUnauthorized();
       }
       setAllowlist([]);
+    } finally {
+      setAllowlistBootstrapSettled(true);
     }
   }, [handleUnauthorized]);
 
@@ -336,6 +343,34 @@ export function OpsLayout() {
   );
 
   const [streamEvents] = useEventStream(session.authenticated ? getOpsStreamUrl() : null, handleStreamEvent);
+
+  useEffect(() => {
+    if (!session.authenticated) {
+      setAllowlistBootstrapSettled(false);
+    }
+  }, [session.authenticated]);
+
+  useEffect(() => {
+    if (!session.authenticated) {
+      setStreamOfflineDebounced(false);
+      return;
+    }
+    if (streamEvents.connected) {
+      setStreamOfflineDebounced(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setStreamOfflineDebounced(true);
+    }, STREAM_OFFLINE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [session.authenticated, streamEvents.connected]);
+
+  const topNavStreamState = useMemo<TopNavStreamState>(() => {
+    if (!session.authenticated || !allowlistBootstrapSettled) return 'connecting';
+    if (streamEvents.connected) return 'live';
+    return streamOfflineDebounced ? 'offline' : 'connecting';
+  }, [allowlistBootstrapSettled, session.authenticated, streamEvents.connected, streamOfflineDebounced]);
 
   useEffect(() => {
     if (!session.authenticated) return;
@@ -475,6 +510,8 @@ export function OpsLayout() {
       authRequired: true,
       error: null
     });
+    setAllowlistBootstrapSettled(false);
+    setStreamOfflineDebounced(false);
     setFinalIntents([]);
     setIncidents([]);
   };
@@ -560,7 +597,7 @@ export function OpsLayout() {
         title="OpenPolyTrader Ops"
         subtitle="Near-risk-free monitoring console"
         status={health?.status ?? 'degraded'}
-        streamConnected={streamEvents.connected}
+        streamState={topNavStreamState}
         tradingMode={tradingMode}
         tradingEnabled={tradingEnabled}
         onModeChange={async (mode) => {

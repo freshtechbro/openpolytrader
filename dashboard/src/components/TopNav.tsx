@@ -2,12 +2,13 @@ import { StatusPill } from './StatusPill';
 import { GitHubRepoLink } from './GitHubRepoLink';
 
 type TradingMode = 'off' | 'shadow' | 'paper' | 'live';
+export type TopNavStreamState = 'connecting' | 'live' | 'offline';
 
 interface TopNavProps {
   title: string;
   subtitle: string;
   status: 'healthy' | 'degraded';
-  streamConnected: boolean;
+  streamState: TopNavStreamState;
   tradingMode: TradingMode | null;
   tradingEnabled: boolean | null;
   onModeChange?: (mode: TradingMode) => void;
@@ -31,7 +32,13 @@ function getTradingModeVariant(mode: TradingMode | null, enabled: boolean | null
   return mode;
 }
 
-export function TopNav({ title, subtitle, status, streamConnected, tradingMode, tradingEnabled, onModeChange, onEnabledChange }: TopNavProps) {
+function getStreamLabel(streamState: TopNavStreamState): string {
+  if (streamState === 'live') return 'Stream live';
+  if (streamState === 'offline') return 'Stream offline';
+  return 'Stream connecting';
+}
+
+export function TopNav({ title, subtitle, status, streamState, tradingMode, tradingEnabled, onModeChange, onEnabledChange }: TopNavProps) {
   const modeVariant = getTradingModeVariant(tradingMode, tradingEnabled);
   const modeLabel = getTradingModeLabel(tradingMode);
   const enabledLabel = tradingEnabled === null ? '' : tradingEnabled ? 'Enabled' : 'Disabled';
@@ -95,8 +102,8 @@ export function TopNav({ title, subtitle, status, streamConnected, tradingMode, 
           )}
         </span>
         <StatusPill status={status} />
-        <span className={`stream ${streamConnected ? 'stream--on' : 'stream--off'}`}>
-          {streamConnected ? 'Stream live' : 'Stream offline'}
+        <span className={`stream ${streamState === 'live' ? 'stream--on' : streamState === 'offline' ? 'stream--off' : 'stream--connecting'}`}>
+          {getStreamLabel(streamState)}
         </span>
       </div>
     </header>

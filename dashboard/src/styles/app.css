@@ -457,6 +457,11 @@ h1 {
   color: var(--alert);
 }
 
+.stream--connecting {
+  background: rgba(100, 116, 139, 0.14);
+  color: #64748b;
+}
+
 .trading-mode {
   display: flex;
   align-items: center;

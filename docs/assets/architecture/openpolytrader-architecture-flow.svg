@@ -1,0 +1,158 @@
+<svg width="1600" height="1000" viewBox="0 0 1600 1000" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">OpenPolyTrader Architecture and Decision Flow</title>
+  <desc id="desc">Neatly arranged architecture map with external feeds, strategy branches, FW stack, and approval to execution to operations flow.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="1000" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f6f2ee"/>
+      <stop offset="1" stop-color="#ece6df"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#ffffff" stop-opacity="0.97"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.91"/>
+    </linearGradient>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="130%" filterUnits="objectBoundingBox">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#0b3a46" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0f4c5c"/>
+    </marker>
+    <style>
+      .title { font: 700 34px 'Avenir Next', 'Segoe UI', sans-serif; fill: #0b3a46; }
+      .subtitle { font: 500 14px 'Avenir Next', 'Segoe UI', sans-serif; fill: #335861; }
+      .section { font: 700 20px 'Avenir Next', 'Segoe UI', sans-serif; fill: #0b3a46; }
+      .label { font: 600 14px 'Avenir Next', 'Segoe UI', sans-serif; fill: #0b3a46; }
+      .meta { font: 500 12px 'Avenir Next', 'Segoe UI', sans-serif; fill: #335861; }
+      .box { fill: #ffffff; stroke: #d6cec5; stroke-width: 1.4; rx: 12; }
+      .branch { fill: #ffffff; stroke: #0f4c5c; stroke-width: 1.8; rx: 12; }
+      .fw { fill: #f7fbfc; stroke: #2d6a4f; stroke-width: 2; rx: 12; }
+      .ops { fill: #fff9f7; stroke: #9a3a2f; stroke-width: 2; rx: 12; }
+      .edge { stroke: #0f4c5c; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .soft { stroke: #86a0a8; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <text x="48" y="54" class="title">OpenPolyTrader Architecture And Decision Flow</text>
+  <text x="48" y="78" class="subtitle">Clean operator view: feeds -> strategy branching -> intent approval -> execution -> ops telemetry</text>
+
+  <rect x="32" y="100" width="1536" height="580" rx="18" fill="url(#panel)" stroke="#d6cec5" filter="url(#shadow)"/>
+  <text x="52" y="132" class="section">1) Ingest + Strategy Generation</text>
+
+  <rect class="box" x="52" y="148" width="166" height="52"/>
+  <text x="64" y="179" class="meta">Gamma Catalog</text>
+  <rect class="box" x="236" y="148" width="190" height="52"/>
+  <text x="248" y="179" class="meta">Polymarket WS Market</text>
+  <rect class="box" x="444" y="148" width="182" height="52"/>
+  <text x="456" y="179" class="meta">Polymarket WS User</text>
+  <rect class="box" x="644" y="148" width="166" height="52"/>
+  <text x="656" y="179" class="meta">Polymarket REST</text>
+
+  <rect class="box" x="52" y="224" width="218" height="66"/>
+  <text x="64" y="253" class="label">MarketCatalog/Allowlist</text>
+  <text x="64" y="272" class="meta">Universe + access state</text>
+
+  <rect class="box" x="294" y="224" width="198" height="66"/>
+  <text x="306" y="253" class="label">MarketDataAgent</text>
+  <text x="306" y="272" class="meta">Books + freshness state</text>
+
+  <rect class="box" x="514" y="224" width="178" height="66"/>
+  <text x="526" y="253" class="label">Fill Tracker Lane</text>
+  <text x="526" y="272" class="meta">User WS execution updates</text>
+
+  <rect class="box" x="714" y="224" width="178" height="66"/>
+  <text x="726" y="253" class="label">Order Lane</text>
+  <text x="726" y="272" class="meta">Submit/cancel via REST</text>
+
+  <rect class="box" x="52" y="330" width="194" height="74"/>
+  <text x="64" y="361" class="label">MarketDataAgent</text>
+  <text x="64" y="381" class="meta">emits market:updated</text>
+
+  <rect class="box" x="272" y="330" width="184" height="74"/>
+  <text x="284" y="361" class="label">Supervisor</text>
+  <text x="284" y="381" class="meta">routing + guardrails</text>
+
+  <rect class="box" x="482" y="330" width="206" height="74"/>
+  <text x="494" y="361" class="label">ScannerAgent</text>
+  <text x="494" y="381" class="meta">strategy branching point</text>
+
+  <rect class="branch" x="720" y="304" width="196" height="72"/>
+  <text x="732" y="334" class="label">Branch A: near_zero</text>
+  <text x="732" y="353" class="meta">paired YES+NO gating</text>
+
+  <rect class="branch" x="720" y="392" width="196" height="72"/>
+  <text x="732" y="422" class="label">Branch B: ev</text>
+  <text x="732" y="441" class="meta">single-leg EV selection</text>
+
+  <rect class="box" x="1188" y="330" width="232" height="74"/>
+  <text x="1200" y="361" class="label">SignalAggregator + Learning</text>
+  <text x="1200" y="381" class="meta">optional insights for EV path</text>
+
+  <rect class="fw" x="944" y="286" width="452" height="240"/>
+  <text x="960" y="316" class="label">Branch C: FW (projection + basket)</text>
+  <rect class="box" x="960" y="330" width="420" height="42"/>
+  <text x="972" y="355" class="meta">DependencyResolver + RelationCatalog</text>
+  <rect class="box" x="960" y="380" width="420" height="42"/>
+  <text x="972" y="405" class="meta">FW Loop Engine</text>
+  <rect class="box" x="960" y="430" width="204" height="42"/>
+  <text x="972" y="455" class="meta">IpOracleClient</text>
+  <rect class="box" x="1176" y="430" width="204" height="42"/>
+  <text x="1188" y="455" class="meta">IP Oracle Sidecar /solve</text>
+  <rect class="box" x="960" y="480" width="420" height="30"/>
+  <text x="972" y="500" class="meta">Lower-bound + executability filters -> fw_projection / fw_basket intents</text>
+
+  <path class="edge" d="M218 174 H236"/>
+  <path class="edge" d="M426 174 H444"/>
+  <path class="edge" d="M626 174 H644"/>
+  <path class="soft" d="M138 200 V224"/>
+  <path class="soft" d="M392 200 V224"/>
+  <path class="soft" d="M536 200 V224"/>
+  <path class="soft" d="M736 200 V224"/>
+
+  <path class="edge" d="M246 367 H272"/>
+  <path class="edge" d="M456 367 H482"/>
+  <path class="edge" d="M688 367 H720"/>
+  <path class="edge" d="M688 367 C706 367 706 428 720 428"/>
+  <path class="edge" d="M688 367 C712 367 860 345 944 345"/>
+  <path class="soft" d="M1188 367 H916"/>
+
+  <path class="soft" d="M1164 451 H1176"/>
+  <path class="soft" d="M1278 430 V422"/>
+
+  <rect x="32" y="708" width="1536" height="260" rx="18" fill="url(#panel)" stroke="#d6cec5" filter="url(#shadow)"/>
+  <text x="52" y="740" class="section">2) Intent Approval + Execution + Operations</text>
+
+  <rect class="branch" x="52" y="760" width="226" height="70"/>
+  <text x="64" y="791" class="label">Intent Candidates</text>
+  <text x="64" y="810" class="meta">near_zero / ev / fw_projection / fw_basket</text>
+
+  <rect class="branch" x="304" y="760" width="214" height="70"/>
+  <text x="316" y="791" class="label">RiskAgent</text>
+  <text x="316" y="810" class="meta">size + notional/exposure caps</text>
+
+  <rect class="branch" x="544" y="760" width="300" height="70"/>
+  <text x="556" y="791" class="label">Supervisor Re-Gate + Capacity</text>
+  <text x="556" y="810" class="meta">circuit, concurrency, capital-in-flight checks</text>
+
+  <rect class="branch" x="870" y="760" width="246" height="70"/>
+  <text x="882" y="791" class="label">ExecutionAgent</text>
+  <text x="882" y="810" class="meta">submit / wait / cancel / unwind</text>
+
+  <rect class="box" x="870" y="846" width="380" height="90"/>
+  <text x="882" y="874" class="meta">near_zero: paired execution + unwind discipline</text>
+  <text x="882" y="893" class="meta">ev: one-leg execution + fill-outcome validation</text>
+  <text x="882" y="912" class="meta">fw_basket: sequential_failfast or batch_best_effort</text>
+
+  <rect class="ops" x="1276" y="760" width="272" height="176"/>
+  <text x="1290" y="790" class="label">State + Ops Plane</text>
+  <text x="1290" y="812" class="meta">Execution/Portfolio/Ops events</text>
+  <text x="1290" y="831" class="meta">-> MetricsStore + EventStore (SQLite)</text>
+  <text x="1290" y="850" class="meta">-> Fastify Ops API</text>
+  <text x="1290" y="869" class="meta">-> Dashboard + SSE stream</text>
+
+  <path class="edge" d="M278 795 H304"/>
+  <path class="edge" d="M518 795 H544"/>
+  <path class="edge" d="M844 795 H870"/>
+  <path class="edge" d="M1116 795 H1276"/>
+
+  <text x="48" y="988" class="meta">Source anchors: src/core/Supervisor.ts, src/agents/scanner/ScannerAgent.ts, src/agents/projection/FwProjectionAgent.ts, src/agents/risk/RiskAgent.ts, src/agents/execution/ExecutionAgent.ts</text>
+</svg>

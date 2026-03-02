@@ -4,7 +4,7 @@ import { MetricsTable } from '../components/MetricsTable';
 import { Panel } from '../components/Panel';
 import { Section } from '../components/Section';
 import { useEventStream, StreamEvent } from '../hooks/useEventStream';
-import { opsFetchJson, OPS_STREAM_URL } from '../lib/opsClient';
+import { getOpsStreamUrl, opsFetchJson } from '../lib/opsClient';
 
 interface StoredDecision {
   id: string;
@@ -163,7 +163,7 @@ export function Decisions() {
     }, 3000);
   }, [liveEnabled, agent, subjectId, limit]);
 
-  const [{ connected }] = useEventStream(OPS_STREAM_URL, handleLiveDecision);
+  const [{ connected }] = useEventStream(getOpsStreamUrl(), handleLiveDecision);
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
