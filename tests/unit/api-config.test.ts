@@ -496,20 +496,20 @@ describe('ops config endpoints', () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual([
         {
-          id: 'dec-1',
-          subjectId: 'opp-1',
-          timestamp: 1,
-          agent: 'risk',
-          decision: { ok: true },
-          reasoning: { confidence: 0.5 }
-        },
-        {
           id: 'dec-2',
           subjectId: 'opp-2',
           timestamp: 2,
           agent: 'ops',
           decision: { status: 'healthy' },
           reasoning: { confidence: 0.9 }
+        },
+        {
+          id: 'dec-1',
+          subjectId: 'opp-1',
+          timestamp: 1,
+          agent: 'risk',
+          decision: { ok: true },
+          reasoning: { confidence: 0.5 }
         }
       ]);
 

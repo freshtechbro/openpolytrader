@@ -37,7 +37,7 @@ export function buildOpsUrl(path: string): string {
 export function getOpsStreamUrl(): string {
   const base = OPS_STREAM_URL;
   if (!opsAuthToken) return base;
-  if (!shouldAppendStreamToken(base)) return base;
+  if (!shouldAppendStreamToken(base) && hasOpsSessionCookie()) return base;
   const separator = base.includes('?') ? '&' : '?';
   return `${base}${separator}token=${encodeURIComponent(opsAuthToken)}`;
 }
@@ -131,4 +131,9 @@ function shouldAppendStreamToken(streamUrl: string): boolean {
   } catch {
     return false;
   }
+}
+
+function hasOpsSessionCookie(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.cookie.split(';').some((part) => part.trim().startsWith('ops_session='));
 }

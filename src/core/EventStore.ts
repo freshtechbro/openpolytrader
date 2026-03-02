@@ -376,7 +376,7 @@ export class EventStore {
       `SELECT id, opportunity_id, ts, agent, decision_json, reasoning_json
        FROM decisions
        ${whereSql}
-       ORDER BY ts ASC
+       ORDER BY ts DESC
        ${limitSql}`
     );
 
