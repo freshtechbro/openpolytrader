@@ -1,4 +1,5 @@
 import { StatusPill } from './StatusPill';
+import { GitHubRepoLink } from './GitHubRepoLink';
 
 type TradingMode = 'off' | 'shadow' | 'paper' | 'live';
 
@@ -55,9 +56,12 @@ export function TopNav({ title, subtitle, status, streamConnected, tradingMode, 
 
   return (
     <header className="topnav">
-      <div>
-        <p className="topnav__title">{title}</p>
-        <p className="topnav__subtitle">{subtitle}</p>
+      <div className="topnav__brand">
+        <GitHubRepoLink />
+        <div>
+          <p className="topnav__title">{title}</p>
+          <p className="topnav__subtitle">{subtitle}</p>
+        </div>
       </div>
       <div className="topnav__status">
         <span className={`trading-mode trading-mode--${modeVariant}`}>

@@ -1,6 +1,5 @@
 {
-  "timeout_multiplier": 0.8,
-  "unwind_hint": "aggressive",
+  "timeout_multiplier": 0.9,
+  "unwind_hint": "neutral",
   "confidence": 0.7
 }
-

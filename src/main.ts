@@ -1,6 +1,7 @@
 import 'dotenv/config';
 
 import type { FastifyInstance } from 'fastify';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { loadEnv, resolveRiskProfileEnvFlags } from './config/env.js';
 import { loadLLMConfig } from './config/llm.js';
@@ -41,6 +42,13 @@ import { ExaClient, FirecrawlClient, WebSearchCache } from './services/websearch
 import { PortfolioAgent } from './agents/portfolio/PortfolioAgent.js';
 import { LearningAgent } from './agents/learning/LearningAgent.js';
 import { SignalAggregatorAgent } from './agents/signal/SignalAggregatorAgent.js';
+import { createDependencyLLMExtractor } from './agents/dependency/DependencyLLMExtractor.js';
+import {
+  buildDependencyRelationCatalogEntries,
+  loadDependencyRelationCatalog
+} from './agents/dependency/DependencyRelationCatalog.js';
+import { ensureFwRelationCatalogStartupReady } from './agents/dependency/FwRelationCatalogStartupGuard.js';
+import { FwProjectionAgent } from './agents/projection/FwProjectionAgent.js';
 import { EventStore } from './core/EventStore.js';
 import { messageBus } from './core/MessageBus.js';
 import { Supervisor } from './core/Supervisor.js';
@@ -51,6 +59,7 @@ import { getInfraConfigSnapshot } from './config/infra.js';
 import { LLMClient } from './services/llm/LLMClient.js';
 import type { LLMAgentId, LLMRequest } from './services/llm/types.js';
 import { RiskAdvisor } from './agents/risk/RiskAdvisor.js';
+import { IpOracleClient } from './services/ip-oracle/IpOracleClient.js';
 import { sha256 as sha256Hex } from './utils/crypto.js';
 
 const env = loadEnv();
@@ -138,6 +147,85 @@ const parseDomainList = (value?: string): string[] => {
   return Array.from(new Set(entries));
 };
 
+const DEFAULT_DEPENDENCY_RELATION_CATALOG_PATH = 'data/dependency-relations.json';
+
+const normalizeOracleBaseUrl = (value: string): string => value.trim().replace(/\/+$/, '');
+
+const fetchWithTimeout = async (
+  url: string,
+  timeoutMs: number,
+  headers: Record<string, string>
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), Math.max(100, timeoutMs));
+  timeoutHandle.unref?.();
+  try {
+    return await fetch(url, { method: 'GET', headers, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+};
+
+const ensureFwOracleStartupReady = async (input: {
+  tradingEnabled: boolean;
+  tradingMode: string;
+  baseUrl: string;
+  apiKey?: string;
+  timeoutMs: number;
+  attempts: number;
+  retryDelayMs: number;
+  metrics: MetricsStore;
+}): Promise<void> => {
+  if (!input.tradingEnabled || input.tradingMode !== 'paper') return;
+
+  const baseUrl = normalizeOracleBaseUrl(input.baseUrl);
+  if (!baseUrl) {
+    throw new Error(
+      '[boot] FW oracle base URL is empty in paper mode. Set FW_ORACLE_BASE_URL or use `npm run dev:ops`.'
+    );
+  }
+
+  const healthUrl = `${baseUrl}/health`;
+  const headers: Record<string, string> = {};
+  if (input.apiKey) {
+    headers.authorization = `Bearer ${input.apiKey}`;
+  }
+
+  let lastFailure = 'unknown';
+  const attempts = Math.max(1, input.attempts);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(healthUrl, input.timeoutMs, headers);
+      if (response.ok) {
+        input.metrics.record({
+          type: 'fw_oracle',
+          timestamp: Date.now(),
+          data: { event: 'startup_healthcheck_ok', healthUrl, attempt }
+        });
+        return;
+      }
+      lastFailure = `http_${response.status}`;
+    } catch (error) {
+      lastFailure = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt < attempts) {
+      await delay(Math.max(50, input.retryDelayMs));
+    }
+  }
+
+  input.metrics.record({
+    type: 'incident',
+    timestamp: Date.now(),
+    data: {
+      reason: 'fw_oracle_unavailable_startup',
+      detail: { healthUrl, attempts, lastFailure }
+    }
+  });
+  throw new Error(
+    `[boot] FW oracle sidecar is unavailable (${healthUrl}; attempts=${attempts}; last=${lastFailure}). Start the full stack with \`npm run dev:ops\` or bring up the oracle sidecar.`
+  );
+};
+
 console.log('[boot] openpolytrader starting');
 console.log(
   `[boot] env=${env.NODE_ENV} trading=${env.TRADING_ENABLED} mode=${env.TRADING_MODE}`
@@ -157,6 +245,34 @@ const persistMetric = (event: MetricEvent) => store.persistMetric(event);
 metrics.on('event', persistMetric);
 attachLLMDecisionStream(metrics);
 
+const paperRunId = env.TRADING_MODE === 'paper' ? `paper-${Date.now()}` : null;
+let paperRunStopMarkerRecorded = false;
+const recordPaperRunMarker = (
+  phase: 'start' | 'stop',
+  reason: string
+): void => {
+  if (!paperRunId) return;
+  if (phase === 'stop' && paperRunStopMarkerRecorded) return;
+  metrics.record({
+    type: 'info',
+    timestamp: Date.now(),
+    data: {
+      message: 'paper_run_marker',
+      phase,
+      runId: paperRunId,
+      reason,
+      mode: env.TRADING_MODE,
+      dbPath: env.EVENT_STORE_PATH
+    }
+  });
+  if (phase === 'stop') {
+    paperRunStopMarkerRecorded = true;
+  }
+};
+
+const relationCatalogPath = DEFAULT_DEPENDENCY_RELATION_CATALOG_PATH;
+let relationCatalogSnapshot = loadDependencyRelationCatalog(relationCatalogPath);
+
 const llmConfig = loadLLMConfig(env);
 const llmPromptVersion = 'llm-v1';
 const policyHashes = {
@@ -170,6 +286,14 @@ const llmFacade = {
   promptVersion: llmPromptVersion,
   policyHashes
 };
+const fwDependencyLlmExtractor = createDependencyLLMExtractor({
+  llmConfig,
+  llmClient: { call: (agent, request, nowMs) => llmClient.call(agent, request, nowMs) },
+  promptVersion: llmPromptVersion,
+  policyHashes,
+  eventStore: store,
+  metrics
+});
 const executionAdvisor =
   llmConfig.enabled && llmConfig.agents.ExecutionAgent.mode !== 'disabled'
     ? new ExecutionAdvisor({ enabled: true })
@@ -475,6 +599,124 @@ const signalAggregator =
       })
     : undefined;
 
+const fwOracleClient = new IpOracleClient({
+  baseUrl: env.FW_ORACLE_BASE_URL,
+  timeoutMs: Math.max(1, env.FW_ORACLE_TIMEOUT_MS),
+  apiKey: env.FW_ORACLE_API_KEY,
+  circuitFailureThreshold: Math.max(1, env.FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD),
+  circuitCooldownMs: Math.max(0, env.FW_ORACLE_CIRCUIT_COOLDOWN_MS)
+});
+
+const toDependencyMarketInputs = (pairs: typeof marketPairs) =>
+  pairs.map((pair) => ({
+    marketId: pair.marketId,
+    yesTokenId: pair.yesTokenId,
+    noTokenId: pair.noTokenId,
+    question: pair.question,
+    category: pair.category,
+    tags: pair.tags
+  }));
+
+const buildRuntimeRelationCatalogSnapshot = (
+  pairs: typeof marketPairs,
+  policySnapshot: TradePolicy,
+  nowMs = Date.now()
+) => {
+  const built = buildDependencyRelationCatalogEntries(toDependencyMarketInputs(pairs), {
+    nowMs,
+    semanticEnabled: policySnapshot.fwRelationCatalogSemanticBatchEnabled
+  });
+  if (built.entries.length > 0) {
+    return {
+      snapshot: {
+        path: relationCatalogSnapshot.path,
+        loadedAtMs: nowMs,
+        entries: built.entries,
+        malformedEntries: 0
+      },
+      source: 'runtime_pairs' as const,
+      deterministicRelations: built.deterministicRelations,
+      semanticRelations: built.semanticRelations,
+      relationTypeCounts: built.relationTypeCounts
+    };
+  }
+
+  const fallback = loadDependencyRelationCatalog(relationCatalogPath, nowMs);
+  return {
+    snapshot: fallback,
+    source: 'file_fallback' as const,
+    deterministicRelations: 0,
+    semanticRelations: 0,
+    relationTypeCounts: {
+      mutual_exclusive: 0,
+      implies: 0,
+      complementary: 0,
+      partition: 0
+    }
+  };
+};
+
+const startupCatalog = buildRuntimeRelationCatalogSnapshot(marketPairs, policy, Date.now());
+relationCatalogSnapshot = startupCatalog.snapshot;
+metrics.record({
+  type: 'fw_dependency',
+  timestamp: Date.now(),
+  data: {
+    event: 'relation_catalog_loaded',
+    reason: 'startup',
+    source: startupCatalog.source,
+    path: relationCatalogSnapshot.path,
+    entries: relationCatalogSnapshot.entries.length,
+    malformed: relationCatalogSnapshot.malformedEntries,
+    deterministicRelations: startupCatalog.deterministicRelations,
+    semanticRelations: startupCatalog.semanticRelations,
+    relationTypeCounts: startupCatalog.relationTypeCounts
+  }
+});
+
+const buildFwResolverConfig = (policySnapshot: TradePolicy) => ({
+  mode: policySnapshot.fwDependencyMode,
+  hybridMerge: policySnapshot.fwDependencyHybridMerge,
+  minConfidence: policySnapshot.fwDependencyMinConfidence,
+  maxEdgesPerMarket: policySnapshot.fwDependencyMaxEdgesPerMarket,
+  relationCatalogEnabled: true,
+  relationCatalogEntries: relationCatalogSnapshot.entries,
+  relationCatalogMinConfidence: policySnapshot.fwRelationCatalogMinConfidence,
+  relationCatalogMaxEdgesPerMarket: policySnapshot.fwRelationCatalogMaxEdgesPerMarket,
+  cacheTtlMs: policySnapshot.fwDependencyCacheTtlMs,
+  cacheGraceMs: policySnapshot.fwDependencyCacheGraceMs,
+  cacheMaxEntries: policySnapshot.fwDependencyCacheMaxEntries,
+  backoffInvalidMs: policySnapshot.fwDependencyBackoffInvalidMs,
+  backoffTimeoutMs: policySnapshot.fwDependencyBackoffTimeoutMs,
+  backoffErrorMs: policySnapshot.fwDependencyBackoffErrorMs,
+  llmExtractor: fwDependencyLlmExtractor
+});
+
+ensureFwRelationCatalogStartupReady({
+  tradingEnabled: env.TRADING_ENABLED,
+  tradingMode: env.TRADING_MODE,
+  policy,
+  relationCatalogPath: relationCatalogSnapshot.path,
+  relationCatalogEntries: relationCatalogSnapshot.entries.length,
+  metrics
+});
+
+await ensureFwOracleStartupReady({
+  tradingEnabled: env.TRADING_ENABLED,
+  tradingMode: env.TRADING_MODE,
+  baseUrl: env.FW_ORACLE_BASE_URL,
+  apiKey: env.FW_ORACLE_API_KEY,
+  timeoutMs: Math.max(500, env.FW_ORACLE_TIMEOUT_MS),
+  attempts: 10,
+  retryDelayMs: 300,
+  metrics
+});
+const fwProjectionAgent = new FwProjectionAgent({
+  resolverConfig: buildFwResolverConfig(policy),
+  oracleClient: fwOracleClient,
+  metrics
+});
+
 const tradingStateManager = new TradingStateManager(env.TRADING_ENABLED, env.TRADING_MODE);
 const blockTradingUntilCatalogRefresh =
   env.TRADING_ENABLED && (env.TRADING_MODE === 'paper' || env.TRADING_MODE === 'live');
@@ -519,7 +761,8 @@ const supervisor = new Supervisor(
     llm: llmConfig.enabled ? llmFacade : undefined,
     executionAdvisor,
     riskAdvisor,
-    signalAggregator
+    signalAggregator,
+    fwProjectionAgent
   }
 );
 
@@ -548,6 +791,30 @@ tradingStateManager.onEnabledChange((event) => {
 
 let catalogRefresher: MarketCatalogRefresher | null = null;
 
+const refreshDependencyRelationCatalog = (
+  reason: 'catalog_refresh' | 'runtime_config',
+  pairs: typeof marketPairs
+): void => {
+  const next = buildRuntimeRelationCatalogSnapshot(pairs, configStore.getPolicy(), Date.now());
+  relationCatalogSnapshot = next.snapshot;
+  metrics.record({
+    type: 'fw_dependency',
+    timestamp: Date.now(),
+    data: {
+      event: 'relation_catalog_loaded',
+      reason,
+      source: next.source,
+      path: relationCatalogSnapshot.path,
+      entries: relationCatalogSnapshot.entries.length,
+      malformed: relationCatalogSnapshot.malformedEntries,
+      deterministicRelations: next.deterministicRelations,
+      semanticRelations: next.semanticRelations,
+      relationTypeCounts: next.relationTypeCounts
+    }
+  });
+  fwProjectionAgent.updateResolverConfig(buildFwResolverConfig(configStore.getPolicy()));
+};
+
 const syncRuntimeConfig = () => {
   const policySnapshot = configStore.getPolicy();
   const riskSnapshot = configStore.getRisk();
@@ -567,6 +834,15 @@ const syncRuntimeConfig = () => {
   catalogRefresher?.updateConfig({ refreshIntervalMs: nextRefresh.catalogRefreshMs });
   incidentTracker.updateConfig({
     cooldownMs: riskSnapshot.marketCooldownSeconds * 1000
+  });
+  const currentPairs = catalogRefresher?.getPairs() ?? marketPairs;
+  refreshDependencyRelationCatalog('runtime_config', currentPairs);
+  fwOracleClient.updateConfig({
+    baseUrl: env.FW_ORACLE_BASE_URL,
+    timeoutMs: Math.max(1, env.FW_ORACLE_TIMEOUT_MS),
+    apiKey: env.FW_ORACLE_API_KEY,
+    circuitFailureThreshold: Math.max(1, env.FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD),
+    circuitCooldownMs: Math.max(0, env.FW_ORACLE_CIRCUIT_COOLDOWN_MS)
   });
   policyHashes.tradePolicyHash = sha256(stableStringify(policySnapshot));
   policyHashes.riskConfigHash = sha256(stableStringify(riskSnapshot));
@@ -651,6 +927,7 @@ catalogRefresher = new MarketCatalogRefresher(
 catalogRefresher.seed(marketPairs);
 
 catalogRefresher.on('refresh', ({ pairs }: { pairs: typeof marketPairs }) => {
+  refreshDependencyRelationCatalog('catalog_refresh', pairs);
   supervisor.updateMarketPairs(pairs);
   allowlist.seed(pairs.map((p) => p.marketId));
   updateTokenToMarketId(pairs);
@@ -759,6 +1036,7 @@ if (env.OPS_API_ENABLED) {
         port: env.PORT,
         host: env.OPS_API_HOST,
         authToken: env.OPS_API_TOKEN,
+        devSessionPrefillEnabled: env.OPS_DEV_SESSION_PREFILL_ENABLED,
         incidentsLimit: env.OPS_INCIDENTS_LIMIT,
         streamHeartbeatMs: env.OPS_STREAM_HEARTBEAT_MS
       }
@@ -770,6 +1048,7 @@ if (env.OPS_API_ENABLED) {
   }
 }
 
+recordPaperRunMarker('start', 'boot_ready');
 void supervisor.start();
 
 const shutdown = createShutdownHandler({
@@ -790,9 +1069,11 @@ const shutdown = createShutdownHandler({
 });
 
 process.on('SIGTERM', () => {
+  recordPaperRunMarker('stop', 'SIGTERM');
   void shutdown('SIGTERM');
 });
 process.on('SIGINT', () => {
+  recordPaperRunMarker('stop', 'SIGINT');
   void shutdown('SIGINT');
 });
 

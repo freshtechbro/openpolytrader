@@ -1,7 +1,6 @@
 {
   "risk_level": "low",
   "alerts": [],
-  "summary": "System healthy, latency slightly elevated",
-  "confidence": 0.9
+  "summary": "Core checks are healthy.",
+  "confidence": 0.91
 }
-

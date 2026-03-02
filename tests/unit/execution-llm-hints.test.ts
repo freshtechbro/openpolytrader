@@ -80,19 +80,19 @@ describe('ExecutionAgent advisory hints', () => {
     expect(advisor.getHint('')).toBeNull();
 
     messageBus.emit('learning:insight', {
-      insights: [{ market_id: 'm-hi', signal: 'high_confidence', value: 0.9, ttl_ms: 10, confidence: 0.9 }],
+      insights: [{ market_id: 'm-hi', signal: 'high_confidence', value: 0.9, ttl_ms: 10000, confidence: 0.9 }],
       generatedAtMs: Date.now()
     });
     expect(advisor.getHint('m-hi')?.unwindHint).toBe('aggressive');
 
     messageBus.emit('learning:insight', {
-      insights: [{ market_id: 'm-mid', signal: 'medium_confidence', value: 0.5, ttl_ms: 10, confidence: 0.5 }],
+      insights: [{ market_id: 'm-mid', signal: 'medium_confidence', value: 0.5, ttl_ms: 10000, confidence: 0.5 }],
       generatedAtMs: Date.now()
     });
     expect(advisor.getHint('m-mid')?.unwindHint).toBe('neutral');
 
     messageBus.emit('learning:insight', {
-      insights: [{ market_id: 'm-low', signal: 'low_confidence', value: 0.1, ttl_ms: 10, confidence: 0.1 }],
+      insights: [{ market_id: 'm-low', signal: 'low_confidence', value: 0.1, ttl_ms: 10000, confidence: 0.1 }],
       generatedAtMs: Date.now()
     });
     expect(advisor.getHint('m-low')?.unwindHint).toBe('conservative');

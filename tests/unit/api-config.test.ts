@@ -812,11 +812,17 @@ describe('ops config endpoints', () => {
   });
 
   it('returns metrics and allowlist snapshots', async () => {
-    const { app } = buildServer();
+    const { app, metrics: metricsStore } = buildServer();
+    metricsStore.record({ type: 'fw_iteration', timestamp: Date.now(), data: { event: 'iter' } });
+    metricsStore.record({ type: 'fw_gap', timestamp: Date.now(), data: { event: 'gap' } });
+    metricsStore.record({ type: 'fw_active_set', timestamp: Date.now(), data: { event: 'active_set' } });
+    metricsStore.record({ type: 'fw_contraction', timestamp: Date.now(), data: { event: 'contraction' } });
+    metricsStore.record({ type: 'fw_basket', timestamp: Date.now(), data: { event: 'basket' } });
+
     const health = await app.inject({ method: 'GET', url: '/health' });
     const live = await app.inject({ method: 'GET', url: '/health/live' });
     const ready = await app.inject({ method: 'GET', url: '/health/ready' });
-    const metrics = await app.inject({ method: 'GET', url: '/metrics' });
+    const metricsResponse = await app.inject({ method: 'GET', url: '/metrics' });
     const allowlist = await app.inject({ method: 'GET', url: '/allowlist' });
 
     expect(health.statusCode).toBe(200);
@@ -824,7 +830,13 @@ describe('ops config endpoints', () => {
     expect(live.json().live).toBe(true);
     expect(ready.statusCode).toBe(200);
     expect(ready.json().ready).toBe(true);
-    expect(metrics.statusCode).toBe(200);
+    expect(metricsResponse.statusCode).toBe(200);
+    const metricsBody = metricsResponse.json() as { counts: Record<string, number> };
+    expect(metricsBody.counts.fw_iteration).toBeGreaterThan(0);
+    expect(metricsBody.counts.fw_gap).toBeGreaterThan(0);
+    expect(metricsBody.counts.fw_active_set).toBeGreaterThan(0);
+    expect(metricsBody.counts.fw_contraction).toBeGreaterThan(0);
+    expect(metricsBody.counts.fw_basket).toBeGreaterThan(0);
     expect(Array.isArray(allowlist.json())).toBe(true);
 
     await app.close();
@@ -873,6 +885,406 @@ describe('ops config endpoints', () => {
       headers: { 'x-ops-token': 'secret' }
     });
     expect(authorized.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it('returns unauthenticated session status without credentials', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const status = await app.inject({ method: 'GET', url: '/ops/session' });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({ authenticated: false, authRequired: true });
+
+    await app.close();
+  });
+
+  it('accepts bearer token for session status checks', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/ops/session',
+      headers: { authorization: 'Bearer secret' }
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({ authenticated: true, authRequired: true });
+
+    await app.close();
+  });
+
+  it('returns prefill token only when dev prefill is enabled on localhost', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      {
+        authToken: 'secret',
+        devSessionPrefillEnabled: true,
+        incidentsLimit,
+        streamHeartbeatMs: defaultStreamHeartbeatMs
+      }
+    );
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/ops/session?prefill=1',
+      headers: { host: 'localhost:3000' }
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      authenticated: false,
+      authRequired: true,
+      prefillToken: 'secret'
+    });
+
+    await app.close();
+  });
+
+  it('returns prefill token for authorized localhost session checks', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      {
+        authToken: 'secret',
+        devSessionPrefillEnabled: true,
+        incidentsLimit,
+        streamHeartbeatMs: defaultStreamHeartbeatMs
+      }
+    );
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/ops/session?prefill=1',
+      headers: {
+        authorization: 'Bearer secret',
+        host: 'localhost:3000'
+      },
+      remoteAddress: '::ffff:127.0.0.1'
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      authenticated: true,
+      authRequired: true,
+      prefillToken: 'secret'
+    });
+
+    await app.close();
+  });
+
+  it('does not return prefill token when request ip is not loopback', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      {
+        authToken: 'secret',
+        devSessionPrefillEnabled: true,
+        incidentsLimit,
+        streamHeartbeatMs: defaultStreamHeartbeatMs
+      }
+    );
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/ops/session?prefill=1',
+      headers: { host: 'localhost:3000' },
+      remoteAddress: '203.0.113.10'
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({ authenticated: false, authRequired: true });
+    expect((status.json() as Record<string, unknown>).prefillToken).toBeUndefined();
+
+    await app.close();
+  });
+
+  it('returns prefill token for bracketed IPv6 localhost host headers', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      {
+        authToken: 'secret',
+        devSessionPrefillEnabled: true,
+        incidentsLimit,
+        streamHeartbeatMs: defaultStreamHeartbeatMs
+      }
+    );
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/ops/session?prefill=1',
+      headers: { host: '[::1]:3000' }
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      authenticated: false,
+      authRequired: true,
+      prefillToken: 'secret'
+    });
+
+    await app.close();
+  });
+
+  it('does not return prefill token for malformed bracketed host headers', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      {
+        authToken: 'secret',
+        devSessionPrefillEnabled: true,
+        incidentsLimit,
+        streamHeartbeatMs: defaultStreamHeartbeatMs
+      }
+    );
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/ops/session?prefill=1',
+      headers: { host: '[::1' }
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({ authenticated: false, authRequired: true });
+    expect((status.json() as Record<string, unknown>).prefillToken).toBeUndefined();
+
+    await app.close();
+  });
+
+  it('does not return prefill token for non-localhost requests', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      {
+        authToken: 'secret',
+        devSessionPrefillEnabled: true,
+        incidentsLimit,
+        streamHeartbeatMs: defaultStreamHeartbeatMs
+      }
+    );
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/ops/session?prefill=1',
+      headers: { host: 'example.com' }
+    });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({ authenticated: false, authRequired: true });
+    expect((status.json() as Record<string, unknown>).prefillToken).toBeUndefined();
+
+    await app.close();
+  });
+
+  it('creates session cookies for valid ops tokens', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/ops/session',
+      payload: { token: 'secret' }
+    });
+    expect(login.statusCode).toBe(200);
+    const cookie = login.headers['set-cookie'];
+    expect(typeof cookie === 'string' || Array.isArray(cookie)).toBe(true);
+
+    const cookieHeader = Array.isArray(cookie) ? cookie[0] : cookie;
+    const health = await app.inject({
+      method: 'GET',
+      url: '/health',
+      headers: { cookie: cookieHeader ?? '' }
+    });
+    expect(health.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it('rejects session login with empty request body', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/ops/session'
+    });
+
+    expect(login.statusCode).toBe(401);
+    expect(login.json()).toEqual({ error: 'unauthorized' });
+
+    await app.close();
+  });
+
+  it('sets secure session cookies when forwarded proto is https', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/ops/session',
+      headers: { 'x-forwarded-proto': 'https' },
+      payload: { token: 'secret' }
+    });
+
+    expect(login.statusCode).toBe(200);
+    expect(String(login.headers['set-cookie'])).toContain('Secure');
+
+    await app.close();
+  });
+
+  it('rejects invalid token when creating sessions', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/ops/session',
+      payload: { token: 'wrong' }
+    });
+    expect(login.statusCode).toBe(401);
+    expect(login.json().error).toBe('unauthorized');
+
+    await app.close();
+  });
+
+  it('rejects empty session token payloads', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/ops/session',
+      payload: {}
+    });
+    expect(login.statusCode).toBe(401);
+    expect(login.json().error).toBe('unauthorized');
+
+    await app.close();
+  });
+
+  it('clears session cookies and invalidates server-side session', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/ops/session',
+      payload: { token: 'secret' }
+    });
+    const cookie = login.headers['set-cookie'];
+    const cookieHeader = Array.isArray(cookie) ? cookie[0] : cookie;
+
+    const logout = await app.inject({
+      method: 'DELETE',
+      url: '/ops/session',
+      headers: { cookie: cookieHeader ?? '' }
+    });
+    expect(logout.statusCode).toBe(200);
+    const logoutCookie = logout.headers['set-cookie'];
+    expect(String(logoutCookie)).toContain('Max-Age=0');
+
+    const status = await app.inject({
+      method: 'GET',
+      url: '/health',
+      headers: { cookie: cookieHeader ?? '' }
+    });
+    expect(status.statusCode).toBe(401);
+
+    await app.close();
+  });
+
+  it('supports session endpoints when auth is disabled', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const status = await app.inject({ method: 'GET', url: '/ops/session' });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({ authenticated: true, authRequired: false });
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/ops/session',
+      payload: { token: 'ignored' }
+    });
+    expect(login.statusCode).toBe(200);
+    expect(login.json()).toMatchObject({ authenticated: true, authRequired: false });
+
+    await app.close();
+  });
+
+  it('clears session cookies even when no session cookie is present', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const logout = await app.inject({ method: 'DELETE', url: '/ops/session' });
+    expect(logout.statusCode).toBe(200);
+    expect(String(logout.headers['set-cookie'])).toContain('Max-Age=0');
 
     await app.close();
   });

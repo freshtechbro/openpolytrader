@@ -42,7 +42,7 @@ export type SloAggregates = {
   error?: string;
 };
 
-export type IntentStrategy = 'near_zero' | 'ev' | 'unknown';
+export type IntentStrategy = 'near_zero' | 'ev' | 'fw_projection' | 'fw_basket' | 'unknown';
 
 export interface FinalIntent {
   opportunityId: string;
@@ -177,6 +177,18 @@ export function Overview({ health, metrics, slo, intents, incidents, expanded, o
           <MetricCard title="Opportunities (recent)" value={metrics?.counts?.opportunity ?? 0} />
           <MetricCard title="Orders (recent)" value={metrics?.counts?.order ?? 0} />
           <MetricCard title="Fills (recent)" value={metrics?.counts?.fill ?? 0} />
+        </div>
+      </Section>
+
+      <Section title="FW Telemetry" subtitle="Adaptive Frank-Wolfe dependency and oracle activity.">
+        <div className="grid">
+          <MetricCard title="FW Projections" value={metrics?.counts?.fw_projection ?? 0} />
+          <MetricCard title="FW Dependencies" value={metrics?.counts?.fw_dependency ?? 0} />
+          <MetricCard title="FW Oracle Calls" value={metrics?.counts?.fw_oracle ?? 0} />
+          <MetricCard title="FW Iterations" value={metrics?.counts?.fw_iteration ?? 0} />
+          <MetricCard title="FW Gap Events" value={metrics?.counts?.fw_gap ?? 0} />
+          <MetricCard title="FW Baskets" value={metrics?.counts?.fw_basket ?? 0} />
+          <MetricCard title="Gate Rejections" value={metrics?.counts?.gate_rejection ?? 0} />
         </div>
       </Section>
 
@@ -338,5 +350,7 @@ function formatMs(value: unknown): string {
 function formatIntentStrategy(strategy?: IntentStrategy): string {
   if (strategy === 'ev') return 'EV';
   if (strategy === 'near_zero') return 'Near Zero';
+  if (strategy === 'fw_projection') return 'FW Projection';
+  if (strategy === 'fw_basket') return 'FW Basket';
   return 'Unknown';
 }

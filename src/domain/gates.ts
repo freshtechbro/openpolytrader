@@ -3,6 +3,7 @@ import type { OrderBookState } from './orderbook.js';
 import { depthAtTopLevels, isAlignedToTick, spread, sweepCost } from './orderbook.js';
 import type { VenueId } from '../config/venues.js';
 import type { FeeModel } from './feeModel.js';
+import type { FwBasketMarketLeg, FwProjectionMetadata } from './opportunity.js';
 
 export interface GateDecision {
   passed: boolean;
@@ -47,6 +48,47 @@ export interface EvGateInputs {
   confidence: number;
   desiredSize?: number;
   tickSize?: number;
+}
+
+export interface FwProjectionGateInputs {
+  yesBook: OrderBookState;
+  noBook: OrderBookState;
+  policy: TradePolicy;
+  nowMs: number;
+  projection: FwProjectionMetadata;
+  desiredSize?: number;
+  tickSize?: number;
+}
+
+export interface FwBasketGateInputs {
+  policy: TradePolicy;
+  nowMs: number;
+  markets: FwBasketMarketLeg[];
+  orderbooks: Map<string, OrderBookState>;
+  aggregateEdgeLowerBound: number;
+  projectionAgeMs: number;
+  desiredSize?: number;
+}
+
+export interface ExecutableLowerBoundInputs {
+  theoreticalEdge: number;
+  feeCost: number;
+  sweepSlippageCost: number;
+  stalenessPenalty: number;
+  stabilityPenalty: number;
+  executionRiskBuffer: number;
+}
+
+export interface ExecutableLowerBoundResult {
+  edgeLowerBound: number;
+  components: {
+    theoreticalEdge: number;
+    feeCost: number;
+    sweepSlippageCost: number;
+    stalenessPenalty: number;
+    stabilityPenalty: number;
+    executionRiskBuffer: number;
+  };
 }
 
 export function evaluateGates(inputs: GateInputs): GateDecision {
@@ -275,6 +317,121 @@ export function evaluateEvGates(inputs: EvGateInputs): GateDecision {
   };
 }
 
+export function evaluateFwProjectionGates(inputs: FwProjectionGateInputs): GateDecision {
+  const base = evaluateGates({
+    yesBook: inputs.yesBook,
+    noBook: inputs.noBook,
+    policy: inputs.policy,
+    nowMs: inputs.nowMs,
+    desiredSize: inputs.desiredSize,
+    tickSize: inputs.tickSize
+  });
+
+  const reasons = base.reasons.filter(
+    (reason) =>
+      reason !== 'edge_below_threshold' &&
+      reason !== 'edge_above_max' &&
+      reason !== 'edge_below_min_ticks'
+  );
+  const projection = inputs.projection;
+  if (projection.dependencyConfidence < inputs.policy.fwDependencyMinConfidence) {
+    reasons.push('fw_dependency_low_confidence');
+  }
+  if (projection.projectionAgeMs > inputs.policy.fwMaxProjectionAgeMs) {
+    reasons.push('fw_projection_stale');
+  }
+  if (projection.edgeLowerBound < inputs.policy.fwMinEdgeThreshold) {
+    reasons.push('fw_edge_lower_bound_fail');
+  }
+  if (projection.solverStatus !== 'optimal' && projection.solverStatus !== 'feasible') {
+    reasons.push('fw_solver_status');
+  }
+
+  const tickSize = resolveTickSize(
+    inputs.tickSize,
+    Math.max(inputs.yesBook.tickSize, inputs.noBook.tickSize),
+    inputs.policy.fallbackTickSize
+  );
+  const fwEdge = projection.edgeLowerBound;
+  const fwEdgeInTicks = tickSize > 0 ? fwEdge / tickSize : undefined;
+
+  return {
+    ...base,
+    edge: fwEdge,
+    edgeInTicks: fwEdgeInTicks,
+    reasons,
+    passed: reasons.length === 0
+  };
+}
+
+export function evaluateFwBasketGates(inputs: FwBasketGateInputs): GateDecision {
+  const reasons: string[] = [];
+  const { policy } = inputs;
+  if (inputs.markets.length < policy.fwBasketMinMarkets) {
+    reasons.push('fw_basket_min_markets');
+  }
+  if (inputs.markets.length > policy.fwBasketMaxMarkets) {
+    reasons.push('fw_basket_max_markets');
+  }
+
+  if (inputs.projectionAgeMs > policy.fwMaxProjectionAgeMs) {
+    reasons.push('fw_basket_projection_stale');
+  }
+
+  if (inputs.aggregateEdgeLowerBound < policy.fwMinEdgeThreshold) {
+    reasons.push('fw_basket_edge_lower_bound_fail');
+  }
+
+  const perMarketDepth: number[] = [];
+  const perMarketCosts: number[] = [];
+  for (const market of inputs.markets) {
+    const yesBook = inputs.orderbooks.get(market.yesTokenId);
+    const noBook = inputs.orderbooks.get(market.noTokenId);
+    if (!yesBook || !noBook) {
+      reasons.push(`fw_basket:${market.marketId}:missing_orderbook`);
+      continue;
+    }
+    const projection: FwProjectionMetadata = {
+      projectionId: market.marketId,
+      dependencyMode: 'deterministic',
+      dependencyConfidence: 1,
+      projectedEdge: market.projectedEdge,
+      edgeLowerBound: market.edgeLowerBound,
+      solverRuntimeMs: 0,
+      solverStatus: 'optimal',
+      projectionAgeMs: inputs.projectionAgeMs
+    };
+    const decision = evaluateFwProjectionGates({
+      yesBook,
+      noBook,
+      policy,
+      nowMs: inputs.nowMs,
+      projection,
+      desiredSize: inputs.desiredSize,
+      tickSize: market.tickSize
+    });
+    perMarketDepth.push(decision.maxSizeByDepth);
+    perMarketCosts.push(market.costPerSet);
+    for (const reason of decision.reasons) {
+      reasons.push(`fw_basket:${market.marketId}:${reason}`);
+    }
+  }
+
+  const maxSizeByDepth =
+    perMarketDepth.length > 0 ? Math.min(...perMarketDepth) : 0;
+  if (inputs.desiredSize !== undefined && inputs.desiredSize > maxSizeByDepth) {
+    reasons.push('fw_basket_desired_size_exceeds_depth');
+  }
+
+  return {
+    passed: reasons.length === 0,
+    reasons,
+    costPerSet: perMarketCosts.reduce((sum, value) => sum + value, 0),
+    edge: inputs.aggregateEdgeLowerBound,
+    maxSizeByDepth
+  };
+}
+
 export function evaluateGatesWithFees(input: GateInputs & { venue: VenueId; feeModel: FeeModel }): GateDecision {
   const base = evaluateGates(input);
   if (base.reasons.length > 0) return base;
@@ -305,6 +462,29 @@ export function evaluateGatesWithFees(input: GateInputs & { venue: VenueId; feeM
   };
 }
 
+export function computeExecutableLowerBound(
+  input: ExecutableLowerBoundInputs
+): ExecutableLowerBoundResult {
+  const components = {
+    theoreticalEdge: ensureFinite(input.theoreticalEdge),
+    feeCost: clampNonNegative(input.feeCost),
+    sweepSlippageCost: clampNonNegative(input.sweepSlippageCost),
+    stalenessPenalty: clampNonNegative(input.stalenessPenalty),
+    stabilityPenalty: clampNonNegative(input.stabilityPenalty),
+    executionRiskBuffer: clampNonNegative(input.executionRiskBuffer)
+  };
+  return {
+    edgeLowerBound:
+      components.theoreticalEdge -
+      components.feeCost -
+      components.sweepSlippageCost -
+      components.stalenessPenalty -
+      components.stabilityPenalty -
+      components.executionRiskBuffer,
+    components
+  };
+}
+
 function fail(reasons: string[]): GateDecision {
   return {
     passed: false,
@@ -313,6 +493,15 @@ function fail(reasons: string[]): GateDecision {
     edge: 0,
     maxSizeByDepth: 0
   };
+}
+
+function ensureFinite(value: number): number {
+  return Number.isFinite(value) ? value : 0;
+}
+
+function clampNonNegative(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, value);
 }
 
 function evaluateBaseGates(

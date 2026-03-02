@@ -23,16 +23,17 @@ The initial monolithic approach became complex and hard to test as we added risk
 
 ### Decision
 
-We chose an **agent-based architecture** with 8 specialized agents:
+We chose an **agent-based architecture** with 9 specialized agents:
 
 1. **MarketDataAgent** - WebSocket connection and orderbook management
-2. **SignalAggregatorAgent** - EV signal collection and aggregation
-3. **ScannerAgent** - Opportunity detection
-4. **RiskAgent** - Risk evaluation and capital management
-5. **ExecutionAgent** - Order placement and monitoring
-6. **PortfolioAgent** - Position tracking and reconciliation
-7. **OpsAgent** - Health monitoring and operations
-8. **LearningAgent** - RL model integration and insights
+2. **SignalAggregatorAgent** - Optional EV signal collection and `learning:insight` emission
+3. **ScannerAgent** - Opportunity detection and gate evaluation
+4. **FwProjectionAgent** - Dependency-aware Frank-Wolfe projection generation
+5. **RiskAgent** - Risk evaluation and capital management
+6. **ExecutionAgent** - Order placement and monitoring
+7. **PortfolioAgent** - Position tracking and reconciliation
+8. **OpsAgent** - Health monitoring and operations
+9. **LearningAgent** - Insight synthesis and `learning:insight` emission
 
 Agents communicate via a typed **MessageBus** using events.
 

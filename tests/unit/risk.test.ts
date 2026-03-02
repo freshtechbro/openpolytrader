@@ -10,7 +10,9 @@ const DEFAULT_OPTIONS = {
   maxOpenInventorySeconds: DEFAULT_TRADE_POLICY.maxOpenInventorySeconds,
   depthBufferMultiplier: DEFAULT_TRADE_POLICY.depthBufferMultiplier,
   evMaxPerMarketNotional: DEFAULT_TRADE_POLICY.evMaxPerMarketNotional,
-  evMaxPortfolioNotional: DEFAULT_TRADE_POLICY.evMaxPortfolioNotional
+  evMaxPortfolioNotional: DEFAULT_TRADE_POLICY.evMaxPortfolioNotional,
+  fwMaxPerMarketNotional: DEFAULT_TRADE_POLICY.fwMaxPerMarketNotional,
+  fwMaxPortfolioNotional: DEFAULT_TRADE_POLICY.fwMaxPortfolioNotional
 };
 
 const baseOpportunity: ArbitrageOpportunity = {
@@ -218,6 +220,68 @@ describe('RiskAgent', () => {
     expect(decision.reason).toBe('ev_notional_cap');
   });
 
+  it('records FW per-market cap as binding constraint', () => {
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, {
+      ...DEFAULT_OPTIONS,
+      fwMaxPerMarketNotional: 8,
+      fwMaxPortfolioNotional: 1000
+    });
+    const decision = agent.evaluate(
+      { ...baseOpportunity, type: 'fw_projection', costPerSet: 1, maxSizeByDepth: 1000 },
+      {
+        totalCapital: 10000,
+        availableCapital: 10000,
+        dailyPnL: 0,
+        marketExposure: {}
+      }
+    );
+
+    expect(decision.approved).toBe(true);
+    expect(decision.constraints?.binding).toBe('fw_per_market');
+    expect(decision.constraints?.maxByFwMarket).toBeCloseTo(8);
+  });
+
+  it('records FW portfolio cap as binding constraint', () => {
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, {
+      ...DEFAULT_OPTIONS,
+      fwMaxPerMarketNotional: 1000,
+      fwMaxPortfolioNotional: 25
+    });
+    const decision = agent.evaluate(
+      { ...baseOpportunity, type: 'fw_projection', costPerSet: 1, maxSizeByDepth: 1000 },
+      {
+        totalCapital: 10000,
+        availableCapital: 10000,
+        dailyPnL: 0,
+        marketExposure: { m1: 20 }
+      }
+    );
+
+    expect(decision.approved).toBe(true);
+    expect(decision.constraints?.binding).toBe('fw_portfolio');
+    expect(decision.constraints?.maxByFwPortfolio).toBeCloseTo(5);
+  });
+
+  it('rejects FW when portfolio notional cap is exhausted', () => {
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, {
+      ...DEFAULT_OPTIONS,
+      fwMaxPerMarketNotional: 1000,
+      fwMaxPortfolioNotional: 10
+    });
+    const decision = agent.evaluate(
+      { ...baseOpportunity, type: 'fw_projection', costPerSet: 1, maxSizeByDepth: 1000 },
+      {
+        totalCapital: 10000,
+        availableCapital: 10000,
+        dailyPnL: 0,
+        marketExposure: { m1: 15 }
+      }
+    );
+
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('fw_notional_cap');
+  });
+
   it('updates config and options via updateConfig', () => {
     const agent = new RiskAgent(DEFAULT_RISK_CONFIG, DEFAULT_OPTIONS);
     agent.updateConfig(
@@ -421,5 +485,139 @@ describe('RiskAgent', () => {
 
     expect(decision.approved).toBe(false);
     expect(decision.reason).toBe('unwind_loss_bps_exceeded');
+  });
+
+  it('sizes FW basket opportunities across per-market FW caps', () => {
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, {
+      ...DEFAULT_OPTIONS,
+      fwMaxPerMarketNotional: 20,
+      fwMaxPortfolioNotional: 1000
+    });
+    const basketOpportunity: ArbitrageOpportunity = {
+      ...baseOpportunity,
+      id: 'fw-basket-1',
+      type: 'fw_basket',
+      edge: 0.05,
+      fwBasket: {
+        basketId: 'basket-1',
+        executionMode: 'sequential_failfast',
+        aggregateEdgeLowerBound: 0.05,
+        aggregateProjectedEdge: 0.06,
+        loop: {
+          loopId: 'loop-1',
+          iterationCount: 3,
+          activeSetSize: 2,
+          contractionSteps: 0,
+          terminalGapAbs: 0.0001,
+          terminalGapRel: 0.0001,
+          terminalReason: 'gap_converged',
+          converged: true,
+          runtimeMs: 10
+        },
+        markets: [
+          {
+            marketId: 'm1',
+            yesTokenId: 'yes',
+            noTokenId: 'no',
+            yesPrice: 0.48,
+            noPrice: 0.49,
+            costPerSet: 0.97,
+            projectedEdge: 0.03,
+            edgeLowerBound: 0.02,
+            maxSizeByDepth: 100,
+            minOrderSize: 1,
+            tickSize: 0.01
+          },
+          {
+            marketId: 'm2',
+            yesTokenId: 'yes-2',
+            noTokenId: 'no-2',
+            yesPrice: 0.47,
+            noPrice: 0.49,
+            costPerSet: 0.96,
+            projectedEdge: 0.03,
+            edgeLowerBound: 0.02,
+            maxSizeByDepth: 100,
+            minOrderSize: 1,
+            tickSize: 0.01
+          }
+        ]
+      }
+    };
+
+    const decision = agent.evaluate(basketOpportunity, {
+      totalCapital: 1000,
+      availableCapital: 1000,
+      dailyPnL: 0,
+      marketExposure: { m1: 0, m2: 15 }
+    });
+
+    expect(decision.approved).toBe(true);
+    expect(decision.constraints?.binding).toBe('fw_per_market');
+  });
+
+  it('rejects FW basket when any market exposure is exhausted', () => {
+    const agent = new RiskAgent(DEFAULT_RISK_CONFIG, DEFAULT_OPTIONS);
+    const basketOpportunity: ArbitrageOpportunity = {
+      ...baseOpportunity,
+      id: 'fw-basket-2',
+      type: 'fw_basket',
+      edge: 0.04,
+      fwBasket: {
+        basketId: 'basket-2',
+        executionMode: 'sequential_failfast',
+        aggregateEdgeLowerBound: 0.04,
+        aggregateProjectedEdge: 0.05,
+        loop: {
+          loopId: 'loop-2',
+          iterationCount: 2,
+          activeSetSize: 2,
+          contractionSteps: 0,
+          terminalGapAbs: 0.0001,
+          terminalGapRel: 0.0001,
+          terminalReason: 'gap_converged',
+          converged: true,
+          runtimeMs: 8
+        },
+        markets: [
+          {
+            marketId: 'm1',
+            yesTokenId: 'yes',
+            noTokenId: 'no',
+            yesPrice: 0.48,
+            noPrice: 0.49,
+            costPerSet: 0.97,
+            projectedEdge: 0.03,
+            edgeLowerBound: 0.02,
+            maxSizeByDepth: 100,
+            minOrderSize: 1,
+            tickSize: 0.01
+          },
+          {
+            marketId: 'm2',
+            yesTokenId: 'yes-2',
+            noTokenId: 'no-2',
+            yesPrice: 0.48,
+            noPrice: 0.49,
+            costPerSet: 0.97,
+            projectedEdge: 0.03,
+            edgeLowerBound: 0.02,
+            maxSizeByDepth: 100,
+            minOrderSize: 1,
+            tickSize: 0.01
+          }
+        ]
+      }
+    };
+
+    const decision = agent.evaluate(basketOpportunity, {
+      totalCapital: 1000,
+      availableCapital: 1000,
+      dailyPnL: 0,
+      marketExposure: { m1: 600, m2: 0 }
+    });
+
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toBe('market_exposure_limit');
   });
 });

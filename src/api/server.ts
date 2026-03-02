@@ -1,6 +1,8 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import { randomBytes } from 'node:crypto';
+
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
-import { isAuthorized, queryFlag } from '../security/Auth.js';
+import { isAuthorized, queryFlag, readCookieValue, tokensMatch } from '../security/Auth.js';
 
 import type { MarketAllowlist } from '../domain/allowlist.js';
 import type { MetricEvent } from '../telemetry/metrics.js';
@@ -51,6 +53,7 @@ export interface OpsServerDeps {
 
 export interface OpsServerOptions {
   authToken?: string;
+  devSessionPrefillEnabled?: boolean;
   incidentsLimit: number;
   streamHeartbeatMs: number;
 }
@@ -59,6 +62,7 @@ export interface OpsServerConfig {
   host: string;
   port: number;
   authToken?: string;
+  devSessionPrefillEnabled?: boolean;
   incidentsLimit: number;
   streamHeartbeatMs: number;
 }
@@ -69,24 +73,127 @@ export function createOpsServer(
 ): FastifyInstance {
   const app = Fastify({ logger: false });
   const authToken = options.authToken?.trim();
+  const authRequired = Boolean(authToken);
+  const devSessionPrefillEnabled = Boolean(options.devSessionPrefillEnabled);
   const configStore = deps.configStore;
   let riskProfileState = deps.riskProfile;
   const incidentsLimit = options.incidentsLimit;
   const streamHeartbeatMs = options.streamHeartbeatMs;
+  const sessionTtlMs = 1000 * 60 * 60 * 12;
+  const sessionCookieName = 'ops_session';
+  const sessions = new Map<string, number>();
+
+  const getSession = (request: FastifyRequest) => {
+    const sessionId = readCookieValue(request, sessionCookieName);
+    if (!sessionId) return null;
+    const expiresAt = sessions.get(sessionId);
+    if (!expiresAt || expiresAt <= Date.now()) {
+      sessions.delete(sessionId);
+      return null;
+    }
+    return { id: sessionId, expiresAt };
+  };
+
+  const hasSession = (request: FastifyRequest) => getSession(request) !== null;
+
+  const buildSessionCookie = (
+    value: string,
+    request: FastifyRequest,
+    maxAgeSeconds: number
+  ): string => {
+    const forwardedProto = request.headers['x-forwarded-proto'];
+    const secure =
+      request.protocol === 'https' ||
+      (typeof forwardedProto === 'string' && forwardedProto.split(',')[0].trim() === 'https');
+    const parts = [
+      `${sessionCookieName}=${encodeURIComponent(value)}`,
+      'Path=/',
+      'HttpOnly',
+      'SameSite=Lax',
+      `Max-Age=${maxAgeSeconds}`
+    ];
+    if (secure) parts.push('Secure');
+    return parts.join('; ');
+  };
 
   void app.register(cors, {
     origin: true,
+    credentials: true,
     allowedHeaders: ['authorization', 'content-type', 'x-ops-token']
   });
 
-  if (authToken) {
+  if (authRequired) {
     app.addHook('onRequest', async (request, reply) => {
-      if (!isAuthorized(request, authToken)) {
+      const path = request.url.split('?')[0];
+      if (path === '/ops/session') {
+        return;
+      }
+
+      if (!isAuthorized(request, authToken) && !hasSession(request)) {
         reply.code(401);
         return reply.send({ error: 'unauthorized' });
       }
     });
   }
+
+  app.get('/ops/session', async (request) => {
+    const prefillRequested = queryFlag(request, 'prefill');
+    const canPrefillToken = prefillRequested && devSessionPrefillEnabled && isLoopbackRequest(request);
+
+    if (!authRequired) {
+      return { authenticated: true, authRequired: false, prefillToken: undefined };
+    }
+
+    if (isAuthorized(request, authToken)) {
+      return {
+        authenticated: true,
+        authRequired: true,
+        prefillToken: canPrefillToken ? authToken : undefined
+      };
+    }
+
+    const session = getSession(request);
+    return {
+      authenticated: session !== null,
+      authRequired: true,
+      expiresAt: session?.expiresAt,
+      prefillToken: canPrefillToken ? authToken : undefined
+    };
+  });
+
+  app.post('/ops/session', async (request, reply) => {
+    if (!authRequired) {
+      return { authenticated: true, authRequired: false };
+    }
+
+    const expectedToken = authToken as string;
+    const body = (request.body ?? {}) as { token?: unknown };
+    const token = typeof body.token === 'string' ? body.token.trim() : '';
+    if (!token || !tokensMatch(token, expectedToken)) {
+      reply.code(401);
+      return { error: 'unauthorized' };
+    }
+
+    const sessionId = randomBytes(24).toString('hex');
+    const expiresAt = Date.now() + sessionTtlMs;
+    sessions.set(sessionId, expiresAt);
+
+    reply.header(
+      'Set-Cookie',
+      buildSessionCookie(sessionId, request, Math.floor(sessionTtlMs / 1000))
+    );
+
+    return { authenticated: true, authRequired: true, expiresAt };
+  });
+
+  app.delete('/ops/session', async (request, reply) => {
+    const sessionId = readCookieValue(request, sessionCookieName);
+    if (sessionId) {
+      sessions.delete(sessionId);
+    }
+    reply.header('Set-Cookie', buildSessionCookie('', request, 0));
+    return { authenticated: false, authRequired };
+  });
 
   app.get('/health', async () => {
     return deps.opsAgent.getReport();
@@ -466,7 +573,12 @@ export function createOpsServer(
 
   app.get('/stream', async (request, reply) => {
     const origin = request.headers.origin;
-    reply.raw.setHeader('Access-Control-Allow-Origin', typeof origin === 'string' ? origin : '*');
+    if (typeof origin === 'string') {
+      reply.raw.setHeader('Access-Control-Allow-Origin', origin);
+      reply.raw.setHeader('Access-Control-Allow-Credentials', 'true');
+    } else {
+      reply.raw.setHeader('Access-Control-Allow-Origin', '*');
+    }
     reply.raw.setHeader('Vary', 'Origin');
     reply.raw.statusCode = 200;
     reply.raw.setHeader('Content-Type', 'text/event-stream');
@@ -497,17 +609,8 @@ export function createOpsServer(
     deps.metrics.on('event', handler);
 
     let closed = false;
-    let heartbeat: NodeJS.Timeout | null = null;
     let pingCount = 0;
-
-    const cleanup = () => {
-      if (closed) return;
-      closed = true;
-      if (heartbeat) clearInterval(heartbeat);
-      deps.metrics.off('event', handler);
-    };
-
-    heartbeat = setInterval(() => {
+    const heartbeat = setInterval(() => {
       reply.raw.write(': ping\n\n');
       pingCount += 1;
 
@@ -516,6 +619,13 @@ export function createOpsServer(
         reply.raw.end();
       }
     }, streamHeartbeatMs);
+
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      deps.metrics.off('event', handler);
+    };
 
     reply.raw.on('close', cleanup);
     reply.raw.on('finish', cleanup);
@@ -531,6 +641,7 @@ export async function startOpsServer(
 ): Promise<FastifyInstance> {
   const app = createOpsServer(deps, {
     authToken: config.authToken,
+    devSessionPrefillEnabled: config.devSessionPrefillEnabled,
     incidentsLimit: config.incidentsLimit,
     streamHeartbeatMs: config.streamHeartbeatMs
   });
@@ -540,6 +651,36 @@ export async function startOpsServer(
 
 async function defaultOpsServerListen(app: FastifyInstance, config: OpsServerConfig): Promise<void> {
   await app.listen({ port: config.port, host: config.host });
+}
+
+function isLoopbackRequest(request: FastifyRequest): boolean {
+  const hostHeader = request.headers.host;
+  const host = parseHostName(hostHeader);
+  if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+    return false;
+  }
+
+  const normalizedIp = normalizeIp(request.ip);
+  return normalizedIp === '127.0.0.1' || normalizedIp === '::1';
+}
+
+function normalizeIp(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed.startsWith('::ffff:')) return trimmed.slice(7);
+  return trimmed;
+}
+
+function parseHostName(value: string | string[] | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed.length === 0) return undefined;
+  if (trimmed.startsWith('[')) {
+    const endIndex = trimmed.indexOf(']');
+    if (endIndex <= 1) return undefined;
+    return trimmed.slice(1, endIndex);
+  }
+  return trimmed.split(':')[0];
 }
 
 function queryPositiveInt(request: Parameters<typeof queryFlag>[0], key: string): number | null {

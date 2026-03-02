@@ -8,21 +8,23 @@ TypeScript backend implementing agent-based arbitrage trading system with event-
 
 ```
 src/
-├── agents/           # Trading logic agents
+├── agents/           # Specialized agents + dependency/projection modules
+│   ├── dependency/   # Dependency extraction + graph resolution helpers
 │   ├── execution/    # Order execution state machine (HOTSPOT: 2229 lines)
-│   ├── portfolio/    # Position/PnL management (638 lines)
+│   ├── portfolio/    # Position/PnL management (650 lines, 21262 bytes)
 │   ├── scanner/      # Opportunity detection
 │   ├── risk/         # Risk gate evaluation
 │   ├── ops/          # Ops API agent
 │   ├── market-data/  # Market data processing
+│   ├── projection/   # Frank-Wolfe projection agent
 │   ├── signal/       # Signal aggregation and web search insights
 │   └── learning/     # Trade telemetry + advisory insights
 ├── core/             # Infrastructure
-│   ├── Supervisor.ts # Agent orchestration (1007 lines)
+│   ├── Supervisor.ts # Agent orchestration (1054 lines, 36589 bytes)
 │   ├── MessageBus.ts # Typed event-driven communication
 │   └── EventStore.ts # SQLite event sourcing
-├── domain/           # Business logic (15 files + AGENTS.md)
-├── services/         # External integrations (13 files + AGENTS.md)
+├── domain/           # Business logic (16 files + AGENTS.md)
+├── services/         # External integrations (11 top-level files + nested providers)
 ├── config/           # Environment, policy, risk (14 files)
 ├── venues/           # Exchange adapters
 ├── telemetry/        # Metrics, SLO monitoring
@@ -44,13 +46,10 @@ Read the nearest `AGENTS.md` before editing files in that subtree.
 ## Agent Flow
 
 ```
-ScannerAgent → RiskAgent → ExecutionAgent → PortfolioAgent
-     ↓             ↓              ↓               ↓
-  Detects      Validates     Executes        Reconciles
-  opportunity  gates         orders          positions
+SignalAggregatorAgent → ScannerAgent → (optional) FwProjectionAgent → RiskAgent → ExecutionAgent → PortfolioAgent
 ```
 
-Events: `market:updated` → `opportunity:detected` → `risk:approved` → `execution:outcome` (bus) + `execution_lifecycle` (metrics)
+Events: `market:updated` → `opportunity:detected` → `fw_projection` (optional) → `risk:approved` → `execution:outcome` (bus) + `execution_lifecycle` (metrics)
 
 ## Domain Layer
 
@@ -60,6 +59,7 @@ Events: `market:updated` → `opportunity:detected` → `risk:approved` → `exe
 | `market.ts` | MarketPair, binary YES/NO tokens |
 | `opportunity.ts` | ArbitrageOpportunity, edge calculation |
 | `execution.ts` | PairedExecutionState machine (17 states) |
+| `dependency.ts` | Dependency edges and market graph models |
 | `portfolio.ts` | Position, PortfolioSnapshot |
 | `orderbook.ts` | Normalization, depth, sweep cost |
 | `gates.ts` | Risk gate evaluation (edge, depth, staleness) |
@@ -70,6 +70,7 @@ Events: `market:updated` → `opportunity:detected` → `risk:approved` → `exe
 | `venue.ts` | Venue-specific abstractions |
 | `contractMapper.ts` | Canonical contract ID mapping |
 | `sequence.ts` | Exchange timestamp validation |
+| `llm.ts` | LLM analysis contracts and payload schemas |
 
 ## Services
 
@@ -83,6 +84,8 @@ Events: `market:updated` → `opportunity:detected` → `risk:approved` → `exe
 | `RetryPolicy` | Exponential backoff |
 | `IncidentTracker` | Failure logging |
 | `MarketCatalog` | Market pair loading |
+| `MarketCatalogRefresher` | Catalog refresh loop and cadence |
+| `IpOracleClient` | Public IP discovery for sidecar networking checks |
 
 ## Execution State Machine
 
@@ -108,6 +111,8 @@ Use `getRequiredAction()` for next step in state machine.
 Run from repo root for interactive testing with Docker backend + dashboard:
 
 ```bash
+npm run help
 npm run dev:live
 npm run dev:live:down
+npm run catalog:refresh:dev -- --help
 ```

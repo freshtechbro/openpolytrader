@@ -8,18 +8,18 @@ Vitest for backend (>97% thresholds across lines/functions/statements/branches),
 
 ```
 tests/
-├── unit/           # 78 test files
-└── integration/    # 4 test files
+├── unit/           # 93 test files
+├── integration/    # reserved for dedicated integration suites (currently empty)
+└── fixtures/       # shared fixture payloads
 
 dashboard/tests/
-└── e2e/            # Playwright specs (*.spec.ts)
+└── e2e/            # Playwright specs (*.spec.ts, 4 files)
 ```
 
 ## Local Instructions
 
 Local `AGENTS.md` files refine these rules:
 - `tests/unit/AGENTS.md`
-- `tests/integration/AGENTS.md`
 - `dashboard/tests/AGENTS.md`
 - `dashboard/tests/e2e/AGENTS.md`
 
@@ -40,12 +40,12 @@ Excluded from coverage:
 | Type | Pattern | Example |
 |------|---------|---------|
 | Unit | `*.test.ts` | `execution.test.ts` |
-| Integration | `*.test.ts` | `event-store.test.ts` |
 | E2E | `*.spec.ts` | `smoke.spec.ts` |
 
 ## Commands
 
 ```bash
+npm run help           # root command/tool/flag reference
 npm run test           # vitest run
 npm run test:coverage  # with >97% thresholds
 
@@ -82,7 +82,7 @@ vi.mock('../services/PolymarketClob', () => ({
 }));
 ```
 
-### Integration Cleanup
+### File-System Cleanup
 ```typescript
 afterEach(() => {
   if (fs.existsSync(tempDbPath)) {
@@ -96,12 +96,12 @@ afterEach(() => {
 | File | Lines | Coverage |
 |------|-------|----------|
 | `execution.test.ts` | 2843 | ExecutionAgent state machine |
-| `portfolio.test.ts` | 1178 | PortfolioAgent reconciliation |
-| `gates.test.ts` | 600 | Risk gates |
+| `portfolio.test.ts` | 1283 | PortfolioAgent reconciliation |
+| `gates.test.ts` | 775 | Risk gates |
 
 ## Anti-Patterns
 
-- Don't mock internal systems in integration tests without justification
+- Don't mock internal runtime flows in broad end-to-end validations without justification
 - Don't delete failing tests to "pass"
 - Don't skip coverage on critical paths
 - Don't use `as any` to bypass type errors in tests

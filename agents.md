@@ -1,6 +1,7 @@
 # OpenPolyTrader Knowledge Base
 
-**Generated:** 2026-02-08
+**Generated:** 2026-02-17
+**Commit:** d258f66
 **Branch:** main
 **Version:** 0.1.0
 
@@ -29,11 +30,11 @@
 Near-zero-risk Polymarket CLOB arbitrage bot. TypeScript + Fastify backend, React dashboard. Agent-based architecture with event-sourced state.
 
 **Project Stats:**
-- 94 TypeScript source files
-- 17 Dashboard TypeScript/TSX files
-- 8 Specialized agents
+- 108 TypeScript source files
+- 33 Dashboard TypeScript/TSX files
+- 9 Specialized agents
 - >97% test coverage requirement
-- 270+ environment configuration options
+- 209 environment configuration options
 
 ---
 
@@ -42,19 +43,21 @@ Near-zero-risk Polymarket CLOB arbitrage bot. TypeScript + Fastify backend, Reac
 ```
 openpolytrader/
 ├── src/
-│   ├── agents/        # Trading agents (8 agents)
+│   ├── agents/        # Specialized agents + dependency/projection modules (9 agent classes)
+│   │   ├── dependency/  # LLM dependency extraction/resolution helpers
 │   │   ├── execution/   # Order execution logic (2229 lines - complexity hotspot)
 │   │   ├── learning/    # RL model integration
 │   │   ├── market-data/ # WebSocket data handling
 │   │   ├── ops/         # Operations and health monitoring
-│   │   ├── portfolio/   # Position management (638 lines)
+│   │   ├── portfolio/   # Position management (650 lines, 21262 bytes)
+│   │   ├── projection/  # Frank-Wolfe projection agent
 │   │   ├── risk/        # Risk evaluation
 │   │   ├── scanner/     # Opportunity detection
 │   │   └── signal/      # Signal aggregation + web search
-│   ├── core/          # Supervisor (1007 lines), MessageBus, EventStore
+│   ├── core/          # Supervisor (1054 lines, 36589 bytes), MessageBus, EventStore
 │   ├── domain/        # Business logic, types, state machines, gates.ts
 │   ├── services/      # External API clients (Polymarket, Polygon)
-│   ├── config/        # Env, policy, risk settings (15 files)
+│   ├── config/        # Env, policy, risk settings (14 files)
 │   ├── venues/        # VenueAdapter abstraction
 │   ├── telemetry/     # Metrics, SLO monitoring
 │   ├── security/      # Auth, secrets
@@ -62,18 +65,18 @@ openpolytrader/
 │   ├── db/            # SQLite migrations
 │   ├── tools/         # CLI tools (market catalog generator)
 │   ├── utils/         # Shared utilities
-│   └── main.ts        # Entry point (27178 bytes)
+│   └── main.ts        # Entry point (867 lines, 30552 bytes)
 ├── dashboard/         # React/Vite ops dashboard
 │   ├── src/
-│   │   ├── components/  # Reusable UI (6 files)
-│   │   ├── pages/       # Route views (5 files, RiskGates.tsx 668 lines)
+│   │   ├── components/  # Reusable UI (14 files)
+│   │   ├── pages/       # Route views (11 files, RiskGates.tsx 708 lines / 27694 bytes)
 │   │   ├── hooks/       # Custom hooks
 │   │   ├── lib/         # Utilities (opsClient, config)
 │   │   └── styles/      # CSS (tokens.css, app.css)
 │   └── tests/e2e/       # Playwright E2E tests
-├── tests/             # Vitest unit + integration
-│   ├── unit/            # 78 test files
-│   ├── integration/     # 4 test files
+├── tests/             # Vitest unit tests + shared fixtures
+│   ├── unit/            # 93 test files
+│   ├── integration/     # Reserved for integration suites (currently empty)
 │   └── fixtures/        # Test fixtures
 ├── docs/              # Comprehensive documentation
 │   ├── ARCHITECTURE.md
@@ -100,51 +103,46 @@ openpolytrader/
 
 | Task | Location | Notes |
 |------|----------|-------|
-| **Trading logic** | `src/agents/execution/` | State machine, 2229 lines - complexity hotspot |
+| **Trading logic** | `src/agents/execution/` | State machine, 2229 lines / 69053 bytes |
 | **Risk gates** | `src/domain/gates.ts` | Pre-trade validation (edge, depth, staleness) |
-| **Portfolio state** | `src/agents/portfolio/` | Positions, PnL, reconciliation (638 lines) |
+| **Portfolio state** | `src/agents/portfolio/` | Positions, PnL, reconciliation (650 lines / 21262 bytes) |
+| **FW projection** | `src/agents/projection/` | Dependency-aware projection opportunities before risk gating |
 | **Market scanning** | `src/agents/scanner/` | Opportunity detection |
 | **Signal aggregation** | `src/agents/signal/` | EV signal aggregation + web search |
 | **API clients** | `src/services/` | PolymarketClob, PolymarketRealtime, PolymarketDataApi |
 | **Configuration** | `src/config/` | env.ts, policy.ts, risk.ts, schema.ts |
 | **Event bus** | `src/core/MessageBus.ts` | Typed agent communication |
 | **Persistence** | `src/core/EventStore.ts` | SQLite event sourcing |
-| **Orchestration** | `src/core/Supervisor.ts` | Agent lifecycle, pipeline flow (1007 lines) |
+| **Orchestration** | `src/core/Supervisor.ts` | Agent lifecycle, pipeline flow (1054 lines / 36589 bytes) |
 | **Dashboard UI** | `dashboard/src/` | React components + pages |
-| **Risk config UI** | `dashboard/src/pages/RiskGates.tsx` | 668 lines - complexity hotspot |
-| **Tests** | `tests/unit/`, `tests/integration/` | >97% coverage requirement |
+| **Risk config UI** | `dashboard/src/pages/RiskGates.tsx` | 708 lines / 27694 bytes |
+| **Tests** | `tests/unit/`, `tests/integration/` | >97% coverage requirement (integration directory currently empty) |
 
 ---
 
 ## Complexity Hotspots
 
-| File | Lines | Why |
-|------|-------|-----|
-| `src/agents/execution/ExecutionAgent.ts` | 2229 | State machine, timeouts, unwinds, idempotency |
-| `tests/unit/execution.test.ts` | 2843 | Comprehensive execution tests |
-| `tests/unit/portfolio.test.ts` | 1178 | Portfolio reconciliation tests |
-| `src/core/Supervisor.ts` | 1007 | Agent orchestration, circuit breakers |
-| `src/agents/portfolio/PortfolioAgent.ts` | 638 | Position management, venue reconciliation |
-| `dashboard/src/pages/RiskGates.tsx` | 668 | Risk config editing UI |
-| `src/main.ts` | 790 | Application bootstrap and initialization |
+| File | Lines | Bytes | Why |
+|------|-------|-------|-----|
+| `src/agents/execution/ExecutionAgent.ts` | 2229 | 69053 | State machine, timeouts, unwinds, idempotency |
+| `tests/unit/execution.test.ts` | 2843 | 101303 | Comprehensive execution tests |
+| `tests/unit/portfolio.test.ts` | 1283 | 35808 | Portfolio reconciliation tests |
+| `src/core/Supervisor.ts` | 1054 | 36589 | Agent orchestration, circuit breakers |
+| `src/agents/portfolio/PortfolioAgent.ts` | 650 | 21262 | Position management, venue reconciliation |
+| `dashboard/src/pages/RiskGates.tsx` | 708 | 27694 | Risk config editing UI |
+| `src/main.ts` | 867 | 30552 | Application bootstrap and initialization |
 
 ---
 
 ## Agent Flow
 
 ```
-┌─────────────────────┐     ┌─────────────┐     ┌──────────┐     ┌────────────┐     ┌────────────────┐
-│ SignalAggregatorAgent│────▶│ ScannerAgent │────▶│ RiskAgent │────▶│ ExecutionAgent │────▶│ PortfolioAgent │
-└─────────────────────┘     └─────────────┘     └──────────┘     └────────────┘     └────────────────┘
-        │                           │                  │                │                    │
-        ▼                           ▼                  ▼                ▼                    ▼
-   Detects                    Validates          Executes          Reconciles
-   opportunity                 gates              orders            positions
+SignalAggregatorAgent → ScannerAgent → (optional) FwProjectionAgent → RiskAgent → ExecutionAgent → PortfolioAgent
 ```
 
 **Event Flow:**
 ```
-market:updated → opportunity:detected → risk:approved → execution_lifecycle → execution:fill
+market:updated → opportunity:detected → fw_projection (optional) → risk:approved → execution_lifecycle → execution:fill
 ```
 
 ---
@@ -164,8 +162,9 @@ flowchart LR
   PolymarketREST[Polymarket CLOB REST] --> MarketDataAgent
   MarketDataAgent --> Orderbooks[(Orderbook State)]
 
+  DependencyResolvers[Dependency extractors/resolvers] --> FwProjectionAgent
   SignalAggregatorAgent --> ScannerAgent
-  Orderbooks --> ScannerAgent --> RiskAgent --> ExecutionAgent --> PortfolioAgent
+  Orderbooks --> ScannerAgent --> FwProjectionAgent --> RiskAgent --> ExecutionAgent --> PortfolioAgent
   ExecutionAgent --> PolymarketREST
   PortfolioAgent --> DataApi[Polymarket Data API]
 
@@ -185,7 +184,8 @@ flowchart LR
 flowchart TD
   MarketUpdate[Market update (WS/REST)] --> ScannerAgent
   ScannerAgent --> Opportunity[Arbitrage opportunity]
-  Opportunity --> Gates[evaluateGates]
+  Opportunity --> FwProjection[Optional FW projection]
+  FwProjection --> Gates[evaluateGates]
   Gates -->|pass| RiskAgent
   Gates -->|fail| GateReject[gate_rejection metric]
   RiskAgent --> ExecutionAgent
@@ -224,6 +224,7 @@ flowchart TD
 | Document | Purpose |
 |----------|---------|
 | [`docs/Development/setup.md`](docs/Development/setup.md) | Dev environment setup |
+| [`docs/Development/commands.md`](docs/Development/commands.md) | Complete CLI command reference |
 | [`docs/Development/market-catalog.md`](docs/Development/market-catalog.md) | Market catalog generation |
 | [`docs/API.md`](docs/API.md) | Full Ops API reference |
 
@@ -246,13 +247,28 @@ flowchart TD
 ### 📚 Local AGENTS.md Files
 
 Local context files throughout the codebase:
+- `.github/AGENTS.md` - CI workflow guidance
 - `src/AGENTS.md` - Source code overview
 - `src/agents/AGENTS.md` - Agent architecture
+- `src/agents/dependency/AGENTS.md` - FW dependency extraction/resolution
+- `src/agents/projection/AGENTS.md` - FW projection loop and basket shaping
+- `src/agents/projection/fw/AGENTS.md` - FW math primitives
 - `src/core/AGENTS.md` - Core systems
+- `src/services/AGENTS.md` - Backend service clients
 - `src/services/llm/AGENTS.md` - LLM integration
+- `src/services/ip-oracle/AGENTS.md` - FW oracle client contract
+- `docs/AGENTS.md` - Documentation maintenance rules
+- `services/AGENTS.md` - Sidecar service guidance
+- `settings/AGENTS.md` - Risk profile persistence guidance
 - `dashboard/src/AGENTS.md` - Dashboard overview
+- `dashboard/src/routes/AGENTS.md` - Dashboard route composition
+- `dashboard/src/components/public/AGENTS.md` - Public UI components
+- `dashboard/src/pages/public/AGENTS.md` - Public route pages
+- `dashboard/public/AGENTS.md` - Static dashboard assets
+- `dashboard/scripts/AGENTS.md` - Dashboard script guidance
 - `tests/unit/AGENTS.md` - Testing patterns
-- `tests/integration/AGENTS.md` - Integration testing
+- `tests/fixtures/AGENTS.md` - Shared test fixture constraints
+- `tests/fixtures/llm/AGENTS.md` - LLM fixture payload constraints
 
 ---
 
@@ -277,7 +293,7 @@ Local context files throughout the codebase:
 - Mix unrelated changes in commits
 - Use `as any`, `@ts-ignore`, `@ts-expect-error`
 - Guess - mark uncertainties as UNCONFIRMED
-- Mock internal systems in integration tests without justification
+- Mock internal runtime systems in broad end-to-end tests without justification
 
 ### ⚙️ Operations - ALWAYS
 
@@ -300,7 +316,7 @@ Local context files throughout the codebase:
 
 ### Architecture
 
-- **Pattern:** Agent-based (Scanner → Risk → Execution → Portfolio)
+- **Pattern:** Agent-based (Scanner → optional FW projection → Risk → Execution → Portfolio)
 - **State management:** Event-sourced (not direct mutation)
 - **Communication:** MessageBus for inter-agent
 - **Exchange abstraction:** VenueAdapter
@@ -310,14 +326,14 @@ Local context files throughout the codebase:
 
 - **Internal code:** camelCase
 - **External API fields:** snake_case
-- **Tests:** `*.test.ts` for unit/integration, `*.spec.ts` for e2e
+- **Tests:** `*.test.ts` for Vitest suites, `*.spec.ts` for e2e
 
 ### Testing
 
 - **Framework:** Vitest
 - **Coverage:** >97% requirement
 - **Mocking:** `vi.mock()` for external dependencies
-- **Cleanup:** `afterEach` for integration tests
+- **Cleanup:** `afterEach` for deterministic test cleanup
 
 ---
 
@@ -326,21 +342,39 @@ Local context files throughout the codebase:
 ### Backend
 
 ```bash
+npm run help             # root command/tool/flag reference
+npm run h                # alias for help
+npm run postinstall      # arch guard for local esbuild binaries
 npm run dev              # tsx src/main.ts
 npm run dev:ops          # backend + dashboard (scripts/dev-up.sh)
+npm run dev:up           # alias for dev:ops
+npm run dev:ops:status   # check oracle/backend/dashboard health
 npm run dev:ops:down     # stop dev:ops processes
+npm run dev:ops:smoke    # deterministic lifecycle smoke (up -> status -> down -> status)
+npm run paper:up         # alias for dev:ops
+npm run paper:status     # alias for dev:ops:status
+npm run paper:down       # alias for dev:ops:down
+npm run paper:smoke      # alias for dev:ops:smoke
 npm run dev:live         # Docker backend + local dashboard dev server
 npm run dev:live:down    # Stop Docker backend
 npm run build            # tsc compilation
 npm run build:all        # build backend + dashboard + Docker images
 npm run build:all:up     # build everything and start Docker containers
 npm run build:all:live   # build everything and start backend + dashboard dev server
+npm run prestart         # market-catalog preflight before start
 npm run start            # node dist/main.js
 npm run lint             # eslint --max-warnings=0
 npm run typecheck        # tsc --noEmit
 npm run test             # vitest run
 npm run test:coverage    # >97% thresholds
+npm run polymarket:check # Polymarket connectivity smoke check
+npm run polymarket:authcheck # Polymarket auth validation
+npm run polymarket:derive-creds # derive CLOB creds from L1 key
+npm run llm:smoke        # LLM routing smoke test
 npm run catalog:refresh  # refresh market catalog
+npm run catalog:refresh:dev -- --help # show market catalog generator CLI help
+npm run catalog:relations # build dependency relation catalog
+npm run catalog:relations:dev # run dependency relation catalog via tsx
 ```
 
 ### Dashboard
@@ -412,7 +446,7 @@ Auth: `Authorization: Bearer $OPS_API_TOKEN`
 
 ### Configuration
 
-- Dashboard token: Set `VITE_OPS_API_TOKEN` matching `OPS_API_TOKEN`
+- Dashboard auth: use runtime `/ops/*` session login with `OPS_API_TOKEN` (no build-time token)
 - Defaults in `.env.example`: `TRADING_ENABLED=true`, `TRADING_MODE=shadow`, `RISK_PROFILE=extra_high`
 - To hard-disable trading: set `TRADING_ENABLED=false` or `TRADING_MODE=off`
 - Market catalog: Optional `MARKET_CATALOG_PATH` JSON array

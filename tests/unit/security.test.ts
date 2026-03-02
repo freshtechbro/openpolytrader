@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { FastifyRequest } from 'fastify';
 
-import { readOpsToken, tokensMatch, isAuthorized, queryFlag } from '../../src/security/Auth.js';
+import { readCookieValue, readOpsToken, tokensMatch, isAuthorized, queryFlag } from '../../src/security/Auth.js';
 import { hasSecret, redactSecret } from '../../src/security/Secrets.js';
 
 function makeRequest(
@@ -55,6 +55,15 @@ describe('security auth helpers', () => {
     expect(queryFlag(makeRequest({}, { once: '1' }), 'once')).toBe(true);
     expect(queryFlag(makeRequest({}, { once: 'true' }), 'once')).toBe(true);
     expect(queryFlag(makeRequest({}, { once: 'false' }), 'once')).toBe(false);
+  });
+
+  it('reads cookie values', () => {
+    expect(readCookieValue(makeRequest({ cookie: 'ops_session=abc123; foo=bar' }), 'ops_session')).toBe('abc123');
+    expect(readCookieValue(makeRequest({ cookie: 'foo=bar' }), 'ops_session')).toBeUndefined();
+    expect(readCookieValue(makeRequest({ cookie: 'ops_session=a%20b' }), 'ops_session')).toBe('a b');
+    expect(readCookieValue(makeRequest({ cookie: 'ops_session=%' }), 'ops_session')).toBe('%');
+    expect(readCookieValue(makeRequest({ cookie: '=ignored; ops_session=abc' }), 'ops_session')).toBe('abc');
+    expect(readCookieValue(makeRequest({ cookie: 'ops_session=' }), 'ops_session')).toBeUndefined();
   });
 });
 

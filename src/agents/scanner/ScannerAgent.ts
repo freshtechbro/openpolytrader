@@ -3,11 +3,13 @@ import type { TradingMode } from '../../config/env.js';
 import { MarketAllowlist } from '../../domain/allowlist.js';
 import { evaluateEvGates, evaluateGatesWithFees } from '../../domain/gates.js';
 import { createUniformTakerFeeModel } from '../../domain/feeModel.js';
+import type { DependencyMarketInput } from '../../domain/dependency.js';
 import { type MarketPair } from '../../domain/market.js';
 import { type OrderBookState } from '../../domain/orderbook.js';
 import { ArbitrageOpportunity, evOpportunityId, opportunityId } from '../../domain/opportunity.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import type { EventStore } from '../../core/EventStore.js';
+import type { FwProjectionAgent } from '../projection/FwProjectionAgent.js';
 import { messageBus } from '../../core/MessageBus.js';
 import { ScannerScoreSchema } from '../../domain/llm.js';
 import type { LLMConfig as AppLLMConfig } from '../../config/llm.js';
@@ -30,6 +32,7 @@ export interface ScannerAgentConfig {
     promptVersion: string;
     policyHashes: { tradePolicyHash: string; riskConfigHash: string };
   };
+  fwProjectionAgent?: FwProjectionAgent;
 }
 
 export class ScannerAgent {
@@ -45,6 +48,7 @@ export class ScannerAgent {
   private gateRejectionEmissionState = new Map<string, { reasonKey: string; timestampMs: number }>();
   private evSignalEmissionState = new Map<string, { reasonKey: string; timestampMs: number }>();
   private nearZeroFeeModel = createUniformTakerFeeModel(0);
+  private fwProjectionAgent?: FwProjectionAgent;
 
   constructor(
     private policy: TradePolicy,
@@ -56,6 +60,7 @@ export class ScannerAgent {
     this.store = config?.eventStore;
     this.llm = config?.llm;
     this.nearZeroFeeModel = createUniformTakerFeeModel(this.policy.nearZeroFeeBps);
+    this.fwProjectionAgent = config?.fwProjectionAgent;
 
     this.insightHandler = (payload) => {
       const parsed = payload as { insights?: Array<{ market_id: string; signal: string; value: number; ttl_ms: number; confidence: number }> };
@@ -86,6 +91,61 @@ export class ScannerAgent {
   updatePolicy(next: TradePolicy): void {
     this.policy = next;
     this.nearZeroFeeModel = createUniformTakerFeeModel(next.nearZeroFeeBps);
+  }
+
+  async scanFwPair(
+    pair: MarketPair,
+    orderbooks: Map<string, OrderBookState>,
+    nowMs = Date.now(),
+    marketUniverse?: DependencyMarketInput[]
+  ): Promise<ArbitrageOpportunity | null> {
+    const scopedUniverse =
+      marketUniverse && marketUniverse.length > 0
+        ? marketUniverse
+        : [{ marketId: pair.marketId, yesTokenId: pair.yesTokenId, noTokenId: pair.noTokenId }];
+    const opportunities = await this.scanFwUniverse(orderbooks, scopedUniverse, nowMs);
+    return opportunities.find((opportunity) => opportunity.marketId === pair.marketId) ?? null;
+  }
+
+  async scanFwUniverse(
+    orderbooks: Map<string, OrderBookState>,
+    marketUniverse: DependencyMarketInput[],
+    nowMs = Date.now()
+  ): Promise<ArbitrageOpportunity[]> {
+    if (this.tradingMode === 'off') return [];
+    const allowedUniverse = marketUniverse.filter((entry) =>
+      entry.marketId ? this.allowlist.isAllowed(entry.marketId, nowMs) : false
+    );
+    if (allowedUniverse.length === 0) return [];
+    if (!this.fwProjectionAgent) {
+      this.metrics?.record({
+        type: 'fw_projection',
+        timestamp: nowMs,
+        data: { event: 'projection_rejected', marketId: 'unknown', reason: 'fw_projection_agent_unconfigured' }
+      });
+      return [];
+    }
+
+    const result = await this.fwProjectionAgent.projectUniverse({
+      policy: this.policy,
+      nowMs,
+      orderbooks,
+      marketUniverse: allowedUniverse
+    });
+    if (result.opportunities.length === 0) {
+      this.metrics?.record({
+        type: 'fw_projection',
+        timestamp: nowMs,
+        data: {
+          event: 'projection_rejected',
+          marketId: allowedUniverse[0]?.marketId ?? 'unknown',
+          reason: result.reason ?? 'projection_rejected'
+        }
+      });
+      return [];
+    }
+
+    return result.opportunities;
   }
 
   async prioritizeOpportunities(
@@ -191,7 +251,7 @@ export class ScannerAgent {
             {
               role: 'developer',
               content:
-                'Return JSON only, with shape: {"priority_score":number,"rationale":string,"confidence":number}. Do NOT make trade decisions; only rank opportunities. Use only the inputs. Score must be between 0 and 1 and reflect relative priority vs the deterministic edge. If inputs are incomplete or mixed, return priority_score=0.5, confidence=0, rationale="insufficient_data". Confidence must be between 0 and 1. No prose.'
+                'Return JSON only, with shape: {"priority_score":number,"rationale":string,"confidence":number}. Do NOT make trade decisions; only rank opportunities. Use only the inputs. Score must be between 0 and 1 and reflect relative priority vs the deterministic edge. recent_outcomes may be null and that is expected; still score using current_edge and book_quality. Only return priority_score=0.5, confidence=0, rationale="insufficient_data" when current_edge or book_quality is missing/invalid and you cannot score safely. Confidence must be between 0 and 1. No prose.'
             },
             { role: 'user', content: JSON.stringify(promptEnvelope) }
           ]

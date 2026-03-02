@@ -11,7 +11,9 @@ const DEFAULT_OPTIONS = {
   maxOpenInventorySeconds: DEFAULT_TRADE_POLICY.maxOpenInventorySeconds,
   depthBufferMultiplier: DEFAULT_TRADE_POLICY.depthBufferMultiplier,
   evMaxPerMarketNotional: DEFAULT_TRADE_POLICY.evMaxPerMarketNotional,
-  evMaxPortfolioNotional: DEFAULT_TRADE_POLICY.evMaxPortfolioNotional
+  evMaxPortfolioNotional: DEFAULT_TRADE_POLICY.evMaxPortfolioNotional,
+  fwMaxPerMarketNotional: DEFAULT_TRADE_POLICY.fwMaxPerMarketNotional,
+  fwMaxPortfolioNotional: DEFAULT_TRADE_POLICY.fwMaxPortfolioNotional
 };
 
 const baseOpportunity: ArbitrageOpportunity = {

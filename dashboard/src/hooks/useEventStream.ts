@@ -6,12 +6,18 @@ export interface StreamEvent {
   data: any;
 }
 
-export function useEventStream(url: string, onEvent?: (event: StreamEvent) => void) {
+export function useEventStream(url: string | null, onEvent?: (event: StreamEvent) => void) {
   const [connected, setConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<StreamEvent | null>(null);
 
   useEffect(() => {
-    const source = new EventSource(url);
+    if (!url) {
+      setConnected(false);
+      setLastEvent(null);
+      return;
+    }
+
+    const source = new EventSource(url, { withCredentials: true });
 
     source.onopen = () => setConnected(true);
     source.onerror = () => {
@@ -57,7 +63,7 @@ export function useEventStream(url: string, onEvent?: (event: StreamEvent) => vo
     return () => {
       source.close();
     };
-  }, [url]);
+  }, [url, onEvent]);
 
   return useMemo(
     () => [{ connected, lastEvent }] as const,

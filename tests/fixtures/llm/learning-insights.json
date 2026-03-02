@@ -3,10 +3,9 @@
     {
       "market_id": "market_123",
       "signal": "high_confidence",
-      "value": 0.8,
+      "value": 0.82,
       "ttl_ms": 60000,
-      "confidence": 0.85
+      "confidence": 0.91
     }
   ]
 }
-

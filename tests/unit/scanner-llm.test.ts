@@ -252,6 +252,10 @@ describe('ScannerAgent LLM prioritization', () => {
       max_tokens: 300,
       response_format: { type: 'json_object' }
     });
+    const developerMessage = (capturedRequest as { messages?: Array<{ role?: string; content?: string }> })
+      ?.messages?.find((message) => message.role === 'developer')?.content;
+    expect(developerMessage).toContain('recent_outcomes may be null and that is expected');
+    expect(developerMessage).toContain('Only return priority_score=0.5, confidence=0, rationale="insufficient_data" when current_edge or book_quality is missing/invalid');
     agent.stop();
   });
 

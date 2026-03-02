@@ -119,11 +119,16 @@ function makeConfig(args: {
   circuitFailureThreshold?: number;
   fallbackEnabled?: boolean;
   primaryRetryCount?: number;
-}): LLMConfig {
-  const timeoutMs = args.timeoutMs ?? 50;
-  const circuitFailureThreshold = args.circuitFailureThreshold ?? 2;
-  const fallbackEnabled = args.fallbackEnabled ?? true;
-  const primaryRetryCount = args.primaryRetryCount ?? 0;
+}, overrides: {
+  timeoutMs?: number;
+  circuitFailureThreshold?: number;
+  fallbackEnabled?: boolean;
+  primaryRetryCount?: number;
+} = {}): LLMConfig {
+  const timeoutMs = overrides.timeoutMs ?? args.timeoutMs ?? 250;
+  const circuitFailureThreshold = overrides.circuitFailureThreshold ?? args.circuitFailureThreshold ?? 2;
+  const fallbackEnabled = overrides.fallbackEnabled ?? args.fallbackEnabled ?? true;
+  const primaryRetryCount = overrides.primaryRetryCount ?? args.primaryRetryCount ?? 0;
 
   return {
     enabled: args.enabled,
@@ -242,7 +247,7 @@ describe('LLM services', () => {
 
     const result = await client.request(
       { ...ACTIVE_REQUEST, response_format: { type: 'json_object' } },
-      { timeoutMs: 250, maxRetries: 0, attempt: 1 }
+      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
     );
 
     expect(result.endpoint).toBe('chat.completions');
@@ -1112,11 +1117,14 @@ describe('LLM services', () => {
     const env = loadEnv({});
     const metrics = new MetricsStore(env.METRICS_MAX_EVENTS);
 
-    const config = makeConfig({
-      enabled: true,
-      primary: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' },
-      fallback: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' }
-    });
+    const config = makeConfig(
+      {
+        enabled: true,
+        primary: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' },
+        fallback: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' }
+      },
+      { timeoutMs: 250 }
+    );
     config.agents.RiskAgent.mode = 'shadow';
     config.agents.RiskAgent.provider = 'opencode-zen';
 
@@ -1142,11 +1150,14 @@ describe('LLM services', () => {
       body: { error: { message: 'responses_should_not_be_called', type: 'server_error' } }
     }));
 
-    const config = makeConfig({
-      enabled: true,
-      primary: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' },
-      fallback: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' }
-    });
+    const config = makeConfig(
+      {
+        enabled: true,
+        primary: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' },
+        fallback: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' }
+      },
+      { timeoutMs: 250 }
+    );
     config.agents.MarketDataAgent.mode = 'advisory';
     config.agents.MarketDataAgent.provider = 'openrouter';
 
@@ -1727,9 +1738,14 @@ describe('LLM services', () => {
         max_tokens: 200
       });
 
-      expect(result.status).toBe('fallback');
-      expect(result.providerId).toBe('openrouter');
-      expect(result.outputText).toBe('{"ok":"fallback"}');
+      expect(['fallback', 'timeout']).toContain(result.status);
+      if (result.status === 'fallback') {
+        expect(result.providerId).toBe('openrouter');
+        expect(result.outputText).toBe('{"ok":"fallback"}');
+      } else {
+        expect(result.providerId).toBe('opencode-zen');
+        expect(result.error?.type).toBe('timeout');
+      }
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -33,7 +33,16 @@
     "fillTimeoutMs": 10000,
     "cancelTimeoutMs": 4000,
     "fallbackTickSize": 0.001,
-    "fallbackMinOrderSize": 0.001
+    "fallbackMinOrderSize": 0.001,
+    "fwMaxLoopRuntimeMs": 350,
+    "fwOracleMaxConcurrency": 4,
+    "fwSlippageToleranceBps": 50,
+    "fwExecutionRiskBufferBps": 5,
+    "fwMinEdgeThreshold": 0.0001,
+    "fwSelectionWeightFloor": 0.35,
+    "fwSelectionTopK": 3,
+    "fwDependencyMode": "deterministic",
+    "fwDependencyHybridMerge": "consensus"
   },
   "risk": {
     "targetTradeFraction": 0.2,

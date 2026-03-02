@@ -54,6 +54,7 @@ const envSchema = z.object({
   OPS_API_ENABLED: envBoolean(true),
   OPS_API_HOST: z.string().default('0.0.0.0'),
   OPS_API_TOKEN: z.string().optional(),
+  OPS_DEV_SESSION_PREFILL_ENABLED: envBoolean(false),
   OPS_ALERT_WEBHOOK_URL: z.string().optional(),
   OPS_HEALTH_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
   OPS_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
@@ -135,6 +136,11 @@ const envSchema = z.object({
   EV_WEBSEARCH_MAX_CONTENT_BYTES: z.coerce.number().int().positive().default(500000),
   EV_WEBSEARCH_DOMAIN_ALLOWLIST: z.string().optional(),
   EV_WEBSEARCH_DOMAIN_DENYLIST: z.string().optional(),
+  FW_ORACLE_BASE_URL: z.string().default('http://127.0.0.1:7071'),
+  FW_ORACLE_TIMEOUT_MS: z.coerce.number().int().positive().default(120),
+  FW_ORACLE_API_KEY: z.string().optional(),
+  FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().min(1).default(3),
+  FW_ORACLE_CIRCUIT_COOLDOWN_MS: z.coerce.number().int().min(0).default(30000),
 
   // LLM (advisory-only; enabled by default, but runtime requires a key)
   LLM_ENABLED: envBoolean(true),
@@ -258,7 +264,6 @@ const envSchema = z.object({
   POLYMARKET_POSITIONS_SIZE_THRESHOLD: z.coerce.number().min(0).default(0),
   POLYMARKET_POSITIONS_LIMIT: z.coerce.number().int().min(1).max(500).default(200),
   POLYMARKET_POSITIONS_OFFSET: z.coerce.number().int().min(0).max(10000).default(0),
-  PHASE2_CROSS_VENUE_ENABLED: envBoolean(false),
   KALSHI_API_KEY_ID: z.string().optional(),
   KALSHI_PRIVATE_KEY_PEM: z.string().optional(),
   KALSHI_PRIVATE_KEY_PATH: z.string().optional(),

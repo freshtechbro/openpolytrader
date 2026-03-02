@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { loadEnv, resolveRiskProfileEnvFlags } from '../../src/config/env.js';
 import { DEFAULT_RISK_CONFIG } from '../../src/config/risk.js';
 import { DEFAULT_TRADE_POLICY, isNearZeroRiskMode } from '../../src/config/policy.js';
+import { loadRiskProfile } from '../../src/config/riskProfile.js';
 import { ConfigStore } from '../../src/config/store.js';
 import { validateP0Config } from '../../src/config/validate.js';
 import {
@@ -14,7 +15,6 @@ import {
   type ConfigSection
 } from '../../src/config/schema.js';
 import { MARKET_PAIRS } from '../../src/config/markets.js';
-import { venueFlags } from '../../src/config/venues.js';
 
 describe('config env + store', () => {
   it('loads default env values', () => {
@@ -63,6 +63,31 @@ describe('config env + store', () => {
     expect(env.EXA_COOLDOWN_FAILURE_THRESHOLD).toBe(2);
   });
 
+  it('loads FW oracle env defaults', () => {
+    const env = loadEnv({});
+
+    expect(env.FW_ORACLE_BASE_URL).toBe('http://127.0.0.1:7071');
+    expect(env.FW_ORACLE_TIMEOUT_MS).toBe(120);
+    expect(env.FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD).toBe(3);
+    expect(env.FW_ORACLE_CIRCUIT_COOLDOWN_MS).toBe(30000);
+  });
+
+  it('parses FW oracle env overrides', () => {
+    const env = loadEnv({
+      FW_ORACLE_BASE_URL: 'http://oracle.internal:9999',
+      FW_ORACLE_TIMEOUT_MS: '250',
+      FW_ORACLE_API_KEY: 'secret',
+      FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD: '5',
+      FW_ORACLE_CIRCUIT_COOLDOWN_MS: '45000'
+    });
+
+    expect(env.FW_ORACLE_BASE_URL).toBe('http://oracle.internal:9999');
+    expect(env.FW_ORACLE_TIMEOUT_MS).toBe(250);
+    expect(env.FW_ORACLE_API_KEY).toBe('secret');
+    expect(env.FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD).toBe(5);
+    expect(env.FW_ORACLE_CIRCUIT_COOLDOWN_MS).toBe(45000);
+  });
+
   it('parses boolean env vars from strings', () => {
     const env = loadEnv({
       TRADING_ENABLED: 'false',
@@ -70,8 +95,7 @@ describe('config env + store', () => {
       ALLOWLIST_AUTO_RESUME: '0',
       LLM_ENABLED: 'true',
       LLM_DATA_EXPORT_ENABLED: 'no',
-      LLM_OPENROUTER_ALLOW_FALLBACKS: 'on',
-      PHASE2_CROSS_VENUE_ENABLED: 'off'
+      LLM_OPENROUTER_ALLOW_FALLBACKS: 'on'
     });
 
     expect(env.TRADING_ENABLED).toBe(false);
@@ -80,7 +104,6 @@ describe('config env + store', () => {
     expect(env.LLM_ENABLED).toBe(true);
     expect(env.LLM_DATA_EXPORT_ENABLED).toBe(false);
     expect(env.LLM_OPENROUTER_ALLOW_FALLBACKS).toBe(true);
-    expect(env.PHASE2_CROSS_VENUE_ENABLED).toBe(false);
   });
 
   it('parses boolean env vars from booleans/numbers and rejects unknown strings', () => {
@@ -219,6 +242,19 @@ describe('config env + store', () => {
     expect(loadEnv({ RISK_PROFILE: 'default' }).RISK_PROFILE).toBe('extra_high');
     expect(loadEnv({ RISK_PROFILE: 'Extra-High' }).RISK_PROFILE).toBe('extra_high');
     expect(loadEnv({ RISK_PROFILE: '   ' }).RISK_PROFILE).toBe('extra_high');
+  });
+
+  it('extra_high profile explicitly sets Frank-Wolfe runtime defaults', () => {
+    const profile = loadRiskProfile('extra_high', 'settings/risk-gates/extra_high.json');
+    expect(profile?.policy.fwMaxLoopRuntimeMs).toBe(350);
+    expect(profile?.policy.fwOracleMaxConcurrency).toBe(4);
+    expect(profile?.policy.fwSlippageToleranceBps).toBe(50);
+    expect(profile?.policy.fwExecutionRiskBufferBps).toBe(5);
+    expect(profile?.policy.fwMinEdgeThreshold).toBe(0.0001);
+    expect(profile?.policy.fwSelectionWeightFloor).toBe(0.35);
+    expect(profile?.policy.fwSelectionTopK).toBe(3);
+    expect(profile?.policy.fwDependencyMode).toBe('deterministic');
+    expect(profile?.policy.fwDependencyHybridMerge).toBe('consensus');
   });
 
   it('rejects alchemy URLs that already include the API key', () => {
@@ -381,6 +417,68 @@ describe('config validation + schema helpers', () => {
     expect(() => validateP0Config(policy, DEFAULT_RISK_CONFIG)).not.toThrow();
   });
 
+  it('validates FW policy constraints', () => {
+    const validTimeout = { ...DEFAULT_TRADE_POLICY, fwOracleTimeLimitMs: 1 };
+    expect(() => validateP0Config(validTimeout, DEFAULT_RISK_CONFIG)).not.toThrow();
+
+    const badTimeout = { ...DEFAULT_TRADE_POLICY, fwOracleTimeLimitMs: 0 };
+    expect(() => validateP0Config(badTimeout, DEFAULT_RISK_CONFIG)).toThrow(/fwOracleTimeLimitMs/);
+
+    const lowConfidence = { ...DEFAULT_TRADE_POLICY, fwDependencyMinConfidence: -0.1 };
+    expect(() => validateP0Config(lowConfidence, DEFAULT_RISK_CONFIG)).toThrow(/fwDependencyMinConfidence/);
+
+    const badThreshold = { ...DEFAULT_TRADE_POLICY, fwMinEdgeThreshold: 0 };
+    expect(() => validateP0Config(badThreshold, DEFAULT_RISK_CONFIG)).toThrow(/fwMinEdgeThreshold/);
+
+    const badAge = { ...DEFAULT_TRADE_POLICY, fwMaxProjectionAgeMs: 0 };
+    expect(() => validateP0Config(badAge, DEFAULT_RISK_CONFIG)).toThrow(/fwMaxProjectionAgeMs/);
+
+    const badFwSlippage = { ...DEFAULT_TRADE_POLICY, fwSlippageToleranceBps: -1 };
+    expect(() => validateP0Config(badFwSlippage, DEFAULT_RISK_CONFIG)).toThrow(/fwSlippageToleranceBps/);
+
+    const badTopK = { ...DEFAULT_TRADE_POLICY, fwSelectionTopK: -1 };
+    expect(() => validateP0Config(badTopK, DEFAULT_RISK_CONFIG)).toThrow(/fwSelectionTopK/);
+
+    const badCacheGrace = {
+      ...DEFAULT_TRADE_POLICY,
+      fwDependencyCacheTtlMs: 1_000,
+      fwDependencyCacheGraceMs: 1_001
+    };
+    expect(() => validateP0Config(badCacheGrace, DEFAULT_RISK_CONFIG)).toThrow(/fwDependencyCacheGraceMs/);
+  });
+
+  it('rejects invalid FW notional and merge combinations', () => {
+    const badNotional = {
+      ...DEFAULT_TRADE_POLICY,
+      fwMaxPerMarketNotional: 500,
+      fwMaxPortfolioNotional: 100
+    };
+    expect(() => validateP0Config(badNotional, DEFAULT_RISK_CONFIG)).toThrow(/fwMaxPerMarketNotional/);
+
+    const invalidMerge = {
+      ...DEFAULT_TRADE_POLICY,
+      fwDependencyMode: 'deterministic' as const,
+      fwDependencyHybridMerge: 'union' as const
+    };
+    expect(() => validateP0Config(invalidMerge, DEFAULT_RISK_CONFIG)).toThrow(/fwDependencyHybridMerge/);
+  });
+
+  it('rejects invalid FW loop contraction and basket bounds', () => {
+    const badContraction = {
+      ...DEFAULT_TRADE_POLICY,
+      fwContractionInitialEpsilon: 0.01,
+      fwContractionMinEpsilon: 0.01
+    };
+    expect(() => validateP0Config(badContraction, DEFAULT_RISK_CONFIG)).toThrow(/fwContractionInitialEpsilon/);
+
+    const badBasketBounds = {
+      ...DEFAULT_TRADE_POLICY,
+      fwBasketMinMarkets: 4,
+      fwBasketMaxMarkets: 2
+    };
+    expect(() => validateP0Config(badBasketBounds, DEFAULT_RISK_CONFIG)).toThrow(/fwBasketMinMarkets/);
+  });
+
   it('identifies near-zero-risk mode', () => {
     expect(isNearZeroRiskMode(DEFAULT_TRADE_POLICY)).toBe(true);
     expect(isNearZeroRiskMode({ ...DEFAULT_TRADE_POLICY, strategyMode: 'standard' })).toBe(
@@ -474,12 +572,9 @@ describe('config validation + schema helpers', () => {
     expect(() => assertSectionValues(section, { strategyMode: 'standard' })).not.toThrow();
   });
 
-  it('exposes schema and market/venue helpers', () => {
+  it('exposes schema and market helpers', () => {
     expect(CONFIG_SCHEMA.sections.length).toBeGreaterThan(0);
     expect(Array.isArray(MARKET_PAIRS)).toBe(true);
-
-    const env = loadEnv({ PHASE2_CROSS_VENUE_ENABLED: 'true' });
-    expect(venueFlags(env).phase2CrossVenue).toBe(true);
   });
 
   it('rejects enum fields without options', () => {

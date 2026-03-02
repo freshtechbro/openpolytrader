@@ -15,7 +15,7 @@
 
 - `TRADING_MODE=paper` or `TRADING_ENABLED=false`
 - `OPS_API_TOKEN` in `.env`
-- `VITE_OPS_API_TOKEN` in `dashboard/.env` (match `OPS_API_TOKEN`)
+- Runtime ops session login in dashboard (`/ops/*`) using `OPS_API_TOKEN`
 
 #### Live mode (strict required keys)
 
@@ -36,6 +36,24 @@ cp .env.example .env
 cp dashboard/.env.example dashboard/.env
 ```
 
+View the root command/tool/flag index:
+
+```bash
+npm run help
+```
+
+Full command inventory (including start/help/stop/kill paths):
+
+- `docs/Development/commands.md`
+
+Toolchain references used during setup/build:
+
+- `package.json` + `dashboard/package.json` for script entrypoints
+- `package-lock.json` + `dashboard/package-lock.json` for reproducible installs
+- `tsconfig.json` + `dashboard/tsconfig.json` for typecheck/build behavior
+- `.eslintrc.cjs` for backend lint rules
+- `Dockerfile` for production backend container build/runtime contract
+
 Set local-safe defaults before first run:
 
 ```bash
@@ -43,12 +61,16 @@ Set local-safe defaults before first run:
 TRADING_MODE=paper
 TRADING_ENABLED=true
 OPS_API_TOKEN=replace-with-secure-token
+# Optional dev convenience: prefill token field on /ops/* login from localhost
+OPS_DEV_SESSION_PREFILL_ENABLED=false
 ```
+
+`npm run dev:ops` overrides this to `true` by default unless you pass
+`OPS_DEV_SESSION_PREFILL_ENABLED=false` inline at startup.
 
 ```bash
 # dashboard/.env
 VITE_OPS_BASE_URL=http://localhost:3000
-VITE_OPS_API_TOKEN=replace-with-secure-token
 ```
 
 ## Quickstart Modes
@@ -57,20 +79,35 @@ VITE_OPS_API_TOKEN=replace-with-secure-token
 
 ```bash
 npm run dev:ops
+npm run dev:up
 ```
 
 Behavior:
 
-- Requires an ops token (from env or dashboard env)
+- Requires an ops token (`OPS_API_TOKEN`) and exits fast if it is missing
 - Starts backend on `http://localhost:3000`
 - Starts dashboard on `http://localhost:5174`
 - Forces backend runtime to `TRADING_MODE=paper` in script startup
+- Defaults `OPS_DEV_SESSION_PREFILL_ENABLED=true` for localhost token prefill convenience
+- Treats dashboard startup probe timeout as warning (keeps oracle/backend up; verify with `npm run dev:ops:status`)
 - Writes logs to `tmp/backend.log` and `tmp/dashboard.log`
+
+To disable prefill for a run:
+
+```bash
+OPS_DEV_SESSION_PREFILL_ENABLED=false npm run dev:ops
+```
 
 Stop:
 
 ```bash
 npm run dev:ops:down
+```
+
+Repeatable lifecycle smoke:
+
+```bash
+npm run dev:ops:smoke
 ```
 
 ### Backend Only
@@ -115,6 +152,7 @@ Confirm:
 
 - `tradingMode` is `paper` (or your expected mode)
 - dashboard loads at `http://localhost:5174`
+- `/ops/overview` auto-authenticates when localhost prefill is enabled (default under `dev:ops`), or prompts for runtime token when prefill is disabled
 
 ## Quality Gate Commands
 
