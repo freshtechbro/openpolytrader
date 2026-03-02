@@ -401,10 +401,15 @@ Auth (when `OPS_API_TOKEN` is set):
 curl -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/health
 ```
 
+## Architecture Snapshot
+
+![OpenPolyTrader architecture and decision flow](docs/assets/architecture/openpolytrader-architecture-flow.svg)
+
 ## Documentation Map
 
 - API reference: `docs/API.md`
 - Architecture (with end-to-end event flow diagrams): `docs/ARCHITECTURE.md`
+- Operator strategy report: `docs/Operations/operator-strategy-report.md`
 - Local setup spec and quickstart details: `docs/Development/setup.md`
 - Full command reference (start/help/stop/kill + diagnostics): `docs/Development/commands.md`
 - Environment variable descriptions and defaults: `docs/Operations/environment-reference.md`
