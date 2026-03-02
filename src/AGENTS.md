@@ -4,6 +4,17 @@
 
 TypeScript backend implementing agent-based arbitrage trading system with event-sourced state.
 
+## Strategy Snapshot
+
+Runtime strategy types (`src/domain/opportunity.ts`) and their distinguishing behavior:
+
+| Strategy type | Distinguishing behavior | Primary policy controls |
+| --- | --- | --- |
+| `near_zero` | Paired YES/NO arbitrage flow with strict two-leg gate constraints. | `strategyMode`, `signalMode`, `edgeRequired`, `minPairedFillRate`, `maxLegSkewMs` |
+| `ev` | Single-sided directional opportunity (`side=yes|no`) driven by calibrated confidence/edge checks. | `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evCooldownSeconds`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional` |
+| `fw_projection` | Dependency-aware Frank-Wolfe projection candidate; only solver-valid outputs are actionable. | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
+| `fw_basket` | Multi-market FW basket opportunity with explicit basket sizing and execution mode. | `fwBasketExecutionMode`, `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional` |
+
 ## Structure
 
 ```

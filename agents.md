@@ -10,6 +10,7 @@
 ## 📋 Navigation
 
 - [Overview](#overview)
+- [Strategy Snapshot](#strategy-snapshot)
 - [Project Structure](#project-structure)
 - [Where to Look](#where-to-look)
 - [Complexity Hotspots](#complexity-hotspots)
@@ -35,6 +36,21 @@ Near-zero-risk Polymarket CLOB arbitrage bot. TypeScript + Fastify backend, Reac
 - 9 Specialized agents
 - >97% test coverage requirement
 - 209 environment configuration options
+
+---
+
+## Strategy Snapshot
+
+Core runtime strategies and their unique characteristics:
+
+| Strategy | Unique behavior | Main control surfaces |
+|------|----------|-------|
+| `near_zero` | Paired YES/NO arbitrage with the strictest two-leg safety posture. | `strategyMode`, `signalMode`, `edgeRequired`, `minPairedFillRate`, `maxLegSkewMs` |
+| `ev` | Single-sided directional execution with confidence thresholds, cooldown, and EV notional caps. | `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evCooldownSeconds`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional` |
+| `fw_projection` | Dependency-aware Frank-Wolfe projection; non-converged or non-feasible outputs are rejected. | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
+| `fw_basket` | Multi-market FW basket intents with bounded basket size and configurable execution mode. | `fwBasketExecutionMode`, `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional` |
+
+Ops labels normalize strategy output to: `near_zero`, `ev`, `fw_projection`, `fw_basket`.
 
 ---
 

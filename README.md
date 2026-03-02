@@ -24,6 +24,7 @@ This project is an **experimental, research-focused trading tool**.
 
 ## Table of Contents
 
+- [Strategy Playbook (Start Here)](#strategy-playbook-start-here)
 - [Minimum Requirements](#minimum-requirements)
 - [Priority Keys (Live Trading)](#priority-keys-live-trading)
 - [Quickstart](#quickstart)
@@ -33,6 +34,22 @@ This project is an **experimental, research-focused trading tool**.
 - [AI Agent Setup Prompt](#ai-agent-setup-prompt)
 - [Ops API](#ops-api)
 - [Documentation Map](#documentation-map)
+
+## Strategy Playbook (Start Here)
+
+The runtime surfaces four strategy labels. Each has different risk shape, execution behavior, and controls.
+
+| Strategy label | Core idea | Unique characteristics | Primary controls |
+| --- | --- | --- | --- |
+| `near_zero` | Paired YES+NO arbitrage on one market | Symmetric two-leg execution, strict gate checks on spread/depth/staleness, strongest fill-discipline posture | `strategyMode=near_zero_risk`, `signalMode=near_zero|both`, `edgeRequired`, `minPairedFillRate`, `maxLegSkewMs` |
+| `ev` | Single-sided directional execution from calibrated probability/insight | One-leg intent (`side=yes|no`), confidence/edge thresholding, cooldown + per-market/portfolio EV notional caps | `signalMode=ev|both`, `evEdgeRequired`, `evConfidenceMin`, `evCooldownSeconds`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional` |
+| `fw_projection` | Frank-Wolfe optimized projection for dependency-aware opportunity selection | Solver-driven lower-bound checks, only converged/feasible opportunities proceed, dependency graph quality affects candidate set | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
+| `fw_basket` | Multi-market FW basket execution | Basket-level selection/ranking, market count bounds, configurable basket execution mode (`sequential_failfast` or `batch_best_effort`) | `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwBasketExecutionMode`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional` |
+
+Operator notes:
+- Dashboard intent labels are normalized to `near_zero`, `ev`, `fw_projection`, and `fw_basket`.
+- `ev_single_side` is displayed as `ev`.
+- If explicit strategy metadata is missing, IDs can infer strategy (`:fw:`, `:fwb:`, `:yes:`, `:no:`).
 
 ## Minimum Requirements
 

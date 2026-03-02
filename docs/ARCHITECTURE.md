@@ -9,6 +9,22 @@ This document reflects the current runtime architecture in `src/` and the active
 - Dashboard: React + Vite (`dashboard/src/`)
 - Persistence: SQLite event store (`src/core/EventStore.ts`)
 
+## Strategy Matrix (Read First)
+
+Runtime strategy labels and their distinguishing execution traits:
+
+| Strategy label | Pipeline shape | Distinguishing traits | Main policy surfaces |
+| --- | --- | --- | --- |
+| `near_zero` | `Scanner -> Risk -> Execution` | Paired YES/NO arbitrage with strict two-leg safety gates and near-zero-risk defaults | `strategyMode`, `signalMode`, `edgeRequired`, `minPairedFillRate`, `maxLegSkewMs` |
+| `ev` | `SignalAggregator/Scanner -> Risk -> Execution` | Single-sided directional execution (`side=yes|no`) with confidence, cooldown, and EV notional limits | `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evCooldownSeconds`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional` |
+| `fw_projection` | `Scanner -> FwProjectionAgent -> Risk -> Execution` | Dependency-aware FW solver output; non-converged or non-feasible projection results are rejected | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
+| `fw_basket` | `Scanner -> FwProjectionAgent -> Risk -> Execution` | Multi-market FW basket intents with configurable execution mode and basket size bounds | `fwBasketExecutionMode`, `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional` |
+
+Operator-facing normalization:
+- Dashboard labels normalize to `near_zero`, `ev`, `fw_projection`, `fw_basket`.
+- `ev_single_side` is displayed as `ev`.
+- Opportunity IDs can infer strategy when metadata is missing (`:fw:`, `:fwb:`, `:yes:`, `:no:`).
+
 ## System Topology
 
 ```mermaid
