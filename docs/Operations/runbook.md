@@ -4,6 +4,17 @@
 
 Operate OpenPolyTrader safely across `off`, `shadow`, `paper`, and `live` modes.
 
+## Strategy Quick Reference
+
+Know the active strategy class before making operational decisions:
+
+| Strategy label | Primary intent shape | Distinguishing characteristics | Main runtime controls |
+| --- | --- | --- | --- |
+| `near_zero` | Paired YES/NO arbitrage | Strongest two-leg safety posture; strict spread/depth/staleness/fill discipline | `strategyMode`, `signalMode`, `edgeRequired`, `minPairedFillRate`, `maxLegSkewMs` |
+| `ev` | Single-sided directional | Confidence-thresholded intent, cooldown throttling, EV-specific notional caps | `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evCooldownSeconds`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional` |
+| `fw_projection` | Dependency-aware projected intent | Frank-Wolfe solver constraints; non-converged/non-feasible outputs are rejected | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
+| `fw_basket` | Multi-market projected basket | Basket-level sizing and execution mode constraints | `fwBasketExecutionMode`, `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional` |
+
 ## Minimum Requirements
 
 ### Local safe operations
