@@ -70,6 +70,27 @@ export interface FwBasketGateInputs {
   desiredSize?: number;
 }
 
+export interface ExecutableLowerBoundInputs {
+  theoreticalEdge: number;
+  feeCost: number;
+  sweepSlippageCost: number;
+  stalenessPenalty: number;
+  stabilityPenalty: number;
+  executionRiskBuffer: number;
+}
+
+export interface ExecutableLowerBoundResult {
+  edgeLowerBound: number;
+  components: {
+    theoreticalEdge: number;
+    feeCost: number;
+    sweepSlippageCost: number;
+    stalenessPenalty: number;
+    stabilityPenalty: number;
+    executionRiskBuffer: number;
+  };
+}
+
 export function evaluateGates(inputs: GateInputs): GateDecision {
   const { yesBook, noBook, policy, desiredSize } = inputs;
   const base = evaluateBaseGates(inputs);
@@ -297,22 +318,21 @@ export function evaluateEvGates(inputs: EvGateInputs): GateDecision {
 }
 
 export function evaluateFwProjectionGates(inputs: FwProjectionGateInputs): GateDecision {
-  const relaxedPolicy: TradePolicy = {
-    ...inputs.policy,
-    edgeRequired: 0,
-    maxEdge: 1,
-    minEdgeTicks: 0
-  };
   const base = evaluateGates({
     yesBook: inputs.yesBook,
     noBook: inputs.noBook,
-    policy: relaxedPolicy,
+    policy: inputs.policy,
     nowMs: inputs.nowMs,
     desiredSize: inputs.desiredSize,
     tickSize: inputs.tickSize
   });
 
-  const reasons = [...base.reasons];
+  const reasons = base.reasons.filter(
+    (reason) =>
+      reason !== 'edge_below_threshold' &&
+      reason !== 'edge_above_max' &&
+      reason !== 'edge_below_min_ticks'
+  );
   const projection = inputs.projection;
   if (projection.dependencyConfidence < inputs.policy.fwDependencyMinConfidence) {
     reasons.push('fw_dependency_low_confidence');
@@ -327,9 +347,18 @@ export function evaluateFwProjectionGates(inputs: FwProjectionGateInputs): GateD
     reasons.push('fw_solver_status');
   }
 
+  const tickSize = resolveTickSize(
+    inputs.tickSize,
+    Math.max(inputs.yesBook.tickSize, inputs.noBook.tickSize),
+    inputs.policy.fallbackTickSize
+  );
+  const fwEdge = projection.edgeLowerBound;
+  const fwEdgeInTicks = tickSize > 0 ? fwEdge / tickSize : undefined;
+
   return {
     ...base,
-    edge: projection.edgeLowerBound,
+    edge: fwEdge,
+    edgeInTicks: fwEdgeInTicks,
     reasons,
     passed: reasons.length === 0
   };
@@ -433,6 +462,29 @@ export function evaluateGatesWithFees(input: GateInputs & { venue: VenueId; feeM
   };
 }
 
+export function computeExecutableLowerBound(
+  input: ExecutableLowerBoundInputs
+): ExecutableLowerBoundResult {
+  const components = {
+    theoreticalEdge: ensureFinite(input.theoreticalEdge),
+    feeCost: clampNonNegative(input.feeCost),
+    sweepSlippageCost: clampNonNegative(input.sweepSlippageCost),
+    stalenessPenalty: clampNonNegative(input.stalenessPenalty),
+    stabilityPenalty: clampNonNegative(input.stabilityPenalty),
+    executionRiskBuffer: clampNonNegative(input.executionRiskBuffer)
+  };
+  return {
+    edgeLowerBound:
+      components.theoreticalEdge -
+      components.feeCost -
+      components.sweepSlippageCost -
+      components.stalenessPenalty -
+      components.stabilityPenalty -
+      components.executionRiskBuffer,
+    components
+  };
+}
+
 function fail(reasons: string[]): GateDecision {
   return {
     passed: false,
@@ -441,6 +493,15 @@ function fail(reasons: string[]): GateDecision {
     edge: 0,
     maxSizeByDepth: 0
   };
+}
+
+function ensureFinite(value: number): number {
+  return Number.isFinite(value) ? value : 0;
+}
+
+function clampNonNegative(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, value);
 }
 
 function evaluateBaseGates(

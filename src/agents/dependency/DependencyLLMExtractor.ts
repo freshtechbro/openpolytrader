@@ -52,19 +52,24 @@ export interface DependencyLLMExtractorDeps {
   metrics?: Pick<MetricsStore, 'record'>;
 }
 
+export interface DependencyLLMExtractionResult {
+  edges: DependencyEdge[];
+  reason: string;
+}
+
 export function createDependencyLLMExtractor(
   deps: DependencyLLMExtractorDeps
-): (markets: DependencyMarketInput[], nowMs?: number) => Promise<DependencyEdge[]> {
+): (markets: DependencyMarketInput[], nowMs?: number) => Promise<DependencyLLMExtractionResult> {
   let circuitBackoffUntilMs = 0;
 
-  return async (markets: DependencyMarketInput[], nowMs = Date.now()): Promise<DependencyEdge[]> => {
-    if (markets.length < 2) return [];
+  return async (markets: DependencyMarketInput[], nowMs = Date.now()): Promise<DependencyLLMExtractionResult> => {
+    if (markets.length < 2) return { edges: [], reason: 'insufficient_markets' };
 
     const scannerAgentConfig = deps.llmConfig.agents.ScannerAgent;
     // FW dependency extraction must run whenever scanner LLM is enabled (shadow or advisory),
     // otherwise hybrid dependency mode silently degenerates to deterministic-only.
     if (!deps.llmConfig.enabled || scannerAgentConfig.mode === 'disabled') {
-      return [];
+      return { edges: [], reason: 'llm_disabled' };
     }
 
     if (nowMs < circuitBackoffUntilMs) {
@@ -78,7 +83,7 @@ export function createDependencyLLMExtractor(
           reason: 'llm_circuit_backoff'
         }
       });
-      return [];
+      return { edges: [], reason: 'llm_circuit_backoff' };
     }
 
     const promptMarkets = markets.map((market) => ({
@@ -184,7 +189,7 @@ export function createDependencyLLMExtractor(
       store: deps.eventStore
     });
 
-    return edges;
+    return { edges, reason: outputReason };
   };
 }
 

@@ -117,13 +117,6 @@ export class IpOracleClient {
     if (!baseUrl) {
       throw new Error('oracle_unconfigured');
     }
-
-    const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => {
-      controller.abort();
-    }, timeoutMs);
-    timeoutHandle.unref?.();
-
     const headers: Record<string, string> = {
       'content-type': 'application/json'
     };
@@ -131,26 +124,48 @@ export class IpOracleClient {
       headers.authorization = `Bearer ${this.config.apiKey}`;
     }
 
-    try {
-      const response = await this.fetchImpl(`${baseUrl}/solve`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(request),
-        signal: controller.signal
-      });
-      if (!response.ok) {
-        const detail = await safeResponseSnippet(response);
-        throw new Error(detail ? `oracle_http_${response.status}:${detail}` : `oracle_http_${response.status}`);
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => {
+        controller.abort();
+      }, timeoutMs);
+      timeoutHandle.unref?.();
+
+      try {
+        const response = await this.fetchImpl(`${baseUrl}/solve`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(request),
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          const detail = await safeResponseSnippet(response);
+          if (attempt < maxAttempts && response.status >= 500) {
+            await delay(40 * attempt);
+            continue;
+          }
+          throw new Error(detail ? `oracle_http_${response.status}:${detail}` : `oracle_http_${response.status}`);
+        }
+        return (await response.json()) as IpOracleResponse;
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          if (attempt < maxAttempts) {
+            await delay(40 * attempt);
+            continue;
+          }
+          throw new Error('oracle_timeout');
+        }
+        if (attempt < maxAttempts && isRetryableTransportError(error)) {
+          await delay(40 * attempt);
+          continue;
+        }
+        throw error;
+      } finally {
+        clearTimeout(timeoutHandle);
       }
-      return (await response.json()) as IpOracleResponse;
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error('oracle_timeout');
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeoutHandle);
     }
+    throw new Error('oracle_request_failed');
   }
 
   private isCircuitOpen(nowMs: number): boolean {
@@ -213,6 +228,18 @@ function classifyOracleError(error: unknown): IpOracleStatus {
   if (!(error instanceof Error)) return 'error';
   if (error.message.includes('timeout')) return 'timeout';
   return 'error';
+}
+
+function isRetryableTransportError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('fetch failed') ||
+    message.includes('network') ||
+    message.includes('econn') ||
+    message.includes('socket') ||
+    message.includes('connection')
+  );
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {

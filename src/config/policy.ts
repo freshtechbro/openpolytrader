@@ -56,6 +56,18 @@ export interface TradePolicy {
   fwDependencyHybridMerge: 'consensus' | 'union';
   fwDependencyMinConfidence: number;
   fwDependencyMaxEdgesPerMarket: number;
+  fwRelationCatalogSemanticBatchEnabled: boolean;
+  fwRelationCatalogMinConfidence: number;
+  fwRelationCatalogMaxEdgesPerMarket: number;
+  fwRelationCandidatesPerMarketMax: number;
+  fwRelationCandidatesTotalMax: number;
+  fwUniverseMode: 'broad_rotation' | 'dependency_cohort';
+  fwDependencyCacheTtlMs: number;
+  fwDependencyCacheGraceMs: number;
+  fwDependencyCacheMaxEntries: number;
+  fwDependencyBackoffInvalidMs: number;
+  fwDependencyBackoffTimeoutMs: number;
+  fwDependencyBackoffErrorMs: number;
   fwOracleTimeLimitMs: number;
   fwOracleMaxConcurrency: number;
   fwMaxIterations: number;
@@ -141,6 +153,18 @@ export const DEFAULT_TRADE_POLICY: TradePolicy = {
   fwDependencyHybridMerge: 'consensus',
   fwDependencyMinConfidence: 0.6,
   fwDependencyMaxEdgesPerMarket: 8,
+  fwRelationCatalogSemanticBatchEnabled: false,
+  fwRelationCatalogMinConfidence: 0.6,
+  fwRelationCatalogMaxEdgesPerMarket: 8,
+  fwRelationCandidatesPerMarketMax: 4,
+  fwRelationCandidatesTotalMax: 20,
+  fwUniverseMode: 'broad_rotation',
+  fwDependencyCacheTtlMs: 120000,
+  fwDependencyCacheGraceMs: 30000,
+  fwDependencyCacheMaxEntries: 128,
+  fwDependencyBackoffInvalidMs: 5000,
+  fwDependencyBackoffTimeoutMs: 10000,
+  fwDependencyBackoffErrorMs: 15000,
   fwOracleTimeLimitMs: 120,
   fwOracleMaxConcurrency: 4,
   fwMaxIterations: 12,

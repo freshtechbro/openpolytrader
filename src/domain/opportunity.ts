@@ -1,4 +1,5 @@
 import type { MarketPair } from './market.js';
+import type { DependencyRelation } from './dependency.js';
 
 export interface FwProjectionMetadata {
   projectionId: string;
@@ -6,6 +7,17 @@ export interface FwProjectionMetadata {
   dependencyConfidence: number;
   projectedEdge: number;
   edgeLowerBound: number;
+  relationSignal?: number;
+  relationIds?: string[];
+  relationTypes?: DependencyRelation[];
+  lowerBoundComponents?: {
+    theoreticalEdge: number;
+    feeCost: number;
+    sweepSlippageCost: number;
+    stalenessPenalty: number;
+    stabilityPenalty: number;
+    executionRiskBuffer: number;
+  };
   solverRuntimeMs: number;
   solverStatus: 'optimal' | 'feasible' | 'infeasible' | 'timeout' | 'error' | 'unknown';
   projectionAgeMs: number;
@@ -41,6 +53,9 @@ export interface FwBasketMarketLeg {
   maxSizeByDepth: number;
   minOrderSize: number;
   tickSize: number;
+  relationSignal?: number;
+  relationIds?: string[];
+  relationTypes?: DependencyRelation[];
 }
 
 export interface FwBasketMetadata {

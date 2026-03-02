@@ -38,10 +38,10 @@
     "fwOracleMaxConcurrency": 4,
     "fwSlippageToleranceBps": 50,
     "fwExecutionRiskBufferBps": 5,
-    "fwMinEdgeThreshold": 0.001,
+    "fwMinEdgeThreshold": 0.0001,
     "fwSelectionWeightFloor": 0.35,
     "fwSelectionTopK": 3,
-    "fwDependencyMode": "hybrid",
+    "fwDependencyMode": "deterministic",
     "fwDependencyHybridMerge": "consensus"
   },
   "risk": {

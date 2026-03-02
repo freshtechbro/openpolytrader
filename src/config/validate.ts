@@ -72,6 +72,12 @@ export function validateP0Config(policy: TradePolicy, risk: RiskConfig): void {
     );
   }
 
+  if (policy.fwDependencyCacheGraceMs > policy.fwDependencyCacheTtlMs) {
+    throw new Error(
+      `Invalid config: fwDependencyCacheGraceMs (${policy.fwDependencyCacheGraceMs}) cannot exceed fwDependencyCacheTtlMs (${policy.fwDependencyCacheTtlMs})`
+    );
+  }
+
   if (policy.fwContractionInitialEpsilon <= policy.fwContractionMinEpsilon) {
     throw new Error(
       `Invalid config: fwContractionInitialEpsilon (${policy.fwContractionInitialEpsilon}) must be > fwContractionMinEpsilon (${policy.fwContractionMinEpsilon})`
@@ -87,6 +93,12 @@ export function validateP0Config(policy: TradePolicy, risk: RiskConfig): void {
   if (policy.fwSelectionTopK < 0) {
     throw new Error(
       `Invalid config: fwSelectionTopK (${policy.fwSelectionTopK}) must be >= 0`
+    );
+  }
+
+  if (policy.fwRelationCandidatesPerMarketMax > policy.fwRelationCandidatesTotalMax) {
+    throw new Error(
+      `Invalid config: fwRelationCandidatesPerMarketMax (${policy.fwRelationCandidatesPerMarketMax}) cannot exceed fwRelationCandidatesTotalMax (${policy.fwRelationCandidatesTotalMax})`
     );
   }
 

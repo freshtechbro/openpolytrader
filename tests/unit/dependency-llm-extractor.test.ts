@@ -77,9 +77,11 @@ describe('DependencyLLMExtractor', () => {
     });
 
     const nowMs = 100_000;
-    const edges = await extractor(MARKETS, nowMs);
+    const extraction = await extractor(MARKETS, nowMs);
+    const edges = extraction.edges;
 
     expect(llmCall).toHaveBeenCalledTimes(1);
+    expect(extraction.reason).toBe('ok');
     expect(edges).toHaveLength(1);
     expect(edges[0]).toMatchObject({
       marketA: 'm-1',
@@ -127,8 +129,10 @@ describe('DependencyLLMExtractor', () => {
       policyHashes: { tradePolicyHash: 'tp', riskConfigHash: 'rk' }
     });
 
-    const edges = await extractor(MARKETS, 200_000);
+    const extraction = await extractor(MARKETS, 200_000);
+    const edges = extraction.edges;
     expect(llmCall).toHaveBeenCalledTimes(1);
+    expect(extraction.reason).toBe('ok');
     expect(edges).toHaveLength(1);
     expect(edges[0]).toMatchObject({
       marketA: 'm-1',
@@ -151,8 +155,9 @@ describe('DependencyLLMExtractor', () => {
       policyHashes: { tradePolicyHash: 'tp', riskConfigHash: 'rk' }
     });
 
-    const edges = await extractor(MARKETS, 200_100);
-    expect(edges).toEqual([]);
+    const extraction = await extractor(MARKETS, 200_100);
+    expect(extraction.edges).toEqual([]);
+    expect(extraction.reason).toBe('llm_disabled');
     expect(llmCall).not.toHaveBeenCalled();
   });
 
@@ -168,7 +173,10 @@ describe('DependencyLLMExtractor', () => {
       policyHashes: { tradePolicyHash: 'tp', riskConfigHash: 'rk' }
     });
 
-    expect(await extractor([MARKETS[0]], 210_000)).toEqual([]);
+    expect(await extractor([MARKETS[0]], 210_000)).toEqual({
+      edges: [],
+      reason: 'insufficient_markets'
+    });
     expect(callSpy).not.toHaveBeenCalled();
 
     const disabledConfig = createLlmConfig({ LLM_ENABLED: 'false' });
@@ -182,7 +190,10 @@ describe('DependencyLLMExtractor', () => {
       policyHashes: { tradePolicyHash: 'tp', riskConfigHash: 'rk' }
     });
 
-    expect(await disabledExtractor(MARKETS, 220_000)).toEqual([]);
+    expect(await disabledExtractor(MARKETS, 220_000)).toEqual({
+      edges: [],
+      reason: 'llm_disabled'
+    });
     expect(disabledCallSpy).not.toHaveBeenCalled();
   });
 
@@ -214,7 +225,9 @@ describe('DependencyLLMExtractor', () => {
       metrics: { record: metricsRecord }
     });
 
-    expect(await extractor(MARKETS, 230_000)).toEqual([]);
+    const first = await extractor(MARKETS, 230_000);
+    expect(first.edges).toEqual([]);
+    expect(first.reason).toBe('missing_output_text');
     expect(metricsRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'fw_dependency',
@@ -222,7 +235,9 @@ describe('DependencyLLMExtractor', () => {
       })
     );
 
-    const edges = await extractor(MARKETS, 231_000);
+    const second = await extractor(MARKETS, 231_000);
+    const edges = second.edges;
+    expect(second.reason).toBe('ok');
     expect(edges).toHaveLength(1);
     expect(edges[0]).toMatchObject({
       marketA: 'm-1',
@@ -280,8 +295,9 @@ describe('DependencyLLMExtractor', () => {
       metrics: { record: metricsRecord }
     });
 
-    const edges = await extractor(MARKETS, 300_000);
-    expect(edges).toEqual([]);
+    const extraction = await extractor(MARKETS, 300_000);
+    expect(extraction.edges).toEqual([]);
+    expect(extraction.reason).toBe('invalid_output');
     expect(metricsRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'fw_dependency',
@@ -307,8 +323,9 @@ describe('DependencyLLMExtractor', () => {
       metrics: { record: metricsRecord }
     });
 
-    const edges = await extractor(MARKETS, 301_000);
-    expect(edges).toEqual([]);
+    const extraction = await extractor(MARKETS, 301_000);
+    expect(extraction.edges).toEqual([]);
+    expect(extraction.reason).toBe('llm_error_circuit_open');
     expect(metricsRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'fw_dependency',
@@ -341,10 +358,14 @@ describe('DependencyLLMExtractor', () => {
       metrics: { record: metricsRecord }
     });
 
-    expect(await extractor(MARKETS, 310_000)).toEqual([]);
+    const first = await extractor(MARKETS, 310_000);
+    expect(first.edges).toEqual([]);
+    expect(first.reason).toBe('llm_error_circuit_open');
     expect(llmCall).toHaveBeenCalledTimes(1);
 
-    expect(await extractor(MARKETS, 311_000)).toEqual([]);
+    const second = await extractor(MARKETS, 311_000);
+    expect(second.edges).toEqual([]);
+    expect(second.reason).toBe('llm_circuit_backoff');
     expect(llmCall).toHaveBeenCalledTimes(1);
     expect(metricsRecord).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -357,7 +378,9 @@ describe('DependencyLLMExtractor', () => {
       })
     );
 
-    expect(await extractor(MARKETS, 341_100)).toEqual([]);
+    const third = await extractor(MARKETS, 341_100);
+    expect(third.edges).toEqual([]);
+    expect(third.reason).toBe('ok');
     expect(llmCall).toHaveBeenCalledTimes(2);
   });
 });

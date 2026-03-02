@@ -584,3 +584,175 @@ describe('Supervisor FW scan coalescing', () => {
     expect(scanFwUniverse).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('Supervisor FW universe mode selection', () => {
+  it('selects dependency-cohort universes deterministically when relation graph is dense enough', async () => {
+    const metrics = new MetricsStore(1000);
+    const allowlist = new MarketAllowlist({ autoResume: false });
+    const incidentTracker = new IncidentTracker(allowlist, metrics, {
+      cooldownMs: 1,
+      maxIncidents: 10
+    });
+    const portfolio = new PortfolioAgent(1000);
+    const realtime = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      subscribeMarkets: vi.fn()
+    } as unknown as PolymarketRealtime;
+
+    const supervisor = new Supervisor(
+      {
+        marketPairs: [
+          {
+            marketId: 'm-a',
+            yesTokenId: 'yes-a',
+            noTokenId: 'no-a',
+            question: 'Will rain tomorrow?',
+            category: 'weather',
+            tags: ['rain', 'weather']
+          },
+          {
+            marketId: 'm-b',
+            yesTokenId: 'yes-b',
+            noTokenId: 'no-b',
+            question: 'Will not rain tomorrow?',
+            category: 'weather',
+            tags: ['rain', 'weather']
+          },
+          {
+            marketId: 'm-c',
+            yesTokenId: 'yes-c',
+            noTokenId: 'no-c',
+            question: 'Will Team X win?',
+            category: 'sports',
+            tags: ['sports', 'team-x']
+          },
+          {
+            marketId: 'm-d',
+            yesTokenId: 'yes-d',
+            noTokenId: 'no-d',
+            question: 'Will GDP beat forecast?',
+            category: 'economy',
+            tags: ['macro', 'gdp']
+          }
+        ],
+        policy: { ...DEFAULT_TRADE_POLICY, fwUniverseMode: 'dependency_cohort' },
+        riskConfig: { ...DEFAULT_RISK_CONFIG },
+        capital: 1000,
+        tradingEnabled: true,
+        tradingMode: 'paper'
+      },
+      {
+        clob: {} as unknown as PolymarketClob,
+        dataApi: {} as unknown as PolymarketDataApi,
+        realtime,
+        allowlist,
+        metrics,
+        incidentTracker,
+        portfolio
+      }
+    );
+
+    const scanFwUniverse = vi.fn(async () => []);
+    const internals = supervisor as unknown as {
+      started: boolean;
+      scanner: {
+        scanPair: (...args: unknown[]) => unknown;
+        scanFwUniverse: (...args: unknown[]) => Promise<unknown[]>;
+      };
+      marketData: { getOrderBook: (tokenId: string) => unknown };
+      handleMarketUpdated: (event: { tokenId: string }) => Promise<void>;
+    };
+    internals.started = true;
+    internals.scanner = {
+      scanPair: () => null,
+      scanFwUniverse
+    };
+    internals.marketData = {
+      getOrderBook: () => undefined
+    };
+
+    await internals.handleMarketUpdated({ tokenId: 'yes-a' });
+
+    expect(scanFwUniverse).toHaveBeenCalledTimes(1);
+    const selectedUniverse = scanFwUniverse.mock.calls[0]?.[1] as Array<{ marketId: string }>;
+    expect(selectedUniverse.map((entry) => entry.marketId).sort()).toEqual(['m-a', 'm-b']);
+  });
+
+  it('falls back to broad rotation when dependency cohort graph is sparse', async () => {
+    const metrics = new MetricsStore(1000);
+    const allowlist = new MarketAllowlist({ autoResume: false });
+    const incidentTracker = new IncidentTracker(allowlist, metrics, {
+      cooldownMs: 1,
+      maxIncidents: 10
+    });
+    const portfolio = new PortfolioAgent(1000);
+    const realtime = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      on: vi.fn(),
+      subscribeMarkets: vi.fn()
+    } as unknown as PolymarketRealtime;
+
+    const supervisor = new Supervisor(
+      {
+        marketPairs: [
+          {
+            marketId: 'm-x',
+            yesTokenId: 'yes-x',
+            noTokenId: 'no-x',
+            question: 'Will Team X win?',
+            category: 'sports',
+            tags: ['sports', 'team-x']
+          },
+          {
+            marketId: 'm-y',
+            yesTokenId: 'yes-y',
+            noTokenId: 'no-y',
+            question: 'Will GDP beat forecast?',
+            category: 'economy',
+            tags: ['macro', 'gdp']
+          }
+        ],
+        policy: { ...DEFAULT_TRADE_POLICY, fwUniverseMode: 'dependency_cohort' },
+        riskConfig: { ...DEFAULT_RISK_CONFIG },
+        capital: 1000,
+        tradingEnabled: true,
+        tradingMode: 'paper'
+      },
+      {
+        clob: {} as unknown as PolymarketClob,
+        dataApi: {} as unknown as PolymarketDataApi,
+        realtime,
+        allowlist,
+        metrics,
+        incidentTracker,
+        portfolio
+      }
+    );
+
+    const scanFwUniverse = vi.fn(async () => []);
+    const internals = supervisor as unknown as {
+      started: boolean;
+      scanner: {
+        scanPair: (...args: unknown[]) => unknown;
+        scanFwUniverse: (...args: unknown[]) => Promise<unknown[]>;
+      };
+      marketData: { getOrderBook: (tokenId: string) => unknown };
+      handleMarketUpdated: (event: { tokenId: string }) => Promise<void>;
+    };
+    internals.started = true;
+    internals.scanner = {
+      scanPair: () => null,
+      scanFwUniverse
+    };
+    internals.marketData = {
+      getOrderBook: () => undefined
+    };
+
+    await internals.handleMarketUpdated({ tokenId: 'yes-x' });
+
+    expect(scanFwUniverse).toHaveBeenCalledTimes(1);
+    const selectedUniverse = scanFwUniverse.mock.calls[0]?.[1] as Array<{ marketId: string }>;
+    expect(selectedUniverse.map((entry) => entry.marketId).sort()).toEqual(['m-x', 'm-y']);
+  });
+});

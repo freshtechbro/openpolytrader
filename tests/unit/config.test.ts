@@ -250,10 +250,10 @@ describe('config env + store', () => {
     expect(profile?.policy.fwOracleMaxConcurrency).toBe(4);
     expect(profile?.policy.fwSlippageToleranceBps).toBe(50);
     expect(profile?.policy.fwExecutionRiskBufferBps).toBe(5);
-    expect(profile?.policy.fwMinEdgeThreshold).toBe(0.001);
+    expect(profile?.policy.fwMinEdgeThreshold).toBe(0.0001);
     expect(profile?.policy.fwSelectionWeightFloor).toBe(0.35);
     expect(profile?.policy.fwSelectionTopK).toBe(3);
-    expect(profile?.policy.fwDependencyMode).toBe('hybrid');
+    expect(profile?.policy.fwDependencyMode).toBe('deterministic');
     expect(profile?.policy.fwDependencyHybridMerge).toBe('consensus');
   });
 
@@ -438,6 +438,13 @@ describe('config validation + schema helpers', () => {
 
     const badTopK = { ...DEFAULT_TRADE_POLICY, fwSelectionTopK: -1 };
     expect(() => validateP0Config(badTopK, DEFAULT_RISK_CONFIG)).toThrow(/fwSelectionTopK/);
+
+    const badCacheGrace = {
+      ...DEFAULT_TRADE_POLICY,
+      fwDependencyCacheTtlMs: 1_000,
+      fwDependencyCacheGraceMs: 1_001
+    };
+    expect(() => validateP0Config(badCacheGrace, DEFAULT_RISK_CONFIG)).toThrow(/fwDependencyCacheGraceMs/);
   });
 
   it('rejects invalid FW notional and merge combinations', () => {

@@ -143,6 +143,49 @@ describe('market catalog generator', () => {
     ]);
   });
 
+  it('hydrates missing metadata from incoming duplicates during merge', () => {
+    const existing = [
+      { marketId: 'a', yesTokenId: '1', noTokenId: '2' },
+      { marketId: 'b', yesTokenId: '3', noTokenId: '4', question: 'keep existing question' }
+    ];
+    const incoming = [
+      {
+        marketId: 'a',
+        yesTokenId: 'x',
+        noTokenId: 'y',
+        question: 'incoming question',
+        category: 'Politics',
+        tags: ['us-election', 'debate']
+      },
+      {
+        marketId: 'b',
+        yesTokenId: '9',
+        noTokenId: '8',
+        category: 'Sports',
+        tags: ['nhl']
+      }
+    ];
+
+    expect(mergePairs(existing, incoming)).toEqual([
+      {
+        marketId: 'a',
+        yesTokenId: '1',
+        noTokenId: '2',
+        question: 'incoming question',
+        category: 'Politics',
+        tags: ['us-election', 'debate']
+      },
+      {
+        marketId: 'b',
+        yesTokenId: '3',
+        noTokenId: '4',
+        question: 'keep existing question',
+        category: 'Sports',
+        tags: ['nhl']
+      }
+    ]);
+  });
+
   it('finds the first page offset containing orderbook-enabled markets', async () => {
     const pageSize = 1000;
     const total = 5000;
@@ -561,6 +604,61 @@ describe('market catalog generator', () => {
     const result = await generateMarketCatalog({ outPath: nested, mode: 'any', merge: false, verifyBooks: false, maxPairs: 1 });
     expect(result.pairs).toEqual([]);
     expect(JSON.parse(readFileSync(nested, 'utf8'))).toEqual([]);
+
+    vi.unstubAllGlobals();
+    rmSync(dir, { recursive: true, force: true });
+    process.env.POLYMARKET_CLOB_BASE_URL = savedBaseUrl;
+  });
+
+  it('preserves question and normalized tags in generated catalog entries', async () => {
+    const savedBaseUrl = process.env.POLYMARKET_CLOB_BASE_URL;
+    process.env.POLYMARKET_CLOB_BASE_URL = 'https://clob.test';
+
+    const dir = mkdtempSync(join(tmpdir(), 'catalog-metadata-'));
+    const file = join(dir, 'market-catalog.json');
+    const market = {
+      enable_order_book: true,
+      active: true,
+      closed: false,
+      archived: false,
+      accepting_orders: true,
+      condition_id: '0xmeta',
+      question: 'Will turnout exceed 60%?',
+      tags: ['All', { label: 'Politics' }, { slug: 'us-election' }, '  '],
+      tokens: [
+        { token_id: 'YES', outcome: 'Yes' },
+        { token_id: 'NO', outcome: 'No' }
+      ]
+    };
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [market], next_cursor: null, count: 1 }),
+        json: async () => ({ data: [market], next_cursor: null, count: 1 })
+      })) as unknown as typeof fetch
+    );
+
+    const result = await generateMarketCatalog({
+      outPath: file,
+      mode: 'any',
+      merge: false,
+      verifyBooks: false,
+      maxPairs: 1
+    });
+
+    expect(result.pairs).toEqual([
+      {
+        marketId: '0xmeta',
+        yesTokenId: 'YES',
+        noTokenId: 'NO',
+        category: 'Politics',
+        question: 'Will turnout exceed 60%?',
+        tags: ['Politics', 'us-election']
+      }
+    ]);
 
     vi.unstubAllGlobals();
     rmSync(dir, { recursive: true, force: true });
@@ -1290,8 +1388,8 @@ describe('market catalog generator', () => {
     writeFileSync(
       file,
       JSON.stringify([
-        { marketId: 'a', yesTokenId: '1', noTokenId: '2' },
-        { marketId: 'b', yesTokenId: '3', noTokenId: '4' }
+        { marketId: 'a', yesTokenId: '1', noTokenId: '2', question: 'Will A happen?' },
+        { marketId: 'b', yesTokenId: '3', noTokenId: '4', question: 'Will B happen?' }
       ]),
       'utf8'
     );

@@ -2,6 +2,10 @@ import {
   clampDependencyConfidence,
   dependencyEdgeKey,
   type DependencyEdge,
+  extractDeterministicDependencyEdges,
+  normalizeRelationCatalogEntry,
+  toCatalogEdge,
+  type DependencyRelationCatalogEntry,
   type DependencyMarketInput,
   type DependencyResolutionResult,
   withSortedMarkets
@@ -10,21 +14,48 @@ import {
 type DependencyMode = 'deterministic' | 'llm' | 'hybrid';
 type HybridMergeMode = 'consensus' | 'union';
 
+export interface DependencyExtractorResult {
+  edges: DependencyEdge[];
+  reason?: string;
+}
+
+type DependencyExtractorResponse = DependencyEdge[] | DependencyExtractorResult;
+
 export interface DependencyResolverConfig {
   mode: DependencyMode;
   hybridMerge: HybridMergeMode;
   minConfidence: number;
   maxEdgesPerMarket: number;
-  llmExtractor?: (markets: DependencyMarketInput[], nowMs?: number) => Promise<DependencyEdge[]>;
+  relationCatalogEnabled?: boolean;
+  relationCatalogEntries?: DependencyRelationCatalogEntry[];
+  relationCatalogMinConfidence?: number;
+  relationCatalogMaxEdgesPerMarket?: number;
+  cacheTtlMs?: number;
+  cacheGraceMs?: number;
+  cacheMaxEntries?: number;
+  backoffInvalidMs?: number;
+  backoffTimeoutMs?: number;
+  backoffErrorMs?: number;
+  llmExtractor?: (
+    markets: DependencyMarketInput[],
+    nowMs?: number
+  ) => Promise<DependencyExtractorResponse>;
 }
 
-const OPPOSITE_MARKERS: ReadonlyArray<[string, string]> = [
-  ['will', 'will not'],
-  ['yes', 'no'],
-  ['over', 'under'],
-  ['for', 'against'],
-  ['increase', 'decrease']
-];
+interface DependencyCacheEntry {
+  edges: DependencyEdge[];
+  updatedAtMs: number;
+}
+
+type DependencyCacheStatus = 'bypass' | 'miss' | 'hit' | 'stale';
+type FallbackSource = 'none' | 'cache' | 'deterministic';
+
+const DEFAULT_CACHE_TTL_MS = 120_000;
+const DEFAULT_CACHE_GRACE_MS = 30_000;
+const DEFAULT_CACHE_MAX_ENTRIES = 128;
+const DEFAULT_BACKOFF_INVALID_MS = 5_000;
+const DEFAULT_BACKOFF_TIMEOUT_MS = 10_000;
+const DEFAULT_BACKOFF_ERROR_MS = 15_000;
 
 const VALID_RELATIONS = new Set<DependencyEdge['relationType']>([
   'mutual_exclusive',
@@ -34,24 +65,94 @@ const VALID_RELATIONS = new Set<DependencyEdge['relationType']>([
 ]);
 
 export class DependencyResolver {
-  constructor(private config: DependencyResolverConfig) {}
+  private readonly llmCache = new Map<string, DependencyCacheEntry>();
+  private llmBackoffUntilMs = 0;
+  private relationCatalogEdges: DependencyEdge[] = [];
+
+  constructor(private config: DependencyResolverConfig) {
+    this.relationCatalogEdges = normalizeRelationCatalog(config.relationCatalogEntries);
+  }
 
   updateConfig(config: DependencyResolverConfig): void {
     this.config = config;
+    this.relationCatalogEdges = normalizeRelationCatalog(config.relationCatalogEntries);
   }
 
   async resolve(
     markets: DependencyMarketInput[],
     nowMs = Date.now()
   ): Promise<DependencyResolutionResult> {
-    const deterministicEdges =
-      this.config.mode === 'llm' ? [] : this.extractDeterministic(markets, nowMs);
-    const llmEdges =
-      this.config.mode === 'deterministic'
-        ? []
-        : await this.extractLlm(markets, nowMs);
+    const deterministicEdges = extractDeterministicDependencyEdges(markets, nowMs, {
+      source: 'deterministic',
+      evidencePrefix: 'deterministic'
+    });
+    const catalogEdges = this.resolveCatalogEdges(markets, nowMs);
+    const staticEdges = mergeStaticEdges(deterministicEdges, catalogEdges);
 
-    const merged = this.mergeEdges(deterministicEdges, llmEdges);
+    let llmEdges: DependencyEdge[] = [];
+    let cacheStatus: DependencyCacheStatus =
+      this.config.mode === 'deterministic' ? 'bypass' : 'miss';
+    let fallbackSource: FallbackSource = 'none';
+    let llmReason = this.config.mode === 'deterministic' ? 'mode_deterministic' : 'not_invoked';
+    let backoffActive = false;
+
+    if (this.config.mode !== 'deterministic') {
+      const cacheTtlMs = toPositiveInt(this.config.cacheTtlMs, DEFAULT_CACHE_TTL_MS);
+      const cacheGraceMs = toNonNegativeInt(this.config.cacheGraceMs, DEFAULT_CACHE_GRACE_MS);
+      const cacheMaxEntries = toPositiveInt(this.config.cacheMaxEntries, DEFAULT_CACHE_MAX_ENTRIES);
+      const cacheKey = buildMarketUniverseCacheKey(markets);
+      const cached = this.readCachedEdges(cacheKey, nowMs, cacheTtlMs, cacheGraceMs);
+      const backoffOpen = nowMs < this.llmBackoffUntilMs;
+
+      if (!backoffOpen && cached.status === 'hit' && cached.edges) {
+        llmEdges = cached.edges;
+        cacheStatus = 'hit';
+        fallbackSource = 'cache';
+        llmReason = 'cache_hit';
+      } else if (backoffOpen) {
+        backoffActive = true;
+        llmReason = 'resolver_backoff_active';
+        cacheStatus = cached.status;
+        if (cached.edges) {
+          llmEdges = cached.edges;
+          fallbackSource = 'cache';
+        } else if (staticEdges.length > 0) {
+          fallbackSource = 'deterministic';
+          if (this.config.mode === 'llm') {
+            llmEdges = staticEdges;
+          }
+        }
+      } else {
+        const extracted = await this.extractLlm(markets, nowMs);
+        llmEdges = extracted.edges;
+        llmReason = extracted.reason ?? 'ok';
+        const backoffMs = this.backoffDurationForReason(llmReason);
+
+        if (backoffMs > 0) {
+          this.llmBackoffUntilMs = nowMs + backoffMs;
+          cacheStatus = cached.status;
+          if (cached.edges) {
+            llmEdges = cached.edges;
+            fallbackSource = 'cache';
+          } else if (staticEdges.length > 0) {
+            fallbackSource = 'deterministic';
+            if (this.config.mode === 'llm') {
+              llmEdges = staticEdges;
+            } else {
+              llmEdges = [];
+            }
+          } else {
+            llmEdges = [];
+          }
+        } else {
+          this.llmBackoffUntilMs = 0;
+          this.writeCachedEdges(cacheKey, llmEdges, nowMs, cacheMaxEntries);
+          cacheStatus = cached.status === 'stale' ? 'stale' : 'miss';
+        }
+      }
+    }
+
+    const merged = this.mergeEdges(staticEdges, llmEdges);
     const edges = this.applyPolicyFilters(merged);
 
     return {
@@ -59,90 +160,74 @@ export class DependencyResolver {
       summary: {
         mode: this.config.mode,
         deterministicEdges: deterministicEdges.length,
+        catalogEdges: catalogEdges.length,
         llmEdges: llmEdges.length,
-        mergedEdges: edges.length
+        mergedEdges: edges.length,
+        cacheStatus,
+        fallbackSource,
+        llmReason,
+        backoffActive
       }
     };
   }
 
-  private extractDeterministic(
+  private resolveCatalogEdges(
     markets: DependencyMarketInput[],
     nowMs: number
   ): DependencyEdge[] {
-    const edges: DependencyEdge[] = [];
-
-    for (let i = 0; i < markets.length; i += 1) {
-      for (let j = i + 1; j < markets.length; j += 1) {
-        const left = markets[i];
-        const right = markets[j];
-
-        const leftText = normalizeText(left.question ?? left.marketId);
-        const rightText = normalizeText(right.question ?? right.marketId);
-        const leftStem = textStem(leftText);
-        const rightStem = textStem(rightText);
-
-        const hasOppositeMarkers = OPPOSITE_MARKERS.some(([a, b]) => {
-          return (
-            (leftText.includes(a) && rightText.includes(b)) ||
-            (leftText.includes(b) && rightText.includes(a))
-          );
-        });
-
-        if (hasOppositeMarkers && leftStem === rightStem && leftStem.length > 0) {
-          edges.push({
-            marketA: left.marketId,
-            marketB: right.marketId,
-            relationType: 'mutual_exclusive',
-            confidence: 0.9,
-            source: 'deterministic',
-            evidence: 'deterministic:opposite_markers_with_shared_stem',
-            extractedAtMs: nowMs
-          });
-          continue;
-        }
-
-        const sharedTags = countSharedTags(left.tags, right.tags);
-        if (sharedTags >= 2 && left.category && right.category && left.category === right.category) {
-          edges.push({
-            marketA: left.marketId,
-            marketB: right.marketId,
-            relationType: 'complementary',
-            confidence: 0.7,
-            source: 'deterministic',
-            evidence: 'deterministic:shared_category_and_tags',
-            extractedAtMs: nowMs
-          });
-          continue;
-        }
-
-        if (isPartitionPrompt(leftText) && isPartitionPrompt(rightText) && left.category === right.category) {
-          edges.push({
-            marketA: left.marketId,
-            marketB: right.marketId,
-            relationType: 'partition',
-            confidence: 0.65,
-            source: 'deterministic',
-            evidence: 'deterministic:partition_prompt_overlap',
-            extractedAtMs: nowMs
-          });
-        }
-      }
+    if (this.config.relationCatalogEnabled === false) return [];
+    if (this.relationCatalogEdges.length === 0) return [];
+    const marketSet = new Set(markets.map((market) => market.marketId));
+    const minConfidence = clampDependencyConfidence(
+      typeof this.config.relationCatalogMinConfidence === 'number'
+        ? this.config.relationCatalogMinConfidence
+        : this.config.minConfidence
+    );
+    const maxPerMarket = Math.max(
+      1,
+      Math.floor(
+        typeof this.config.relationCatalogMaxEdgesPerMarket === 'number'
+          ? this.config.relationCatalogMaxEdgesPerMarket
+          : this.config.maxEdgesPerMarket
+      )
+    );
+    const counts = new Map<string, number>();
+    const selected: DependencyEdge[] = [];
+    const sorted = this.relationCatalogEdges
+      .filter((edge) => marketSet.has(edge.marketA) && marketSet.has(edge.marketB))
+      .filter((edge) => edge.confidence >= minConfidence)
+      .sort((a, b) => b.confidence - a.confidence);
+    for (const edge of sorted) {
+      const leftCount = counts.get(edge.marketA) ?? 0;
+      const rightCount = counts.get(edge.marketB) ?? 0;
+      if (leftCount >= maxPerMarket || rightCount >= maxPerMarket) continue;
+      selected.push({
+        ...edge,
+        extractedAtMs: Number.isFinite(edge.extractedAtMs) ? edge.extractedAtMs : nowMs
+      });
+      counts.set(edge.marketA, leftCount + 1);
+      counts.set(edge.marketB, rightCount + 1);
     }
-
-    return edges.map(withSortedMarkets);
+    return selected;
   }
 
   private async extractLlm(
     markets: DependencyMarketInput[],
     nowMs: number
-  ): Promise<DependencyEdge[]> {
-    if (!this.config.llmExtractor) return [];
+  ): Promise<DependencyExtractorResult> {
+    if (!this.config.llmExtractor) return { edges: [], reason: 'llm_unconfigured' };
 
     const knownMarkets = new Set(markets.map((market) => market.marketId));
-    const raw = await this.config.llmExtractor(markets, nowMs);
+    let response: DependencyExtractorResponse;
+    try {
+      response = await this.config.llmExtractor(markets, nowMs);
+    } catch {
+      return { edges: [], reason: 'llm_error_extractor_exception' };
+    }
+    const normalized = normalizeExtractorResponse(response);
     const edges: DependencyEdge[] = [];
 
-    for (const edge of raw) {
+    for (const edge of normalized.edges) {
       if (!edge || !knownMarkets.has(edge.marketA) || !knownMarkets.has(edge.marketB)) {
         continue;
       }
@@ -159,7 +244,7 @@ export class DependencyResolver {
       );
     }
 
-    return edges;
+    return { edges, reason: normalized.reason };
   }
 
   private mergeEdges(deterministicEdges: DependencyEdge[], llmEdges: DependencyEdge[]): DependencyEdge[] {
@@ -238,32 +323,173 @@ export class DependencyResolver {
 
     return filtered;
   }
+
+  private readCachedEdges(
+    key: string,
+    nowMs: number,
+    ttlMs: number,
+    graceMs: number
+  ): { edges: DependencyEdge[] | null; status: DependencyCacheStatus } {
+    const cached = this.llmCache.get(key);
+    if (!cached) {
+      return { edges: null, status: 'miss' };
+    }
+
+    const ageMs = Math.max(0, nowMs - cached.updatedAtMs);
+    if (ageMs <= ttlMs) {
+      this.touchCacheEntry(key, cached);
+      return { edges: cached.edges, status: 'hit' };
+    }
+
+    if (ageMs <= ttlMs + graceMs) {
+      this.touchCacheEntry(key, cached);
+      return { edges: cached.edges, status: 'stale' };
+    }
+
+    this.llmCache.delete(key);
+    return { edges: null, status: 'miss' };
+  }
+
+  private writeCachedEdges(
+    key: string,
+    edges: DependencyEdge[],
+    nowMs: number,
+    maxEntries: number
+  ): void {
+    const entry: DependencyCacheEntry = {
+      edges: edges.map((edge) => ({ ...edge })),
+      updatedAtMs: nowMs
+    };
+    this.llmCache.delete(key);
+    this.llmCache.set(key, entry);
+
+    while (this.llmCache.size > maxEntries) {
+      const oldestKey = this.llmCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.llmCache.delete(oldestKey);
+    }
+  }
+
+  private touchCacheEntry(key: string, entry: DependencyCacheEntry): void {
+    this.llmCache.delete(key);
+    this.llmCache.set(key, entry);
+  }
+
+  private backoffDurationForReason(reason: string): number {
+    if (
+      reason === 'invalid_output' ||
+      reason === 'missing_output_text' ||
+      reason === 'invalid_extractor_output'
+    ) {
+      return toNonNegativeInt(this.config.backoffInvalidMs, DEFAULT_BACKOFF_INVALID_MS);
+    }
+    if (reason === 'llm_timeout') {
+      return toNonNegativeInt(this.config.backoffTimeoutMs, DEFAULT_BACKOFF_TIMEOUT_MS);
+    }
+    if (
+      reason === 'llm_circuit_backoff' ||
+      reason === 'llm_error_extractor_exception' ||
+      reason.startsWith('llm_error_') ||
+      reason.startsWith('llm_fallback_')
+    ) {
+      return toNonNegativeInt(this.config.backoffErrorMs, DEFAULT_BACKOFF_ERROR_MS);
+    }
+    return 0;
+  }
+}
+
+function normalizeExtractorResponse(response: DependencyExtractorResponse): DependencyExtractorResult {
+  if (Array.isArray(response)) {
+    return { edges: response, reason: 'ok' };
+  }
+  if (!response || !Array.isArray(response.edges)) {
+    return { edges: [], reason: 'invalid_extractor_output' };
+  }
+  return {
+    edges: response.edges,
+    reason: typeof response.reason === 'string' && response.reason.trim().length > 0
+      ? response.reason.trim()
+      : 'ok'
+  };
+}
+
+function normalizeRelationCatalog(
+  entries: DependencyRelationCatalogEntry[] | undefined
+): DependencyEdge[] {
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  const normalized: DependencyEdge[] = [];
+  for (const entry of entries) {
+    const parsed = normalizeRelationCatalogEntry(entry);
+    if (!parsed) continue;
+    normalized.push(toCatalogEdge(parsed));
+  }
+  return normalized;
+}
+
+function mergeStaticEdges(
+  deterministicEdges: DependencyEdge[],
+  catalogEdges: DependencyEdge[]
+): DependencyEdge[] {
+  if (catalogEdges.length === 0) return deterministicEdges;
+  if (deterministicEdges.length === 0) return catalogEdges;
+  const merged = new Map<string, DependencyEdge>();
+  for (const edge of deterministicEdges) {
+    merged.set(dependencyEdgeKey(edge), edge);
+  }
+  for (const edge of catalogEdges) {
+    const key = dependencyEdgeKey(edge);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, edge);
+      continue;
+    }
+    if (edge.confidence > existing.confidence) {
+      merged.set(key, {
+        ...edge,
+        source: existing.source === edge.source ? edge.source : 'hybrid',
+        evidence:
+          existing.evidence === edge.evidence
+            ? edge.evidence
+            : `${existing.evidence} | ${edge.evidence}`
+      });
+    } else if (edge.confidence === existing.confidence && existing.source !== edge.source) {
+      merged.set(key, {
+        ...existing,
+        source: 'hybrid',
+        evidence:
+          existing.evidence === edge.evidence
+            ? existing.evidence
+            : `${existing.evidence} | ${edge.evidence}`
+      });
+    }
+  }
+  return Array.from(merged.values()).map(withSortedMarkets);
+}
+
+function buildMarketUniverseCacheKey(markets: DependencyMarketInput[]): string {
+  return markets
+    .map((market) => {
+      const tags = Array.isArray(market.tags)
+        ? market.tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean).sort().join(',')
+        : '';
+      const question = normalizeText(market.question ?? '');
+      const category = normalizeText(market.category ?? '');
+      return `${market.marketId}|${question}|${category}|${tags}`;
+    })
+    .sort()
+    .join('||');
 }
 
 function normalizeText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-function textStem(value: string): string {
-  return value
-    .replace(/\b(yes|no|will not|will|over|under|for|against|increase|decrease)\b/g, ' ')
-    .replace(/[^a-z0-9 ]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+function toPositiveInt(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.floor(value));
 }
 
-function countSharedTags(left: string[] | undefined, right: string[] | undefined): number {
-  if (!left || !right || left.length === 0 || right.length === 0) return 0;
-  const rightSet = new Set(right.map((value) => value.trim().toLowerCase()).filter(Boolean));
-  let count = 0;
-  for (const raw of left) {
-    const tag = raw.trim().toLowerCase();
-    if (!tag) continue;
-    if (rightSet.has(tag)) count += 1;
-  }
-  return count;
-}
-
-function isPartitionPrompt(value: string): boolean {
-  return value.startsWith('which ') || value.startsWith('who ') || value.startsWith('what ');
+function toNonNegativeInt(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
 }

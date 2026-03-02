@@ -2,14 +2,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, resolve } from 'node:path';
 
 import { loadEnvWithOverrides } from '../config/env.js';
+import type { MarketPair } from '../domain/market.js';
 import { PolymarketClob } from '../services/PolymarketClob.js';
-
-export type MarketPair = {
-  marketId: string;
-  yesTokenId: string;
-  noTokenId: string;
-  category?: string;
-};
 
 type RawMarket = {
   enable_order_book?: boolean;
@@ -18,6 +12,7 @@ type RawMarket = {
   archived?: boolean;
   accepting_orders?: boolean;
   condition_id?: string;
+  question?: unknown;
   tags?: unknown;
   tokens?: Array<{ token_id?: string; outcome?: string }>;
 };
@@ -146,28 +141,49 @@ export function cursorForOffset(offset: number): string {
 }
 
 function normalizeTag(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  for (const key of ['label', 'name', 'slug', 'title']) {
+    const candidate = record[key];
+    if (typeof candidate !== 'string') continue;
+    const trimmed = candidate.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return null;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeTagList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((entry) => normalizeTag(entry))
+        .filter((entry): entry is string => entry !== null)
+    )
+  );
 }
 
 function hasTag(market: RawMarket, filter?: string): boolean {
   if (!filter) return true;
-  if (!Array.isArray(market.tags)) return false;
   const normalized = filter.trim().toLowerCase();
-  for (const entry of market.tags) {
-    const tag = normalizeTag(entry);
-    if (!tag) continue;
+  for (const tag of normalizeTagList(market.tags)) {
     if (tag.toLowerCase().includes(normalized)) return true;
   }
   return false;
 }
 
 function pickCategory(tags: unknown): string | undefined {
-  if (!Array.isArray(tags)) return undefined;
-  for (const entry of tags) {
-    const tag = normalizeTag(entry);
-    if (!tag) continue;
+  for (const tag of normalizeTagList(tags)) {
     if (tag.toLowerCase() === 'all') continue;
     return tag;
   }
@@ -242,24 +258,50 @@ export function marketToPair(market: RawMarket, opts: { mode: GeneratorMode; yes
 
 export function mergePairs(existing: MarketPair[], incoming: MarketPair[], maxPairs?: number): MarketPair[] {
   const next: MarketPair[] = [];
-  const seen = new Set<string>();
+  const indexByMarketId = new Map<string, number>();
 
   for (const pair of existing) {
-    if (!seen.has(pair.marketId)) {
-      seen.add(pair.marketId);
-      next.push(pair);
-    }
+    if (indexByMarketId.has(pair.marketId)) continue;
+    indexByMarketId.set(pair.marketId, next.length);
+    next.push(pair);
   }
 
   for (const pair of incoming) {
-    if (!seen.has(pair.marketId)) {
-      seen.add(pair.marketId);
+    const existingIndex = indexByMarketId.get(pair.marketId);
+    if (existingIndex === undefined) {
+      indexByMarketId.set(pair.marketId, next.length);
       next.push(pair);
+      if (maxPairs && next.length >= maxPairs) break;
+      continue;
     }
-    if (maxPairs && next.length >= maxPairs) break;
+    next[existingIndex] = mergePairMetadata(next[existingIndex], pair);
   }
 
   return maxPairs ? next.slice(0, maxPairs) : next;
+}
+
+function mergePairMetadata(existing: MarketPair, incoming: MarketPair): MarketPair {
+  const question = incoming.question ?? existing.question;
+  const category = incoming.category ?? existing.category;
+  const tags = mergeTags(existing.tags, incoming.tags);
+  return {
+    marketId: existing.marketId,
+    yesTokenId: existing.yesTokenId,
+    noTokenId: existing.noTokenId,
+    ...(question ? { question } : {}),
+    ...(category ? { category } : {}),
+    ...(tags.length > 0 ? { tags } : {})
+  };
+}
+
+function mergeTags(
+  existing: string[] | undefined,
+  incoming: string[] | undefined
+): string[] {
+  if (!existing?.length && !incoming?.length) return [];
+  if (!existing?.length) return [...(incoming ?? [])];
+  if (!incoming?.length) return [...existing];
+  return Array.from(new Set([...existing, ...incoming]));
 }
 
 export function readPairsFromFile(path: string): MarketPair[] {
@@ -415,7 +457,8 @@ export async function generateMarketCatalog(args: GeneratorArgs = {}): Promise<{
 
   ensureParentDirExists(outPath);
 
-  if (merged && existingPairs.length >= maxPairs) {
+  const existingMetadataReady = existingPairs.every(hasRelationMetadata);
+  if (merged && existingPairs.length >= maxPairs && existingMetadataReady) {
     const finalPairs = existingPairs.slice(0, maxPairs);
     const tmpPath = `${outPath}.tmp`;
     writeFileSync(tmpPath, `${JSON.stringify(finalPairs, null, 2)}\n`, 'utf8');
@@ -462,14 +505,15 @@ export async function generateMarketCatalog(args: GeneratorArgs = {}): Promise<{
       if (!hasTag(market, args.tag)) continue;
       const pair = marketToPair(market, { mode, yesnoOnly });
       if (!pair) continue;
-      if (seenIncoming.has(pair.marketId)) continue;
+      const enrichedPair = enrichPairWithMetadata(pair, market);
+      if (seenIncoming.has(enrichedPair.marketId)) continue;
       if (verifyBooks) {
         // eslint-disable-next-line no-await-in-loop
-        const ok = await verifyOrderbooksWithOptions(clob, pair, { requireMetadata });
+        const ok = await verifyOrderbooksWithOptions(clob, enrichedPair, { requireMetadata });
         if (!ok) continue;
       }
-      seenIncoming.add(pair.marketId);
-      incoming.push(pair);
+      seenIncoming.add(enrichedPair.marketId);
+      incoming.push(enrichedPair);
       if (incoming.length >= maxPairs) {
         cursor = null;
         break;
@@ -502,6 +546,23 @@ export async function generateMarketCatalog(args: GeneratorArgs = {}): Promise<{
   renameSync(tmpPath, outPath);
 
   return { outPath, pairs: finalPairs, pagesScanned, mode, merged, maxPairs };
+}
+
+function enrichPairWithMetadata(pair: MarketPair, market: RawMarket): MarketPair {
+  const question = normalizeOptionalString(market.question);
+  if (!question) return pair;
+  const tags = normalizeTagList(market.tags).filter(
+    (tag) => tag.toLowerCase() !== 'all'
+  );
+  return {
+    ...pair,
+    question,
+    ...(tags.length > 0 ? { tags } : {})
+  };
+}
+
+function hasRelationMetadata(pair: MarketPair): boolean {
+  return typeof pair.question === 'string' && pair.question.trim().length > 0;
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {

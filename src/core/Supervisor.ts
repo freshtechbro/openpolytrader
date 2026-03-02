@@ -1,6 +1,10 @@
 import { messageBus } from './MessageBus.js';
 import type { TradePolicy } from '../config/policy.js';
 import type { RiskConfig } from '../config/risk.js';
+import {
+  extractDeterministicDependencyEdges,
+  type DependencyMarketInput
+} from '../domain/dependency.js';
 import type { MarketPair } from '../domain/market.js';
 import { opportunityId, type ArbitrageOpportunity } from '../domain/opportunity.js';
 import { depthAtTopLevels } from '../domain/orderbook.js';
@@ -36,6 +40,15 @@ import type { FwProjectionAgent } from '../agents/projection/FwProjectionAgent.j
 import { normalizeReasonKey, shouldEmitScopedReason } from '../utils/eventDedupe.js';
 
 const GATE_REJECTION_EMISSION_COOLDOWN_MS = 3000;
+const FW_COHORT_MIN_MARKETS = 2;
+const FW_COHORT_MIN_DENSITY = 0.25;
+const FW_COHORT_FRESHNESS_WINDOW_MS = 120_000;
+
+interface FwCohortComponent {
+  marketIds: string[];
+  edgeCount: number;
+  density: number;
+}
 
 export interface SupervisorConfig {
   marketPairs: MarketPair[];
@@ -129,6 +142,8 @@ export class Supervisor {
   private fwDeferredScanTimer: ReturnType<typeof setTimeout> | null = null;
   private lastFwScanStartedAtMs = 0;
   private readonly fwScanMinIntervalMs = 250;
+  private fwCohortComponents: FwCohortComponent[] = [];
+  private fwMarketLastUpdateMs = new Map<string, number>();
   private metricIncidentHandler: ((event: MetricEvent) => void) | null = null;
   private marketUpdatedHandler: ((payload: unknown) => void) | null = null;
   private opportunityDetectedHandler: ((payload: unknown) => void) | null = null;
@@ -205,6 +220,7 @@ export class Supervisor {
     });
 
     this.buildPairIndex();
+    this.rebuildFwCohorts();
   }
 
   async start(): Promise<void> {
@@ -458,6 +474,7 @@ export class Supervisor {
     const opportunities: ArbitrageOpportunity[] = [];
 
     for (const pair of pairs) {
+      this.fwMarketLastUpdateMs.set(pair.marketId, now);
       const opportunity = this.scanner.scanPair(pair, orderbooks, now);
       if (opportunity) {
         this.recordOpportunity(now, opportunity);
@@ -465,7 +482,7 @@ export class Supervisor {
       }
     }
 
-    const fwOpportunities = await this.scanFwUniverseCoalesced(orderbooks, pairs, now);
+    const fwOpportunities = await this.scanFwUniverseCoalesced(orderbooks, now);
     for (const fwOpportunity of fwOpportunities) {
       this.recordOpportunity(now, fwOpportunity);
       opportunities.push(fwOpportunity);
@@ -476,7 +493,6 @@ export class Supervisor {
 
   private async scanFwUniverseCoalesced(
     orderbooks: Map<string, OrderBookState>,
-    pairs: MarketPair[],
     now: number
   ): Promise<ArbitrageOpportunity[]> {
     if (this.fwScanInFlight) {
@@ -494,7 +510,7 @@ export class Supervisor {
     this.lastFwScanStartedAtMs = now;
     this.fwScanInFlight = true;
     try {
-      return await this.scanFwUniverse(orderbooks, pairs, now);
+      return await this.scanFwUniverse(orderbooks, now);
     } finally {
       this.fwScanInFlight = false;
       if (this.fwScanPending) {
@@ -517,7 +533,6 @@ export class Supervisor {
     const now = Date.now();
     const fwOpportunities = await this.scanFwUniverseCoalesced(
       this.getOrderbookMap(),
-      this.config.marketPairs,
       now
     );
     for (const fwOpportunity of fwOpportunities) {
@@ -528,10 +543,10 @@ export class Supervisor {
 
   private async scanFwUniverse(
     orderbooks: Map<string, OrderBookState>,
-    pairs: MarketPair[],
     now: number
   ): Promise<ArbitrageOpportunity[]> {
-    const marketUniverse = this.config.marketPairs.map((pair) => ({
+    const selection = this.selectFwUniversePairs(now);
+    const marketUniverse = selection.pairs.map((pair) => ({
       marketId: pair.marketId,
       yesTokenId: pair.yesTokenId,
       noTokenId: pair.noTokenId,
@@ -539,13 +554,26 @@ export class Supervisor {
       category: pair.category,
       tags: pair.tags
     }));
+    this.deps.metrics.record({
+      type: 'fw_dependency',
+      timestamp: now,
+      data: {
+        event: 'universe_selected',
+        mode: selection.mode,
+        fallbackReason: selection.fallbackReason ?? null,
+        selectedMarkets: selection.pairs.length,
+        totalMarkets: this.config.marketPairs.length,
+        cohortComponentCount: this.fwCohortComponents.length,
+        selectedMarketIds: selection.pairs.map((pair) => pair.marketId)
+      }
+    });
 
     if (typeof (this.scanner as unknown as { scanFwUniverse?: unknown }).scanFwUniverse === 'function') {
       return this.scanner.scanFwUniverse(orderbooks, marketUniverse, now);
     }
 
     const opportunities: ArbitrageOpportunity[] = [];
-    for (const pair of pairs) {
+    for (const pair of selection.pairs) {
       const fwOpportunity = await this.scanner.scanFwPair(pair, orderbooks, now, marketUniverse);
       if (!fwOpportunity) continue;
       opportunities.push(fwOpportunity);
@@ -825,6 +853,66 @@ export class Supervisor {
     });
   }
 
+  private selectFwUniversePairs(nowMs: number): {
+    pairs: MarketPair[];
+    mode: 'broad_rotation' | 'dependency_cohort';
+    fallbackReason?: string;
+  } {
+    const mode = this.config.policy.fwUniverseMode;
+    if (mode !== 'dependency_cohort') {
+      return { pairs: this.config.marketPairs, mode: 'broad_rotation' };
+    }
+
+    if (this.fwCohortComponents.length === 0) {
+      return {
+        pairs: this.config.marketPairs,
+        mode,
+        fallbackReason: 'sparse_dependency_graph'
+      };
+    }
+
+    let best: FwCohortComponent | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (const component of this.fwCohortComponents) {
+      const freshness = averageFreshness(component.marketIds, this.fwMarketLastUpdateMs, nowMs);
+      const score = component.density * 0.8 + freshness * 0.2;
+      if (score > bestScore) {
+        bestScore = score;
+        best = component;
+      }
+    }
+
+    if (!best || best.density < FW_COHORT_MIN_DENSITY || best.marketIds.length < FW_COHORT_MIN_MARKETS) {
+      return {
+        pairs: this.config.marketPairs,
+        mode,
+        fallbackReason: 'cohort_below_density_floor'
+      };
+    }
+
+    const selectedMarketIds = new Set(best.marketIds);
+    const selectedPairs = this.config.marketPairs.filter((pair) => selectedMarketIds.has(pair.marketId));
+    if (selectedPairs.length < FW_COHORT_MIN_MARKETS) {
+      return {
+        pairs: this.config.marketPairs,
+        mode,
+        fallbackReason: 'cohort_selection_empty'
+      };
+    }
+
+    return { pairs: selectedPairs, mode };
+  }
+
+  private rebuildFwCohorts(): void {
+    this.fwCohortComponents = buildDependencyCohortComponents(this.config.marketPairs);
+    const allowedMarketIds = new Set(this.config.marketPairs.map((pair) => pair.marketId));
+    for (const marketId of this.fwMarketLastUpdateMs.keys()) {
+      if (!allowedMarketIds.has(marketId)) {
+        this.fwMarketLastUpdateMs.delete(marketId);
+      }
+    }
+  }
+
   private buildPairIndex(): void {
     for (const pair of this.config.marketPairs) {
       const yes = this.tokenToPairs.get(pair.yesTokenId) ?? [];
@@ -881,6 +969,7 @@ export class Supervisor {
       cooldownMs: risk.marketCooldownSeconds * 1000,
       halfOpenSuccesses: risk.marketCircuitHalfOpenSuccesses
     });
+    this.rebuildFwCohorts();
   }
 
   updateBookRefresh(bookRefresh: { intervalMs: number; maxStalenessMs: number }): void {
@@ -1119,6 +1208,7 @@ export class Supervisor {
   private rebuildPairIndex(): void {
     this.tokenToPairs.clear();
     this.buildPairIndex();
+    this.rebuildFwCohorts();
   }
 
   private resolveSyntheticPair(marketId?: string): MarketPair | null {
@@ -1141,6 +1231,92 @@ function collectTokenIds(pairs: MarketPair[]): string[] {
     set.add(pair.noTokenId);
   }
   return Array.from(set);
+}
+
+function toDependencyInput(pair: MarketPair): DependencyMarketInput {
+  return {
+    marketId: pair.marketId,
+    yesTokenId: pair.yesTokenId,
+    noTokenId: pair.noTokenId,
+    question: pair.question,
+    category: pair.category,
+    tags: pair.tags
+  };
+}
+
+function buildDependencyCohortComponents(pairs: MarketPair[]): FwCohortComponent[] {
+  if (pairs.length < FW_COHORT_MIN_MARKETS) return [];
+  const markets = pairs.map(toDependencyInput);
+  const edges = extractDeterministicDependencyEdges(markets, Date.now(), {
+    source: 'deterministic',
+    evidencePrefix: 'cohort'
+  }).filter((edge) => edge.marketA !== edge.marketB);
+  if (edges.length === 0) return [];
+
+  const adjacency = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    const left = adjacency.get(edge.marketA) ?? new Set<string>();
+    left.add(edge.marketB);
+    adjacency.set(edge.marketA, left);
+    const right = adjacency.get(edge.marketB) ?? new Set<string>();
+    right.add(edge.marketA);
+    adjacency.set(edge.marketB, right);
+  }
+
+  const components: FwCohortComponent[] = [];
+  const visited = new Set<string>();
+  for (const marketId of adjacency.keys()) {
+    if (visited.has(marketId)) continue;
+    const queue = [marketId];
+    const component = new Set<string>([marketId]);
+    visited.add(marketId);
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) continue;
+      for (const neighbor of adjacency.get(current) ?? []) {
+        if (visited.has(neighbor)) continue;
+        visited.add(neighbor);
+        component.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+    if (component.size < FW_COHORT_MIN_MARKETS) continue;
+    let edgeCount = 0;
+    for (const edge of edges) {
+      if (component.has(edge.marketA) && component.has(edge.marketB)) {
+        edgeCount += 1;
+      }
+    }
+    const marketIds = Array.from(component).sort();
+    const possibleEdges = (marketIds.length * (marketIds.length - 1)) / 2;
+    const density = possibleEdges > 0 ? edgeCount / possibleEdges : 0;
+    components.push({ marketIds, edgeCount, density });
+  }
+
+  return components.sort((left, right) => {
+    if (right.density !== left.density) return right.density - left.density;
+    if (right.edgeCount !== left.edgeCount) return right.edgeCount - left.edgeCount;
+    if (right.marketIds.length !== left.marketIds.length) {
+      return right.marketIds.length - left.marketIds.length;
+    }
+    return left.marketIds.join('|').localeCompare(right.marketIds.join('|'));
+  });
+}
+
+function averageFreshness(
+  marketIds: string[],
+  marketLastUpdateMs: Map<string, number>,
+  nowMs: number
+): number {
+  if (marketIds.length === 0) return 0;
+  let sum = 0;
+  for (const marketId of marketIds) {
+    const lastUpdateMs = marketLastUpdateMs.get(marketId) ?? 0;
+    const ageMs = Math.max(0, nowMs - lastUpdateMs);
+    const freshness = Math.max(0, 1 - ageMs / FW_COHORT_FRESHNESS_WINDOW_MS);
+    sum += freshness;
+  }
+  return sum / marketIds.length;
 }
 
 function collectInternalOpenOrders(
