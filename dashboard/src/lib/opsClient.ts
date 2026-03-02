@@ -4,6 +4,9 @@ export const OPS_BASE = OPS_BASE_URL;
 export const OPS_STREAM_URL = buildOpsUrl('/stream');
 
 const OPS_SESSION_PATH = '/ops/session';
+const OPS_TOKEN_HEADER = 'x-ops-token';
+
+let opsAuthToken: string | null = null;
 
 export interface OpsSessionStatus {
   authenticated: boolean;
@@ -31,11 +34,23 @@ export function buildOpsUrl(path: string): string {
   return `${OPS_BASE_URL}${normalizedPath}`;
 }
 
+export function getOpsStreamUrl(): string {
+  const base = OPS_STREAM_URL;
+  if (!opsAuthToken) return base;
+  if (!shouldAppendStreamToken(base)) return base;
+  const separator = base.includes('?') ? '&' : '?';
+  return `${base}${separator}token=${encodeURIComponent(opsAuthToken)}`;
+}
+
 export function opsFetch(path: string, init?: RequestInit): Promise<Response> {
-  const headers = init?.headers ? { ...init.headers } : undefined;
+  const headers = toHeaders(init?.headers);
+  if (opsAuthToken && !headers.has('authorization') && !headers.has(OPS_TOKEN_HEADER)) {
+    headers.set(OPS_TOKEN_HEADER, opsAuthToken);
+  }
+  const hasHeaders = Array.from(headers.keys()).length > 0;
   return fetch(buildOpsUrl(path), {
     ...init,
-    headers,
+    headers: hasHeaders ? headers : undefined,
     credentials: 'include'
   });
 }
@@ -86,10 +101,34 @@ export async function clearOpsSession(): Promise<void> {
   await opsFetch(OPS_SESSION_PATH, { method: 'DELETE' });
 }
 
+export function setOpsAuthToken(token: string | undefined | null): void {
+  const normalized = typeof token === 'string' ? token.trim() : '';
+  opsAuthToken = normalized.length > 0 ? normalized : null;
+}
+
+export function clearOpsAuthToken(): void {
+  opsAuthToken = null;
+}
+
 function safeParseJSON(value: string): unknown {
   try {
     return JSON.parse(value);
   } catch {
     return null;
+  }
+}
+
+function toHeaders(input: HeadersInit | undefined): Headers {
+  if (!input) return new Headers();
+  return new Headers(input);
+}
+
+function shouldAppendStreamToken(streamUrl: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const resolved = new URL(streamUrl, window.location.href);
+    return resolved.hostname !== window.location.hostname;
+  } catch {
+    return false;
   }
 }

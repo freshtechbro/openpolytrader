@@ -42,7 +42,7 @@ export type SloAggregates = {
   error?: string;
 };
 
-export type IntentStrategy = 'near_zero' | 'ev' | 'unknown';
+export type IntentStrategy = 'near_zero' | 'ev' | 'fw_projection' | 'fw_basket' | 'unknown';
 
 export interface FinalIntent {
   opportunityId: string;
@@ -350,5 +350,7 @@ function formatMs(value: unknown): string {
 function formatIntentStrategy(strategy?: IntentStrategy): string {
   if (strategy === 'ev') return 'EV';
   if (strategy === 'near_zero') return 'Near Zero';
+  if (strategy === 'fw_projection') return 'FW Projection';
+  if (strategy === 'fw_basket') return 'FW Basket';
   return 'Unknown';
 }

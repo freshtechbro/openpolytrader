@@ -8,27 +8,70 @@ BACKEND_PID_FILE="$ROOT_DIR/tmp/backend.pid"
 DASHBOARD_PID_FILE="$ROOT_DIR/tmp/dashboard.pid"
 ORACLE_PID_FILE="$ROOT_DIR/tmp/ip-oracle.pid"
 
+has_listener_on_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+    return $?
+  fi
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "sport = :$port" 2>/dev/null | grep -q LISTEN
+    return $?
+  fi
+  return 1
+}
+
+listener_pids_on_port() {
+  local port="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "unknown"
+    return
+  fi
+  local pids
+  pids=$(lsof -ti tcp:"$port" 2>/dev/null | tr '\n' ' ' | xargs || true)
+  if [[ -z "$pids" ]]; then
+    echo "none"
+    return
+  fi
+  echo "$pids"
+}
+
 stop_pid() {
   local name="$1"
   local pid_file="$2"
+  local port="${3:-}"
+  local has_port=false
+  if [[ -n "$port" ]]; then
+    has_port=true
+  fi
 
   if [[ ! -f "$pid_file" ]]; then
-    echo "$name not running (missing pid file)."
+    if [[ "$has_port" == "true" ]] && has_listener_on_port "$port"; then
+      echo "$name pid file missing, but listener is active on port $port (pids: $(listener_pids_on_port "$port"))."
+    else
+      echo "$name not running (missing pid file)."
+    fi
     return
   fi
 
   local pid
   pid=$(cat "$pid_file" || true)
   if [[ -z "$pid" ]]; then
-    echo "$name not running (empty pid file)."
+    if [[ "$has_port" == "true" ]] && has_listener_on_port "$port"; then
+      echo "$name pid file empty, but listener is active on port $port (pids: $(listener_pids_on_port "$port"))."
+    else
+      echo "$name not running (empty pid file)."
+    fi
     rm -f "$pid_file"
     return
   fi
 
   if kill -0 "$pid" 2>/dev/null; then
+    local current_pgid
+    current_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ' || true)
     local pgid
     pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
-    if [[ -n "$pgid" ]]; then
+    if [[ -n "$pgid" && "$pgid" != "$current_pgid" ]]; then
       kill -TERM -"$pgid" 2>/dev/null || true
     else
       kill "$pid" 2>/dev/null || true
@@ -36,14 +79,14 @@ stop_pid() {
     sleep 0.5
     if kill -0 "$pid" 2>/dev/null; then
       # Escalate once if graceful stop did not terminate the process group.
-      if [[ -n "$pgid" ]]; then
+      if [[ -n "$pgid" && "$pgid" != "$current_pgid" ]]; then
         kill -KILL -"$pgid" 2>/dev/null || true
       else
         kill -KILL "$pid" 2>/dev/null || true
       fi
       sleep 0.5
       if kill -0 "$pid" 2>/dev/null; then
-        if [[ -n "$pgid" ]]; then
+        if [[ -n "$pgid" && "$pgid" != "$current_pgid" ]]; then
           echo "$name still running (pid $pid, pgid $pgid)."
         else
           echo "$name still running (pid $pid)."
@@ -51,9 +94,17 @@ stop_pid() {
         return
       fi
     fi
-    echo "$name stopped (pid $pid)."
+    if [[ "$has_port" == "true" ]] && has_listener_on_port "$port"; then
+      echo "$name process stopped (pid $pid), but listener is still active on port $port (pids: $(listener_pids_on_port "$port"))."
+    else
+      echo "$name stopped (pid $pid)."
+    fi
   else
-    echo "$name not running (stale pid $pid)."
+    if [[ "$has_port" == "true" ]] && has_listener_on_port "$port"; then
+      echo "$name pid file is stale (pid $pid), but listener is active on port $port (pids: $(listener_pids_on_port "$port"))."
+    else
+      echo "$name not running (stale pid $pid)."
+    fi
   fi
 
   rm -f "$pid_file"
@@ -86,9 +137,9 @@ stop_listeners_on_port() {
   echo "Stopped ${name} on port ${port} (pids: $pids)."
 }
 
-stop_pid "Backend" "$BACKEND_PID_FILE"
-stop_pid "Dashboard" "$DASHBOARD_PID_FILE"
-stop_pid "IP oracle" "$ORACLE_PID_FILE"
+stop_pid "Backend" "$BACKEND_PID_FILE" "3000"
+stop_pid "Dashboard" "$DASHBOARD_PID_FILE" "5174"
+stop_pid "IP oracle" "$ORACLE_PID_FILE" "7071"
 
 # Best-effort cleanup for tmux-based dev session and stray Vite servers.
 if command -v tmux >/dev/null 2>&1; then

@@ -19,6 +19,10 @@ pip install -r requirements.txt
 python app.py
 ```
 
+For paper orchestration (`npm run dev:ops` / `npm run paper:up`), startup prefers
+`services/ip-oracle/.venv_runtime312` and will bootstrap it automatically from
+`requirements.txt` when no import-ready runtime is found.
+
 Default bind:
 
 - Host: `127.0.0.1`

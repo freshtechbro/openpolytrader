@@ -9,9 +9,15 @@
     "h": "npm run help",
     "postinstall": "node scripts/postinstall-arch-guard.mjs",
     "dev": "tsx src/main.ts",
+    "dev:up": "npm run dev:ops",
     "dev:ops": "bash scripts/dev-up.sh",
     "dev:ops:down": "bash scripts/dev-down.sh",
     "dev:ops:status": "bash scripts/dev-status.sh",
+    "dev:ops:smoke": "bash scripts/dev-lifecycle-smoke.sh",
+    "paper:up": "npm run dev:ops",
+    "paper:down": "npm run dev:ops:down",
+    "paper:status": "npm run dev:ops:status",
+    "paper:smoke": "npm run dev:ops:smoke",
     "dev:live": "docker compose up -d && npm --prefix dashboard run dev",
     "dev:live:down": "docker compose down",
     "build": "tsc -p tsconfig.json",
@@ -29,7 +35,9 @@
     "polymarket:derive-creds": "tsx scripts/polymarketDeriveApiCreds.ts",
     "llm:smoke": "tsx scripts/llmSmokeTest.ts",
     "catalog:refresh:dev": "tsx src/tools/marketCatalogGeneratorCli.ts --mode near-zero --verify-books --require-metadata --yesno-only --merge",
-    "catalog:refresh": "node dist/tools/marketCatalogGeneratorCli.js --mode near-zero --verify-books --require-metadata --yesno-only --merge"
+    "catalog:refresh": "node dist/tools/marketCatalogGeneratorCli.js --mode near-zero --verify-books --require-metadata --yesno-only --merge",
+    "catalog:relations:dev": "tsx src/tools/dependencyRelationCatalogCli.ts",
+    "catalog:relations": "node dist/tools/dependencyRelationCatalogCli.js"
   },
   "dependencies": {
     "@fastify/cors": "^8.5.0",

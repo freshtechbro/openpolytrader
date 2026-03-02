@@ -29,6 +29,7 @@ data/market-catalog.json
 tmp/
 data/*.bak-*
 services/ip-oracle/.venv/
+services/ip-oracle/.venv*/
 services/ip-oracle/__pycache__/
 services/ip-oracle/.pytest_cache/
 

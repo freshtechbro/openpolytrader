@@ -4,13 +4,15 @@ import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { TopNav } from '../components/TopNav';
 import { useEventStream } from '../hooks/useEventStream';
 import {
-  OPS_STREAM_URL,
+  clearOpsAuthToken,
   clearOpsSession,
   createOpsSession,
+  getOpsStreamUrl,
   getOpsSession,
   isOpsUnauthorizedError,
   opsFetch,
-  opsFetchJson
+  opsFetchJson,
+  setOpsAuthToken
 } from '../lib/opsClient';
 import { INCIDENTS_LIMIT, SLO_REFRESH_MS } from '../lib/dashboardConfig';
 import {
@@ -82,7 +84,10 @@ function getMarketQuestion(allowlist: AllowlistEntry[], marketId?: string): stri
 }
 
 function normalizeIntentStrategy(value: unknown): IntentStrategy | undefined {
-  if (value === 'near_zero' || value === 'ev' || value === 'unknown') return value;
+  if (value === 'near_zero' || value === 'ev' || value === 'fw_projection' || value === 'fw_basket' || value === 'unknown') {
+    return value;
+  }
+  if (value === 'ev_single_side') return 'ev';
   return undefined;
 }
 
@@ -90,6 +95,8 @@ function inferIntentStrategy(opportunityId?: string, strategy?: IntentStrategy):
   if (strategy && strategy !== 'unknown') return strategy;
   if (!opportunityId) return strategy ?? 'unknown';
   const parts = opportunityId.split(':');
+  if (parts[1] === 'fw') return 'fw_projection';
+  if (parts[1] === 'fwb') return 'fw_basket';
   if (parts[1] === 'yes' || parts[1] === 'no') return 'ev';
   if (Number.isFinite(Number(parts[1])) && Number.isFinite(Number(parts[2]))) return 'near_zero';
   return strategy ?? 'unknown';
@@ -142,6 +149,7 @@ export function OpsLayout() {
   const currentPage = resolveOpsPage(location.pathname);
 
   const handleUnauthorized = useCallback(() => {
+    clearOpsAuthToken();
     setSession({
       checking: false,
       authenticated: false,
@@ -156,7 +164,28 @@ export function OpsLayout() {
     setSession((prev) => ({ ...prev, checking: true, error: null }));
     try {
       const response = await getOpsSession({ prefill: true });
-      setLoginToken((prev) => (prev.trim().length > 0 ? prev : response.prefillToken ?? ''));
+      const prefillToken = response.prefillToken?.trim() ?? '';
+      if (prefillToken.length > 0) {
+        setOpsAuthToken(prefillToken);
+      } else {
+        clearOpsAuthToken();
+      }
+      setLoginToken((prev) => (prev.trim().length > 0 ? prev : prefillToken));
+
+      if (!response.authenticated && response.authRequired && prefillToken.length > 0) {
+        const verified = await getOpsSession();
+        if (verified.authenticated) {
+          setLoginToken('');
+          setSession({
+            checking: false,
+            authenticated: true,
+            authRequired: verified.authRequired,
+            error: null
+          });
+          return;
+        }
+      }
+
       setSession({
         checking: false,
         authenticated: response.authenticated,
@@ -164,6 +193,7 @@ export function OpsLayout() {
         error: null
       });
     } catch (error) {
+      clearOpsAuthToken();
       const message = error instanceof Error ? error.message : 'Session check failed';
       setSession({
         checking: false,
@@ -305,7 +335,7 @@ export function OpsLayout() {
     [fetchAllowlist, handleUnauthorized]
   );
 
-  const [streamEvents] = useEventStream(session.authenticated ? OPS_STREAM_URL : null, handleStreamEvent);
+  const [streamEvents] = useEventStream(session.authenticated ? getOpsStreamUrl() : null, handleStreamEvent);
 
   useEffect(() => {
     if (!session.authenticated) return;
@@ -402,9 +432,12 @@ export function OpsLayout() {
     event.preventDefault();
     setLoginState({ submitting: true, error: null });
     try {
-      await createOpsSession(loginToken.trim());
+      const token = loginToken.trim();
+      setOpsAuthToken(token);
+      await createOpsSession(token);
       const verified = await getOpsSession();
       if (!verified.authenticated) {
+        clearOpsAuthToken();
         setSession({
           checking: false,
           authenticated: false,
@@ -427,12 +460,14 @@ export function OpsLayout() {
       });
       setLoginState({ submitting: false, error: null });
     } catch (error) {
+      clearOpsAuthToken();
       const message = error instanceof Error ? error.message : 'Login failed';
       setLoginState({ submitting: false, error: message });
     }
   };
 
   const handleLogout = async () => {
+    clearOpsAuthToken();
     await clearOpsSession().catch(() => {});
     setSession({
       checking: false,
