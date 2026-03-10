@@ -88,6 +88,7 @@ Behavior:
 - Starts backend on `http://localhost:3000`
 - Starts dashboard on `http://localhost:5174`
 - Forces backend runtime to `TRADING_MODE=paper` in script startup
+- Waits for backend `/health/ready` before declaring startup complete (`OPS_BACKEND_READY_TIMEOUT_SECONDS`, default `45s`)
 - Defaults `OPS_DEV_SESSION_PREFILL_ENABLED=true` for localhost token prefill convenience
 - Treats dashboard startup probe timeout as warning (keeps oracle/backend up; verify with `npm run dev:ops:status`)
 - Writes logs to `tmp/backend.log` and `tmp/dashboard.log`

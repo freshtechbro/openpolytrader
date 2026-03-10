@@ -70,7 +70,7 @@ npm run paper:up
 - dashboard (`:5174`)
 - IP oracle sidecar (`127.0.0.1:7071`)
 
-`dev:ops` requires oracle/backend readiness. Dashboard probe timeout is warning-only (oracle/backend stay up). Re-check full status with:
+`dev:ops` requires oracle health plus backend `/health/ready`. Dashboard probe timeout is warning-only (oracle/backend stay up). Re-check full status with:
 
 ```bash
 npm run dev:ops:status

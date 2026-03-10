@@ -36,6 +36,7 @@ ORACLE_TIMEOUT_SECONDS="${IP_ORACLE_STARTUP_TIMEOUT_SECONDS:-20}"
 ORACLE_IMPORT_TIMEOUT_SECONDS="${IP_ORACLE_IMPORT_TIMEOUT_SECONDS:-20}"
 ORACLE_BOOTSTRAP_TIMEOUT_SECONDS="${IP_ORACLE_BOOTSTRAP_TIMEOUT_SECONDS:-240}"
 BACKEND_TIMEOUT_SECONDS="${OPS_BACKEND_STARTUP_TIMEOUT_SECONDS:-30}"
+BACKEND_READY_TIMEOUT_SECONDS="${OPS_BACKEND_READY_TIMEOUT_SECONDS:-45}"
 DASHBOARD_TIMEOUT_SECONDS="${OPS_DASHBOARD_STARTUP_TIMEOUT_SECONDS:-20}"
 DASHBOARD_RETRY_ATTEMPTS="${OPS_DASHBOARD_READY_RETRY_ATTEMPTS:-2}"
 DASHBOARD_RETRY_BACKOFF_SECONDS="${OPS_DASHBOARD_READY_RETRY_BACKOFF_SECONDS:-1}"
@@ -181,6 +182,23 @@ wait_for_backend_health() {
   return 1
 }
 
+wait_for_backend_ready() {
+  local base_url="$1"
+  local token="$2"
+  local timeout_s="$3"
+  local deadline=$((SECONDS + timeout_s))
+
+  while (( SECONDS < deadline )); do
+    local code
+    code=$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${token}" "${base_url}/health/ready" || true)
+    if [[ "$code" == "200" ]]; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
 wait_for_dashboard_ready() {
   local host="$1"
   local timeout_s="$2"
@@ -249,24 +267,37 @@ start_oracle_sidecar() {
 }
 
 start_backend() {
+  local started_backend=0
+
   if [[ -f "$BACKEND_PID_FILE" ]] && kill -0 "$(cat "$BACKEND_PID_FILE")" 2>/dev/null; then
     echo "Backend already running (pid $(cat "$BACKEND_PID_FILE"))."
-    return
+  else
+    OPS_API_TOKEN="$TOKEN" LOG_LEVEL=info TRADING_ENABLED=true TRADING_MODE=paper \
+      OPS_DEV_SESSION_PREFILL_ENABLED="$OPS_DEV_SESSION_PREFILL_ENABLED" \
+      FW_ORACLE_BASE_URL="$FW_ORACLE_BASE_URL" \
+      nohup npm run dev \
+      > "$ROOT_DIR/tmp/backend.log" 2>&1 &
+    echo $! > "$BACKEND_PID_FILE"
+    started_backend=1
+    echo "Backend started (pid $(cat "$BACKEND_PID_FILE"))."
+    echo "Ops token prefill default: OPS_DEV_SESSION_PREFILL_ENABLED=${OPS_DEV_SESSION_PREFILL_ENABLED}"
   fi
-
-  OPS_API_TOKEN="$TOKEN" LOG_LEVEL=info TRADING_ENABLED=true TRADING_MODE=paper \
-    OPS_DEV_SESSION_PREFILL_ENABLED="$OPS_DEV_SESSION_PREFILL_ENABLED" \
-    FW_ORACLE_BASE_URL="$FW_ORACLE_BASE_URL" \
-    nohup npm run dev \
-    > "$ROOT_DIR/tmp/backend.log" 2>&1 &
-  echo $! > "$BACKEND_PID_FILE"
-  echo "Backend started (pid $(cat "$BACKEND_PID_FILE"))."
-  echo "Ops token prefill default: OPS_DEV_SESSION_PREFILL_ENABLED=${OPS_DEV_SESSION_PREFILL_ENABLED}"
 
   if ! wait_for_backend_health "$OPS_BASE_URL" "$TOKEN" "$BACKEND_TIMEOUT_SECONDS"; then
     echo "Backend health check failed at ${OPS_BASE_URL}/health (timeout ${BACKEND_TIMEOUT_SECONDS}s)." >&2
-    kill "$(cat "$BACKEND_PID_FILE")" 2>/dev/null || true
-    rm -f "$BACKEND_PID_FILE"
+    if (( started_backend )); then
+      kill "$(cat "$BACKEND_PID_FILE")" 2>/dev/null || true
+      rm -f "$BACKEND_PID_FILE"
+    fi
+    exit 1
+  fi
+
+  if ! wait_for_backend_ready "$OPS_BASE_URL" "$TOKEN" "$BACKEND_READY_TIMEOUT_SECONDS"; then
+    echo "Backend readiness check failed at ${OPS_BASE_URL}/health/ready (timeout ${BACKEND_READY_TIMEOUT_SECONDS}s)." >&2
+    if (( started_backend )); then
+      kill "$(cat "$BACKEND_PID_FILE")" 2>/dev/null || true
+      rm -f "$BACKEND_PID_FILE"
+    fi
     exit 1
   fi
 }
