@@ -1,8 +1,10 @@
-import { messageBus } from './MessageBus.js';
+import type { MessageBus } from './MessageBus.js';
+import type { MarketUpdateEvent, RuntimeEventMap } from './runtimeEvents.js';
 import type { TradePolicy } from '../config/policy.js';
 import type { RiskConfig } from '../config/risk.js';
 import {
   extractDeterministicDependencyEdges,
+  type DependencyEdge,
   type DependencyMarketInput
 } from '../domain/dependency.js';
 import type { MarketPair } from '../domain/market.js';
@@ -16,11 +18,11 @@ import {
   evaluateGatesWithFees
 } from '../domain/gates.js';
 import { createUniformTakerFeeModel } from '../domain/feeModel.js';
-import { MarketDataAgent, type MarketUpdateEvent } from '../agents/market-data/MarketDataAgent.js';
-import { ScannerAgent } from '../agents/scanner/ScannerAgent.js';
-import { RiskAgent } from '../agents/risk/RiskAgent.js';
-import { ExecutionAgent } from '../agents/execution/ExecutionAgent.js';
-import { PortfolioAgent } from '../agents/portfolio/PortfolioAgent.js';
+import type { MarketDataAgent } from '../agents/market-data/MarketDataAgent.js';
+import type { ScannerAgent } from '../agents/scanner/ScannerAgent.js';
+import type { RiskAgent } from '../agents/risk/RiskAgent.js';
+import type { ExecutionAgent } from '../agents/execution/ExecutionAgent.js';
+import type { PortfolioAgent } from '../agents/portfolio/PortfolioAgent.js';
 import type { MarketAllowlist } from '../domain/allowlist.js';
 import type { MetricEvent, MetricsStore } from '../telemetry/metrics.js';
 import type { VenueOpenOrder, VenuePosition } from '../domain/venue.js';
@@ -30,14 +32,16 @@ import type { PolymarketRealtime } from '../services/PolymarketRealtime.js';
 import type { IncidentTracker } from '../services/IncidentTracker.js';
 import type { TradingMode } from '../config/env.js';
 import type { EventStore } from './EventStore.js';
-import { CircuitBreakerRegistry } from './CircuitBreaker.js';
-import type { LLMConfig as AppLLMConfig } from '../config/llm.js';
-import type { LLMCallResult, LLMAgentId, LLMRequest } from '../services/llm/types.js';
+import type { CircuitBreakerRegistry } from './CircuitBreaker.js';
 import type { ExecutionAdvisor } from '../agents/execution/ExecutionAdvisor.js';
 import type { RiskAdvisor } from '../agents/risk/RiskAdvisor.js';
 import type { SignalAggregatorAgent } from '../agents/signal/SignalAggregatorAgent.js';
 import type { FwProjectionAgent } from '../agents/projection/FwProjectionAgent.js';
 import { normalizeReasonKey, shouldEmitScopedReason } from '../utils/eventDedupe.js';
+import {
+  buildRuntimeSupervisorAssembly,
+  type SupervisorLLMContext
+} from './supervisorAssembly.js';
 
 const GATE_REJECTION_EMISSION_COOLDOWN_MS = 3000;
 const FW_COHORT_MIN_MARKETS = 2;
@@ -49,6 +53,19 @@ interface FwCohortComponent {
   edgeCount: number;
   density: number;
 }
+
+type SupervisorScanner = Pick<
+  ScannerAgent,
+  | 'scanPair'
+  | 'scanFwPair'
+  | 'scanFwUniverse'
+  | 'prioritizeOpportunities'
+  | 'updateTradingMode'
+  | 'updatePolicy'
+  | 'stop'
+>;
+
+const ORDER_ID_KEYS = ['orderID', 'orderId', 'order_id', 'id'] as const;
 
 export interface SupervisorConfig {
   marketPairs: MarketPair[];
@@ -99,6 +116,7 @@ export interface SyntheticOpportunityResult {
 }
 
 export interface SupervisorDeps {
+  messageBus: MessageBus<RuntimeEventMap>;
   clob: PolymarketClob;
   dataApi?: PolymarketDataApi;
   realtime: PolymarketRealtime;
@@ -108,21 +126,25 @@ export interface SupervisorDeps {
   incidentTracker: IncidentTracker;
   portfolio: PortfolioAgent;
   eventStore?: EventStore;
-  llm?: {
-    config: AppLLMConfig;
-    client: { call: (agent: LLMAgentId, request: LLMRequest, nowMs?: number) => Promise<LLMCallResult> };
-    promptVersion: string;
-    policyHashes: { tradePolicyHash: string; riskConfigHash: string };
-  };
+  llm?: SupervisorLLMContext;
   executionAdvisor?: ExecutionAdvisor;
   riskAdvisor?: RiskAdvisor;
   signalAggregator?: SignalAggregatorAgent;
   fwProjectionAgent?: FwProjectionAgent;
 }
 
+export interface SupervisorAssembly {
+  marketCircuitBreakers: CircuitBreakerRegistry;
+  marketData: MarketDataAgent;
+  scanner: SupervisorScanner;
+  risk: RiskAgent;
+  execution: ExecutionAgent;
+}
+
 export class Supervisor {
+  private messageBus: MessageBus<RuntimeEventMap>;
   private marketData: MarketDataAgent;
-  private scanner: ScannerAgent;
+  private scanner: SupervisorScanner;
   private risk: RiskAgent;
   private execution: ExecutionAgent;
   private tokenToPairs = new Map<string, MarketPair[]>();
@@ -145,79 +167,23 @@ export class Supervisor {
   private fwCohortComponents: FwCohortComponent[] = [];
   private fwMarketLastUpdateMs = new Map<string, number>();
   private metricIncidentHandler: ((event: MetricEvent) => void) | null = null;
-  private marketUpdatedHandler: ((payload: unknown) => void) | null = null;
-  private opportunityDetectedHandler: ((payload: unknown) => void) | null = null;
-  private riskApprovedHandler: ((payload: unknown) => void) | null = null;
+  private marketUpdatedHandler: ((payload: RuntimeEventMap['market:updated']) => void) | null = null;
+  private opportunityDetectedHandler: ((payload: RuntimeEventMap['opportunity:detected']) => void) | null = null;
+  private riskApprovedHandler: ((payload: RuntimeEventMap['risk:approved']) => void) | null = null;
 
   constructor(
     private config: SupervisorConfig,
-    private deps: SupervisorDeps
+    private deps: SupervisorDeps,
+    assembly?: SupervisorAssembly
   ) {
+    this.messageBus = deps.messageBus;
     this.nearZeroFeeModel = createUniformTakerFeeModel(config.policy.nearZeroFeeBps);
-    this.marketData = new MarketDataAgent(
-      {
-        tokenIds: collectTokenIds(config.marketPairs),
-        policy: config.policy,
-        metrics: deps.metrics,
-        eventStore: deps.eventStore,
-        llm: deps.llm
-          ? {
-              config: deps.llm.config,
-              client: { call: (agent, request) => deps.llm!.client.call(agent, request) },
-              promptVersion: deps.llm.promptVersion,
-              policyHashes: deps.llm.policyHashes
-            }
-          : undefined
-      },
-      deps.clob,
-      deps.realtime
-    );
-    this.scanner = new ScannerAgent(config.policy, deps.allowlist, {
-      tradingMode: config.tradingMode,
-      metrics: deps.metrics,
-      eventStore: deps.eventStore,
-      fwProjectionAgent: deps.fwProjectionAgent,
-      llm: deps.llm
-        ? {
-            config: deps.llm.config,
-            client: { call: (agent, request) => deps.llm!.client.call(agent, request) },
-            promptVersion: deps.llm.promptVersion,
-            policyHashes: deps.llm.policyHashes
-          }
-        : undefined
-    });
-    this.risk = new RiskAgent(
-      config.riskConfig,
-      {
-        maxOpenInventorySeconds: config.policy.maxOpenInventorySeconds,
-        fallbackTickSize: config.policy.fallbackTickSize,
-        depthBufferMultiplier: config.policy.depthBufferMultiplier,
-        evMaxPerMarketNotional: config.policy.evMaxPerMarketNotional,
-        evMaxPortfolioNotional: config.policy.evMaxPortfolioNotional,
-        fwMaxPerMarketNotional: config.policy.fwMaxPerMarketNotional,
-        fwMaxPortfolioNotional: config.policy.fwMaxPortfolioNotional
-      },
-      { advisor: deps.riskAdvisor }
-    );
-    this.marketCircuitBreakers = new CircuitBreakerRegistry(
-      {
-        failureThreshold: config.riskConfig.marketCircuitFailureThreshold,
-        cooldownMs: config.riskConfig.marketCooldownSeconds * 1000,
-        halfOpenSuccesses: config.riskConfig.marketCircuitHalfOpenSuccesses
-      },
-      'market'
-    );
-    this.execution = new ExecutionAgent(config.policy, deps.clob, deps.incidentTracker, deps.metrics, {
-      tradingEnabled: config.tradingEnabled,
-      tradingMode: config.tradingMode,
-      eventStore: deps.eventStore,
-      riskConfig: config.riskConfig,
-      portfolio: deps.portfolio,
-      userRealtime: deps.userRealtime,
-      circuitBreakers: this.marketCircuitBreakers,
-      executionAdvisor: deps.executionAdvisor,
-      executionAdvisorMode: deps.llm?.config.agents.ExecutionAgent.mode ?? 'disabled'
-    });
+    const resolvedAssembly = assembly ?? buildRuntimeSupervisorAssembly(config, deps);
+    this.marketCircuitBreakers = resolvedAssembly.marketCircuitBreakers;
+    this.marketData = resolvedAssembly.marketData;
+    this.scanner = resolvedAssembly.scanner;
+    this.risk = resolvedAssembly.risk;
+    this.execution = resolvedAssembly.execution;
 
     this.buildPairIndex();
     this.rebuildFwCohorts();
@@ -251,16 +217,14 @@ export class Supervisor {
     this.startBookRefresh();
     this.deps.signalAggregator?.start();
 
-    this.marketUpdatedHandler = (event) => void this.handleMarketUpdated(event as MarketUpdateEvent);
-    messageBus.on('market:updated', this.marketUpdatedHandler);
+    this.marketUpdatedHandler = (event) => void this.handleMarketUpdated(event);
+    this.messageBus.on('market:updated', this.marketUpdatedHandler);
 
-    this.opportunityDetectedHandler = (payload) =>
-      void this.handleOpportunity(payload as { opportunity: ArbitrageOpportunity });
-    messageBus.on('opportunity:detected', this.opportunityDetectedHandler);
+    this.opportunityDetectedHandler = (payload) => void this.handleOpportunity(payload);
+    this.messageBus.on('opportunity:detected', this.opportunityDetectedHandler);
 
-    this.riskApprovedHandler = (payload) =>
-      void this.handleRiskApproved(payload as { opportunity: ArbitrageOpportunity; size: number });
-    messageBus.on('risk:approved', this.riskApprovedHandler);
+    this.riskApprovedHandler = (payload) => void this.handleRiskApproved(payload);
+    this.messageBus.on('risk:approved', this.riskApprovedHandler);
 
     if (this.config.marketPairs.length === 0) {
       this.deps.metrics.record({
@@ -270,14 +234,24 @@ export class Supervisor {
       });
     }
 
-    const results = await Promise.allSettled([
-      this.marketData.start(),
-      this.deps.userRealtime?.connect()
-    ]);
+    try {
+      await this.marketData.start();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.deps.metrics.record({
+        type: 'error',
+        timestamp: Date.now(),
+        data: { message: 'startup_dependency_failed', detail: message }
+      });
+      this.stop();
+      throw error;
+    }
 
-    for (const result of results) {
-      if (result.status === 'rejected') {
-        const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    if (this.deps.userRealtime) {
+      try {
+        await this.deps.userRealtime.connect();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         this.deps.metrics.record({
           type: 'error',
           timestamp: Date.now(),
@@ -322,15 +296,15 @@ export class Supervisor {
     }
 
     if (this.marketUpdatedHandler) {
-      messageBus.off('market:updated', this.marketUpdatedHandler);
+      this.messageBus.off('market:updated', this.marketUpdatedHandler);
       this.marketUpdatedHandler = null;
     }
     if (this.opportunityDetectedHandler) {
-      messageBus.off('opportunity:detected', this.opportunityDetectedHandler);
+      this.messageBus.off('opportunity:detected', this.opportunityDetectedHandler);
       this.opportunityDetectedHandler = null;
     }
     if (this.riskApprovedHandler) {
-      messageBus.off('risk:approved', this.riskApprovedHandler);
+      this.messageBus.off('risk:approved', this.riskApprovedHandler);
       this.riskApprovedHandler = null;
     }
   }
@@ -568,17 +542,7 @@ export class Supervisor {
       }
     });
 
-    if (typeof (this.scanner as unknown as { scanFwUniverse?: unknown }).scanFwUniverse === 'function') {
-      return this.scanner.scanFwUniverse(orderbooks, marketUniverse, now);
-    }
-
-    const opportunities: ArbitrageOpportunity[] = [];
-    for (const pair of selection.pairs) {
-      const fwOpportunity = await this.scanner.scanFwPair(pair, orderbooks, now, marketUniverse);
-      if (!fwOpportunity) continue;
-      opportunities.push(fwOpportunity);
-    }
-    return opportunities;
+    return this.scanner.scanFwUniverse(orderbooks, marketUniverse, now);
   }
 
   private recordOpportunity(now: number, opportunity: ArbitrageOpportunity): void {
@@ -599,7 +563,7 @@ export class Supervisor {
     const ordered = await this.scanner.prioritizeOpportunities(opportunities, now);
     if (this.config.tradingMode === 'shadow') return;
     for (const opportunity of ordered) {
-      messageBus.emit('opportunity:detected', { opportunity });
+      this.messageBus.emit('opportunity:detected', { opportunity });
     }
   }
 
@@ -631,7 +595,7 @@ export class Supervisor {
         latencyMs: Math.max(0, now - payload.opportunity.detectedAt),
         cumulativeMs: Math.max(0, now - payload.opportunity.detectedAt)
       });
-      messageBus.emit('risk:approved', {
+      this.messageBus.emit('risk:approved', {
         opportunity: payload.opportunity,
         size: decision.positionSize
       });
@@ -773,20 +737,26 @@ export class Supervisor {
         ? await this.execution.executeBasketArbitrage(payload.opportunity, payload.size, {
             nowMs: now
           })
-        : await this.execution.executeArbitrage(payload.opportunity, payload.size, {
-            yesBook,
-            noBook,
-            nowMs: now
-          });
+        : payload.opportunity.type === 'ev'
+          ? await this.execution.executeEvOpportunity(payload.opportunity, payload.size, {
+              yesBook,
+              noBook,
+              nowMs: now
+            })
+          : await this.execution.executeArbitrage(payload.opportunity, payload.size, {
+              yesBook,
+              noBook,
+              nowMs: now
+            });
 
       for (const affectedMarket of basketMarkets) {
-        const beforeState = this.marketCircuitBreakers.get(affectedMarket).getState();
+        const beforeState = this.marketCircuitBreakers.get(affectedMarket).refreshAndGetState();
         if (result.status === 'submitted') {
           this.marketCircuitBreakers.recordSuccess(affectedMarket);
         } else if (result.status === 'failed') {
           this.marketCircuitBreakers.recordFailure(affectedMarket);
         }
-        const afterState = this.marketCircuitBreakers.get(affectedMarket).getState();
+        const afterState = this.marketCircuitBreakers.get(affectedMarket).refreshAndGetState();
         if (beforeState !== 'open' && afterState === 'open') {
           this.deps.incidentTracker.record({
             marketId: affectedMarket,
@@ -1244,15 +1214,7 @@ function toDependencyInput(pair: MarketPair): DependencyMarketInput {
   };
 }
 
-function buildDependencyCohortComponents(pairs: MarketPair[]): FwCohortComponent[] {
-  if (pairs.length < FW_COHORT_MIN_MARKETS) return [];
-  const markets = pairs.map(toDependencyInput);
-  const edges = extractDeterministicDependencyEdges(markets, Date.now(), {
-    source: 'deterministic',
-    evidencePrefix: 'cohort'
-  }).filter((edge) => edge.marketA !== edge.marketB);
-  if (edges.length === 0) return [];
-
+function buildDependencyAdjacency(edges: DependencyEdge[]): Map<string, Set<string>> {
   const adjacency = new Map<string, Set<string>>();
   for (const edge of edges) {
     const left = adjacency.get(edge.marketA) ?? new Set<string>();
@@ -1262,35 +1224,81 @@ function buildDependencyCohortComponents(pairs: MarketPair[]): FwCohortComponent
     right.add(edge.marketA);
     adjacency.set(edge.marketB, right);
   }
+  return adjacency;
+}
+
+function collectDependencyComponent(
+  startMarketId: string,
+  adjacency: Map<string, Set<string>>,
+  visited: Set<string>
+): Set<string> {
+  const queue = [startMarketId];
+  const component = new Set<string>([startMarketId]);
+  visited.add(startMarketId);
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    for (const neighbor of adjacency.get(current) ?? []) {
+      if (visited.has(neighbor)) {
+        continue;
+      }
+      visited.add(neighbor);
+      component.add(neighbor);
+      queue.push(neighbor);
+    }
+  }
+
+  return component;
+}
+
+function countComponentEdges(component: Set<string>, edges: DependencyEdge[]): number {
+  let edgeCount = 0;
+  for (const edge of edges) {
+    if (component.has(edge.marketA) && component.has(edge.marketB)) {
+      edgeCount += 1;
+    }
+  }
+  return edgeCount;
+}
+
+function toFwCohortComponent(
+  component: Set<string>,
+  edges: DependencyEdge[]
+): FwCohortComponent | null {
+  if (component.size < FW_COHORT_MIN_MARKETS) {
+    return null;
+  }
+  const edgeCount = countComponentEdges(component, edges);
+  const marketIds = Array.from(component).sort((left, right) => left.localeCompare(right));
+  const possibleEdges = (marketIds.length * (marketIds.length - 1)) / 2;
+  const density = possibleEdges > 0 ? edgeCount / possibleEdges : 0;
+  return { marketIds, edgeCount, density };
+}
+
+function buildDependencyCohortComponents(pairs: MarketPair[]): FwCohortComponent[] {
+  if (pairs.length < FW_COHORT_MIN_MARKETS) return [];
+  const markets = pairs.map(toDependencyInput);
+  const edges = extractDeterministicDependencyEdges(markets, Date.now(), {
+    source: 'deterministic',
+    evidencePrefix: 'cohort'
+  }).filter((edge) => edge.marketA !== edge.marketB);
+  if (edges.length === 0) return [];
+
+  const adjacency = buildDependencyAdjacency(edges);
 
   const components: FwCohortComponent[] = [];
   const visited = new Set<string>();
   for (const marketId of adjacency.keys()) {
-    if (visited.has(marketId)) continue;
-    const queue = [marketId];
-    const component = new Set<string>([marketId]);
-    visited.add(marketId);
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (!current) continue;
-      for (const neighbor of adjacency.get(current) ?? []) {
-        if (visited.has(neighbor)) continue;
-        visited.add(neighbor);
-        component.add(neighbor);
-        queue.push(neighbor);
-      }
+    if (visited.has(marketId)) {
+      continue;
     }
-    if (component.size < FW_COHORT_MIN_MARKETS) continue;
-    let edgeCount = 0;
-    for (const edge of edges) {
-      if (component.has(edge.marketA) && component.has(edge.marketB)) {
-        edgeCount += 1;
-      }
+    const cohort = toFwCohortComponent(collectDependencyComponent(marketId, adjacency, visited), edges);
+    if (cohort) {
+      components.push(cohort);
     }
-    const marketIds = Array.from(component).sort();
-    const possibleEdges = (marketIds.length * (marketIds.length - 1)) / 2;
-    const density = possibleEdges > 0 ? edgeCount / possibleEdges : 0;
-    components.push({ marketIds, edgeCount, density });
   }
 
   return components.sort((left, right) => {
@@ -1339,7 +1347,15 @@ function collectInternalOpenOrders(
 }
 
 function extractAnyOrderId(order: unknown): string | undefined {
-  const payload = order as { orderID?: string; orderId?: string; order_id?: string; id?: string };
-  const value = payload?.orderID ?? payload?.orderId ?? payload?.order_id ?? payload?.id;
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  if (!order || typeof order !== 'object') {
+    return undefined;
+  }
+  const payload = order as Record<string, unknown>;
+  for (const key of ORDER_ID_KEYS) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
+  }
+  return undefined;
 }

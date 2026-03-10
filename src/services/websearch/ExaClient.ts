@@ -3,9 +3,22 @@ import { RetryPolicy } from '../RetryPolicy.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import type { WebSearchClient, WebSearchContent, WebSearchQueryOptions, WebSearchResult } from './WebSearchClient.js';
 import { WebSearchCache } from './WebSearchCache.js';
+import {
+  buildSearchCacheKey,
+  cacheContents,
+  cacheSearchResults,
+  createWebSearchClientRuntime,
+  getCachedSearchResults,
+  normalizeSearchEntries,
+  recordCachedContentsHit,
+  recordWebSearchMetric,
+  requestWebSearchJson,
+  splitCachedContents
+} from './WebSearchProviderShared.js';
+import { resolveExaBaseUrl } from './WebSearchUrls.js';
 
-export interface ExaClientConfig {
-  baseUrl: string;
+interface ExaClientConfig {
+  baseUrl?: string;
   apiKey: string;
   timeoutMs: number;
   rateLimitPerWindow: number;
@@ -23,6 +36,7 @@ export interface ExaClientConfig {
 }
 
 export class ExaClient implements WebSearchClient {
+  private static readonly provider = 'exa';
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly timeoutMs: number;
@@ -39,23 +53,23 @@ export class ExaClient implements WebSearchClient {
   private consecutiveAuthFailures = 0;
 
   constructor(config: ExaClientConfig) {
-    this.baseUrl = config.baseUrl;
-    this.apiKey = config.apiKey;
-    this.timeoutMs = config.timeoutMs;
-    this.limiter = new RateLimiter(config.rateLimitPerWindow, config.rateLimitWindowMs);
-    this.retryPolicy = new RetryPolicy({
-      maxRetries: config.retryMaxRetries,
-      baseDelayMs: config.retryBaseDelayMs,
-      maxDelayMs: config.retryMaxDelayMs,
-      retryOn: (error) => error instanceof ExaApiError && (error.status === 429 || error.status >= 500)
+    const runtime = createWebSearchClientRuntime(config, {
+      resolveBaseUrl: resolveExaBaseUrl,
+      shouldRetry: (error) => error instanceof ExaApiError && (error.status === 429 || error.status >= 500)
     });
-    this.maxContentBytes = Math.max(config.maxContentBytes, 1);
+
+    this.baseUrl = runtime.baseUrl;
+    this.apiKey = config.apiKey;
+    this.timeoutMs = runtime.timeoutMs;
+    this.limiter = runtime.limiter;
+    this.retryPolicy = runtime.retryPolicy;
+    this.maxContentBytes = runtime.maxContentBytes;
     this.searchPath = config.searchPath;
     this.contentsPath = config.contentsPath;
     this.cooldownMs = Math.max(0, Math.floor(config.cooldownMs));
     this.cooldownFailureThreshold = Math.max(1, Math.floor(config.cooldownFailureThreshold));
-    this.cache = config.cache;
-    this.metrics = config.metrics;
+    this.cache = runtime.cache;
+    this.metrics = runtime.metrics;
   }
 
   async search(query: string, options: WebSearchQueryOptions): Promise<WebSearchResult[]> {
@@ -65,24 +79,15 @@ export class ExaClient implements WebSearchClient {
     const cacheTtlMs = Math.max(0, Math.floor(options.cacheTtlSeconds) * 1000);
     const allowlist = (options.domainAllowlist ?? []).map((domain) => domain.trim()).filter(Boolean);
     const denylist = (options.domainDenylist ?? []).map((domain) => domain.trim()).filter(Boolean);
-    const cacheKey = [
-      query.trim(),
-      `lookback:${lookbackDays}`,
-      `max:${maxResults}`,
-      `allow:${allowlist.join(',')}`,
-      `deny:${denylist.join(',')}`
-    ].join('|');
-    const providerKey = `exa:${cacheKey}`;
-
-    const cached = this.cache.getSearch(providerKey, nowMs);
+    const cacheKey = buildSearchCacheKey(ExaClient.provider, query, lookbackDays, maxResults, allowlist, denylist);
+    const cached = getCachedSearchResults(this.cache, ExaClient.provider, cacheKey, nowMs, this.metrics);
     if (cached) {
-      this.recordMetric('search_cache_hit', { provider: 'exa' });
       return cached;
     }
 
     if (this.isInCooldown(nowMs)) {
-      this.recordMetric('provider_cooldown_skip', {
-        provider: 'exa',
+      recordWebSearchMetric(this.metrics, 'provider_cooldown_skip', {
+        provider: ExaClient.provider,
         kind: 'search',
         remainingMs: Math.max(0, this.cooldownUntilMs - nowMs)
       });
@@ -101,11 +106,9 @@ export class ExaClient implements WebSearchClient {
     if (allowlist.length > 0) payload.includeDomains = allowlist;
     if (denylist.length > 0) payload.excludeDomains = denylist;
 
-    const response = await this.request<unknown>('POST', this.searchPath, payload, 'search');
+    const response = await this.request('POST', this.searchPath, payload, 'search');
     const results = normalizeSearchResults(response);
-    if (cacheTtlMs > 0) {
-      this.cache.setSearch(providerKey, results, cacheTtlMs, nowMs);
-    }
+    cacheSearchResults(this.cache, cacheKey, results, cacheTtlMs, nowMs);
     return results;
   }
 
@@ -114,28 +117,17 @@ export class ExaClient implements WebSearchClient {
     const deduped = Array.from(new Set(urls.filter((url) => typeof url === 'string' && url.length > 0)));
     if (deduped.length === 0) return [];
 
-    const cached: WebSearchContent[] = [];
-    const uncached: string[] = [];
     const cacheTtlMs = typeof cacheTtlSeconds === 'number' ? Math.max(0, Math.floor(cacheTtlSeconds) * 1000) : 0;
-
-    for (const url of deduped) {
-      const key = `exa:${url}`;
-      const hit = this.cache.getContent(key, nowMs);
-      if (hit) {
-        cached.push(hit);
-      } else {
-        uncached.push(url);
-      }
-    }
+    const { cached, uncached } = splitCachedContents(this.cache, ExaClient.provider, deduped, nowMs);
 
     if (uncached.length === 0) {
-      this.recordMetric('contents_cache_hit', { provider: 'exa', count: cached.length });
+      recordCachedContentsHit(this.metrics, ExaClient.provider, cached.length);
       return cached;
     }
 
     if (this.isInCooldown(nowMs)) {
-      this.recordMetric('provider_cooldown_skip', {
-        provider: 'exa',
+      recordWebSearchMetric(this.metrics, 'provider_cooldown_skip', {
+        provider: ExaClient.provider,
         kind: 'contents',
         remainingMs: Math.max(0, this.cooldownUntilMs - nowMs),
         cached: cached.length,
@@ -145,70 +137,48 @@ export class ExaClient implements WebSearchClient {
     }
 
     const payload = { urls: uncached, text: true };
-    const response = await this.request<unknown>('POST', this.contentsPath, payload, 'contents');
+    const response = await this.request('POST', this.contentsPath, payload, 'contents');
     const contents = normalizeContentResults(response, this.maxContentBytes);
-
-    if (cacheTtlMs > 0) {
-      for (const content of contents) {
-        if (content.url) {
-          const key = `exa:${content.url}`;
-          this.cache.setContent(key, content, cacheTtlMs, nowMs);
-        }
-      }
-    }
+    cacheContents(this.cache, ExaClient.provider, contents, cacheTtlMs, nowMs);
 
     return [...cached, ...contents];
   }
 
-  private async request<T>(method: string, path: string, body: Record<string, unknown>, kind: 'search' | 'contents'): Promise<T> {
-    await this.limiter.acquire();
-
-    return this.retryPolicy.execute(async () => {
-      const url = new URL(path, this.baseUrl).toString();
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-      const startedAtMs = Date.now();
-
-      try {
-        const response = await fetch(url, {
-          method,
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'openpolytrader/0.1.0',
-            'x-api-key': this.apiKey
-          },
-          body: JSON.stringify(body),
-          signal: controller.signal
-        });
-
-        const text = await response.text();
-        const parsedResult = safeParseJson(text);
-
-        if (!response.ok) {
-          this.recordMetric('request_failed', { provider: 'exa', kind, status: response.status });
-          if (response.status === 401 || response.status === 402) {
-            this.handleAuthFailure(kind, response.status, Date.now());
+  private async request(
+    method: string,
+    path: string,
+    body: Record<string, unknown>,
+    kind: 'search' | 'contents'
+  ): Promise<unknown> {
+    return requestWebSearchJson(
+      {
+        provider: ExaClient.provider,
+        providerLabel: 'Exa',
+        baseUrl: this.baseUrl,
+        timeoutMs: this.timeoutMs,
+        limiter: this.limiter,
+        retryPolicy: this.retryPolicy,
+        metrics: this.metrics,
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'openpolytrader/0.1.0',
+          'x-api-key': this.apiKey
+        },
+        createError: (message, status, responseBody) => new ExaApiError(message, status, responseBody),
+        onHttpError: (requestKind, status, nowMs) => {
+          if (status === 401 || status === 402) {
+            this.handleAuthFailure(requestKind as 'search' | 'contents', status, nowMs);
           }
-          throw new ExaApiError(
-            `Exa API error ${response.status} for ${method} ${path}`,
-            response.status,
-            parsedResult.failed ? { raw: text } : parsedResult.parsed
-          );
+        },
+        onSuccess: (requestKind, nowMs) => {
+          this.handleSuccess(requestKind as 'search' | 'contents', nowMs);
         }
-
-        if (parsedResult.failed) {
-          const snippet = text.slice(0, 200);
-          throw new Error(`Exa API invalid JSON for ${method} ${path}: ${snippet}`);
-        }
-
-        const latencyMs = Date.now() - startedAtMs;
-        this.handleSuccess(kind, Date.now());
-        this.recordMetric('request_ok', { provider: 'exa', kind, latencyMs });
-        return parsedResult.parsed as T;
-      } finally {
-        clearTimeout(timeout);
-      }
-    });
+      },
+      method,
+      path,
+      body,
+      kind
+    );
   }
 
   private handleAuthFailure(kind: 'search' | 'contents', status: number, nowMs: number): void {
@@ -222,8 +192,8 @@ export class ExaClient implements WebSearchClient {
     this.cooldownUntilMs = Math.max(this.cooldownUntilMs, nextCooldownUntil);
 
     if (!wasCoolingDown || this.cooldownUntilMs > previousUntil) {
-      this.recordMetric('provider_cooldown_started', {
-        provider: 'exa',
+      recordWebSearchMetric(this.metrics, 'provider_cooldown_started', {
+        provider: ExaClient.provider,
         kind,
         status,
         cooldownMs: this.cooldownMs,
@@ -242,8 +212,8 @@ export class ExaClient implements WebSearchClient {
     this.cooldownUntilMs = 0;
 
     if (shouldRecordRecovery) {
-      this.recordMetric('provider_cooldown_recovered', {
-        provider: 'exa',
+      recordWebSearchMetric(this.metrics, 'provider_cooldown_recovered', {
+        provider: ExaClient.provider,
         kind
       });
     }
@@ -252,15 +222,6 @@ export class ExaClient implements WebSearchClient {
   private isInCooldown(nowMs: number): boolean {
     if (this.cooldownMs <= 0) return false;
     return nowMs < this.cooldownUntilMs;
-  }
-
-  private recordMetric(event: string, data: Record<string, unknown>): void {
-    if (!this.metrics) return;
-    this.metrics.record({
-      type: 'web_search',
-      timestamp: Date.now(),
-      data: { event, ...data }
-    });
   }
 }
 
@@ -276,35 +237,20 @@ export class ExaApiError extends Error {
 }
 
 function normalizeSearchResults(response: unknown): WebSearchResult[] {
-  const payload = response as { results?: Array<Record<string, unknown>> };
-  if (!payload?.results || !Array.isArray(payload.results)) return [];
+  const results = getResponseResults(response);
+  if (results.length === 0) return [];
 
-  return payload.results
-    .map((entry) => {
-      const url = typeof entry.url === 'string' ? entry.url : '';
-      if (!url) return null;
-      const title = typeof entry.title === 'string' ? entry.title : undefined;
-      const snippet = typeof entry.text === 'string' ? entry.text : undefined;
-      const publishedAt =
-        typeof entry.publishedDate === 'string'
-          ? entry.publishedDate
-          : typeof entry.published_date === 'string'
-            ? entry.published_date
-            : undefined;
-      const result: WebSearchResult = { url, source: extractDomain(url) };
-      if (title) result.title = title;
-      if (snippet) result.snippet = snippet;
-      if (publishedAt) result.publishedAt = publishedAt;
-      return result;
-    })
-    .filter((entry): entry is WebSearchResult => entry !== null);
+  return normalizeSearchEntries(results, {
+    snippet: ['text'],
+    publishedAt: ['publishedDate', 'published_date']
+  }, extractDomain);
 }
 
 function normalizeContentResults(response: unknown, maxContentBytes: number): WebSearchContent[] {
-  const payload = response as { results?: Array<Record<string, unknown>> };
-  if (!payload?.results || !Array.isArray(payload.results)) return [];
+  const results = getResponseResults(response);
+  if (results.length === 0) return [];
 
-  return payload.results
+  return results
     .map((entry) => {
       const url = typeof entry.url === 'string' ? entry.url : '';
       if (!url) return null;
@@ -320,15 +266,11 @@ function normalizeContentResults(response: unknown, maxContentBytes: number): We
     .filter((entry): entry is WebSearchContent => entry !== null);
 }
 
-function safeParseJson(text: string): { parsed: unknown; failed: boolean } {
-  if (!text || text.trim().length === 0) {
-    return { parsed: null, failed: false };
+function getResponseResults(response: unknown): Array<Record<string, unknown>> {
+  if (!isRecord(response) || !Array.isArray(response.results)) {
+    return [];
   }
-  try {
-    return { parsed: JSON.parse(text), failed: false };
-  } catch {
-    return { parsed: null, failed: true };
-  }
+  return response.results.filter(isRecord);
 }
 
 function trimToBytes(value: string, maxBytes: number): string {
@@ -343,4 +285,8 @@ function extractDomain(url: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

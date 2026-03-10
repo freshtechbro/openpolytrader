@@ -52,7 +52,7 @@ export interface IpOracleResponse {
   error?: string | null;
 }
 
-export interface IpOracleClientConfig {
+interface IpOracleClientConfig {
   baseUrl?: string;
   timeoutMs: number;
   apiKey?: string;
@@ -107,7 +107,7 @@ export class IpOracleClient {
     }
   }
 
-  private async solveWithFallback(request: IpOracleRequest, timeoutMs: number): Promise<IpOracleResponse> {
+  private solveWithFallback(request: IpOracleRequest, timeoutMs: number): Promise<IpOracleResponse> {
     const solver = this.config.fallbackSolver as (request: IpOracleRequest) => Promise<IpOracleResponse>;
     return withTimeout(solver(request), timeoutMs, 'timeout');
   }
@@ -242,7 +242,7 @@ function isRetryableTransportError(error: unknown): boolean {
   );
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> {
   if (timeoutMs <= 0) return promise;
   const timeoutPromise = delay(timeoutMs).then(() => {
     throw new Error(errorMessage);

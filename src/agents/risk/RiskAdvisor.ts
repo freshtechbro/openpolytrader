@@ -1,22 +1,30 @@
 import type { LLMConfig as AppLLMConfig } from '../../config/llm.js';
 import type { EventStore } from '../../core/EventStore.js';
+import type { MessageBus } from '../../core/MessageBus.js';
+import type { RuntimeEventMap } from '../../core/runtimeEvents.js';
 import { RiskSizeRecommendationSchema } from '../../domain/llm.js';
-import { logLLMDecision } from '../../services/llm/LLMDecisionLogger.js';
-import type { LLMCallResult, LLMRequest } from '../../services/llm/types.js';
+import {
+  callAgentJson,
+  logAgentDecision,
+  withAgent,
+  type AgentLlmConfig,
+  type AgentLlmContext,
+  type AgentPolicyHashes
+} from '../../services/llm/AgentLlm.js';
+import type { LLMCallResult, LLMClientPort, LLMRequest } from '../../services/llm/types.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import { clamp, clamp01 } from '../../utils/math.js';
-import { safeParseJSON } from '../../utils/serialization.js';
 
-export interface RiskAdvisorDeps {
-  llmConfig: AppLLMConfig;
-  llmClient: { call: (agent: 'RiskAgent', request: LLMRequest) => Promise<LLMCallResult> };
-  promptVersion: string;
-  policyHashes: { tradePolicyHash: string; riskConfigHash: string };
+interface RiskAdvisorDeps extends Partial<AgentLlmConfig<'RiskAgent'>> {
+  llmConfig?: AppLLMConfig;
+  llmClient?: LLMClientPort<'RiskAgent'>;
+  messageBus?: MessageBus<RuntimeEventMap>;
+  store?: EventStore;
   eventStore?: EventStore;
   metrics?: MetricsStore;
 }
 
-export interface RiskAdvisorInput {
+interface RiskAdvisorInput {
   opportunityId: string;
   marketId: string;
   minSize: number;
@@ -37,7 +45,7 @@ export class RiskAdvisor {
   constructor(private deps: RiskAdvisorDeps) {}
 
   async recommendSize(input: RiskAdvisorInput, nowMs = Date.now()): Promise<RiskAdvisorResult> {
-    const cfg = this.deps.llmConfig;
+    const cfg = this.resolveLlmConfig();
     const mode = cfg.agents.RiskAgent.mode;
 
     const deterministicSize = clampNonNegativeFinite(input.deterministicSize);
@@ -86,13 +94,17 @@ export class RiskAdvisor {
       ]
     };
 
-    const call = await this.deps.llmClient.call('RiskAgent', request);
-    const hasOutputText = Boolean(call.outputText);
-    const parsed = hasOutputText ? safeParseJSON(call.outputText) : null;
-    const validated = hasOutputText
-      ? RiskSizeRecommendationSchema.safeParse(parsed)
-      : ({ success: false } as const);
-    const missingOutput = !hasOutputText;
+    const llm = withAgent('RiskAgent', {
+      config: cfg,
+      client: this.resolveLlmClient(),
+      promptVersion: this.resolvePromptVersion(),
+      policyHashes: this.resolvePolicyHashes()
+    });
+    const { call, parsed, validated, missingOutput, violations } = await callAgentJson(
+      llm,
+      request,
+      RiskSizeRecommendationSchema
+    );
 
     const recommendedSizeRaw = validated.success ? validated.data.recommended_size : null;
     const recommended = typeof recommendedSizeRaw === 'number' ? recommendedSizeRaw : Number.NaN;
@@ -109,18 +121,16 @@ export class RiskAdvisor {
           reason: missingOutput ? 'missing_output_text' : 'invalid_output',
           confidence: 0
         };
-    const violations = missingOutput ? ['missing_output_text'] : validated.success ? [] : ['invalid_output'];
-
     this.persistDecision({
+      llm,
       opportunityId: input.opportunityId,
       mode,
       baseline: { deterministic_size: deterministicSize, min_size: boundedMin, constraints: input.constraints },
       output,
       call,
+      parsed,
       request,
       promptEnvelope,
-      promptVersion: this.deps.promptVersion,
-      policyHashes: this.deps.policyHashes,
       violations,
       nowMs
     });
@@ -158,29 +168,38 @@ export class RiskAdvisor {
   }
 
   private persistDecision(args: {
+    llm?: AgentLlmContext<'RiskAgent'>;
     opportunityId: string;
     mode: 'disabled' | 'shadow' | 'advisory';
     baseline: unknown;
     output: { recommended_size: number; reason: string; confidence: number };
     call: LLMCallResult;
+    parsed?: unknown;
     request?: LLMRequest;
     promptEnvelope: unknown;
-    promptVersion: string;
-    policyHashes: { tradePolicyHash: string; riskConfigHash: string };
-    violations: string[];
+    promptVersion?: string;
+    policyHashes?: AgentPolicyHashes;
+    violations?: string[];
     nowMs: number;
   }): void {
+    const llm =
+      args.llm ??
+      withAgent('RiskAgent', {
+        config: this.resolveLlmConfig(),
+        client: this.resolveLlmClient(),
+        promptVersion: args.promptVersion ?? this.resolvePromptVersion(),
+        policyHashes: args.policyHashes ?? this.resolvePolicyHashes()
+      });
     const request: LLMRequest =
       args.request ??
       ({
         endpoint: 'chat.completions',
-        model: this.deps.llmConfig.agents.RiskAgent.model,
+        model: llm.config.agents.RiskAgent.model,
         temperature: 0,
         messages: []
       } satisfies LLMRequest);
 
-    logLLMDecision({
-      agent: 'RiskAgent',
+    logAgentDecision(llm, {
       mode: args.mode,
       task: 'recommend_size',
       subject: args.opportunityId,
@@ -189,26 +208,53 @@ export class RiskAdvisor {
       confidence: args.output.confidence,
       applied: args.mode === 'advisory',
       clamp: {
-        raw: safeParseJSON(args.call.outputText),
+        raw: args.parsed,
         final: args.output,
         bounds: { recommended_size: ['min_size', 'deterministic_size'] },
-        violations: args.violations
+        violations: args.violations ?? []
       },
       nowMs: args.nowMs,
       call: args.call,
       request,
       promptEnvelopeForHash: args.promptEnvelope,
       contextForHash: args.baseline,
-      promptVersion: args.promptVersion,
-      policyHashes: args.policyHashes,
-      providerFallback: {
-        providerId: this.deps.llmConfig.agents.RiskAgent.provider,
-        baseUrl: this.deps.llmConfig.providers[this.deps.llmConfig.agents.RiskAgent.provider].baseUrl,
-        endpoint: request.endpoint,
-        model: request.model
-      },
-      store: this.deps.eventStore
+      messageBus: this.deps.messageBus,
+      store: this.resolveStore()
     });
+  }
+
+  private resolveLlmConfig(): AppLLMConfig {
+    const config = this.deps.config ?? this.deps.llmConfig;
+    if (!config) {
+      throw new Error('RiskAdvisor requires config');
+    }
+    return config;
+  }
+
+  private resolveLlmClient(): LLMClientPort<'RiskAgent'> {
+    const client = this.deps.client ?? this.deps.llmClient;
+    if (!client) {
+      throw new Error('RiskAdvisor requires client');
+    }
+    return client;
+  }
+
+  private resolveStore(): EventStore | undefined {
+    return this.deps.store ?? this.deps.eventStore;
+  }
+
+  private resolvePromptVersion(): string {
+    if (!this.deps.promptVersion) {
+      throw new Error('RiskAdvisor requires promptVersion');
+    }
+    return this.deps.promptVersion;
+  }
+
+  private resolvePolicyHashes(): AgentPolicyHashes {
+    if (!this.deps.policyHashes) {
+      throw new Error('RiskAdvisor requires policyHashes');
+    }
+    return this.deps.policyHashes;
   }
 }
 

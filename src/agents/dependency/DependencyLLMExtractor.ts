@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import type { LLMConfig as AppLLMConfig } from '../../config/llm.js';
 import type { EventStore } from '../../core/EventStore.js';
+import type { MessageBus } from '../../core/MessageBus.js';
+import type { RuntimeEventMap } from '../../core/runtimeEvents.js';
 import {
   clampDependencyConfidence,
   dependencyEdgeKey,
@@ -10,7 +12,7 @@ import {
   withSortedMarkets
 } from '../../domain/dependency.js';
 import { logLLMDecision } from '../../services/llm/LLMDecisionLogger.js';
-import type { LLMCallResult, LLMRequest } from '../../services/llm/types.js';
+import type { LLMCallResult, LLMClientPort, LLMRequest } from '../../services/llm/types.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import { safeParseJSON } from '../../utils/serialization.js';
 
@@ -41,18 +43,17 @@ interface DependencyExtractorOutput {
   edges: Array<z.infer<typeof RawDependencyEdgeSchema>>;
 }
 
-export interface DependencyLLMExtractorDeps {
+interface DependencyLLMExtractorDeps {
   llmConfig: AppLLMConfig;
-  llmClient: {
-    call: (agent: 'ScannerAgent', request: LLMRequest, nowMs?: number) => Promise<LLMCallResult>;
-  };
+  llmClient: LLMClientPort<'ScannerAgent'>;
   promptVersion: string;
   policyHashes: { tradePolicyHash: string; riskConfigHash: string };
+  messageBus?: MessageBus<RuntimeEventMap>;
   eventStore?: EventStore;
   metrics?: Pick<MetricsStore, 'record'>;
 }
 
-export interface DependencyLLMExtractionResult {
+interface DependencyLLMExtractionResult {
   edges: DependencyEdge[];
   reason: string;
 }
@@ -186,6 +187,7 @@ export function createDependencyLLMExtractor(
         endpoint: request.endpoint,
         model: request.model
       },
+      messageBus: deps.messageBus,
       store: deps.eventStore
     });
 

@@ -1,19 +1,21 @@
 import type { TradePolicy } from '../../config/policy.js';
 import type { MarketAllowlist } from '../../domain/allowlist.js';
 import type { MarketPair } from '../../domain/market.js';
-import { messageBus } from '../../core/MessageBus.js';
+import { resolveMessageBus, type MessageBus } from '../../core/MessageBus.js';
+import type { RuntimeEventMap } from '../../core/runtimeEvents.js';
 import { LearningInsightEventSchema } from '../../domain/llm.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import type { MarketInfo, PolymarketClob } from '../../services/PolymarketClob.js';
 import type { WebSearchClient, WebSearchContent, WebSearchQueryOptions, WebSearchResult } from '../../services/websearch/WebSearchClient.js';
+import { mapWithConcurrency } from '../../utils/concurrency.js';
 import { clamp01 } from '../../utils/math.js';
-import { runWithConcurrency } from '../../utils/concurrency.js';
 
 const MAX_CONTENT_URLS = 8;
 
-export interface SignalAggregatorConfig {
+interface SignalAggregatorConfig {
   policy: TradePolicy;
   marketPairs: MarketPair[];
+  messageBus?: MessageBus<RuntimeEventMap>;
   allowlist?: Pick<MarketAllowlist, 'isAllowed'>;
   clob: PolymarketClob;
   exa?: WebSearchClient;
@@ -25,6 +27,7 @@ export interface SignalAggregatorConfig {
 
 export class SignalAggregatorAgent {
   private policy: TradePolicy;
+  private readonly messageBus: MessageBus<RuntimeEventMap>;
   private marketPairs: MarketPair[];
   private readonly allowlist?: Pick<MarketAllowlist, 'isAllowed'>;
   private readonly clob: PolymarketClob;
@@ -41,6 +44,7 @@ export class SignalAggregatorAgent {
 
   constructor(config: SignalAggregatorConfig) {
     this.policy = config.policy;
+    this.messageBus = resolveMessageBus<RuntimeEventMap>(config.messageBus, 'SignalAggregatorAgent');
     this.marketPairs = config.marketPairs;
     this.allowlist = config.allowlist;
     this.clob = config.clob;
@@ -142,7 +146,7 @@ export class SignalAggregatorAgent {
       }
 
       const maxConcurrency = Math.max(1, Math.floor(this.policy.evWebSearchMaxConcurrency));
-      await runWithConcurrency(pending, maxConcurrency, async (pair) => {
+      await mapWithConcurrency(pending, maxConcurrency, async (pair) => {
         try {
           const meta = await this.getMarketMeta(pair.marketId, nowMs);
           const queries = buildQueries(meta?.question ?? pair.marketId, meta?.outcomes ?? ['yes', 'no']);
@@ -167,7 +171,7 @@ export class SignalAggregatorAgent {
           };
 
           LearningInsightEventSchema.parse(payload);
-          messageBus.emit('learning:insight', payload);
+          this.messageBus.emit('learning:insight', payload);
           this.insightCache.set(pair.marketId, { expiresAtMs: nowMs + ttlMs });
           this.recordMetric('insight_emitted', { marketId: pair.marketId, confidence: insight.confidence });
         } catch (error) {
@@ -201,12 +205,16 @@ export class SignalAggregatorAgent {
     const maxConcurrency = Math.max(1, Math.floor(this.policy.evWebSearchMaxConcurrency));
 
     if (primary) {
-      const searchResults = await runWithConcurrency(queries, maxConcurrency, async (query) => primary.search(query, options));
+      const searchResults = await mapWithConcurrency(queries, maxConcurrency, async (query) =>
+        primary.search(query, options)
+      );
       results = searchResults.flat();
     }
 
     if (results.length === 0 && secondary) {
-      const searchResults = await runWithConcurrency(queries, maxConcurrency, async (query) => secondary.search(query, options));
+      const searchResults = await mapWithConcurrency(queries, maxConcurrency, async (query) =>
+        secondary.search(query, options)
+      );
       results = searchResults.flat();
     }
 

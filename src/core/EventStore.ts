@@ -1,9 +1,14 @@
 import Database from 'better-sqlite3';
-import { existsSync, mkdirSync, renameSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import type { IdempotencyRecord } from '../domain/idempotency.js';
 import type { MetricEvent, MetricEventType } from '../telemetry/metrics.js';
+import {
+  isCorruptDatabaseError,
+  isReadonlyDatabaseMovedError,
+  rotateSqliteFiles
+} from './EventStoreRecovery.js';
 
 export interface StoredEvent {
   id: string;
@@ -16,17 +21,30 @@ export interface StoredEvent {
   };
 }
 
-export interface EventStoreOptions {
+interface EventStoreOptions {
   dbPath: string;
 }
 
-export interface StoredDecision {
+export interface StoredDecisionRecord {
+  id: string;
+  subjectId: string;
+  timestampMs: number;
+  agent: string;
+  decisionJson: unknown;
+  reasoningJson: unknown;
+}
+
+interface StoredDecision {
   id: string;
   subjectId: string;
   timestamp: number;
   agent: string;
   decision: unknown;
   reasoning: unknown;
+}
+
+export interface DecisionStore {
+  persistDecision(record: StoredDecisionRecord): void;
 }
 
 const SCHEMA_SQL = `
@@ -99,7 +117,16 @@ CREATE TABLE IF NOT EXISTS idempotency (
 CREATE INDEX IF NOT EXISTS idx_idempotency_updated_at ON idempotency (updated_at);
 `;
 
-const SQLITE_FILE_SUFFIXES = ['', '-wal', '-shm'] as const;
+function parseStoredJson<T>(value: string, context: string): T {
+  try {
+    return JSON.parse(value) as T;
+  } catch (error) {
+    throw new Error(
+      `[event-store] failed to parse ${context}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  }
+}
 
 export class EventStore {
   private db!: Database.Database;
@@ -145,8 +172,8 @@ export class EventStore {
       id: row.id,
       timestamp: row.ts,
       type: row.type,
-      payload: JSON.parse(row.payload),
-      metadata: JSON.parse(row.metadata)
+      payload: parseStoredJson(row.payload, `events.payload for id=${row.id}`),
+      metadata: parseStoredJson(row.metadata, `events.metadata for id=${row.id}`)
     }));
   }
 
@@ -198,8 +225,8 @@ export class EventStore {
       id: row.id,
       timestamp: row.ts,
       type: row.type,
-      payload: JSON.parse(row.payload),
-      metadata: JSON.parse(row.metadata)
+      payload: parseStoredJson(row.payload, `events.payload for id=${row.id}`),
+      metadata: parseStoredJson(row.metadata, `events.metadata for id=${row.id}`)
     }));
   }
 
@@ -214,8 +241,8 @@ export class EventStore {
       id: row.id,
       timestamp: row.ts,
       type: row.type,
-      payload: JSON.parse(row.payload),
-      metadata: JSON.parse(row.metadata)
+      payload: parseStoredJson(row.payload, `events.payload for id=${row.id}`),
+      metadata: parseStoredJson(row.metadata, `events.metadata for id=${row.id}`)
     };
   }
 
@@ -292,7 +319,7 @@ export class EventStore {
     return rows.map((row) => ({
       type: row.type as MetricEventType,
       timestamp: row.ts,
-      data: JSON.parse(row.data)
+      data: parseStoredJson(row.data, `metrics.data for type=${row.type} ts=${row.ts}`)
     }));
   }
 
@@ -309,7 +336,7 @@ export class EventStore {
     return rows.map((row) => ({
       type: row.type as MetricEventType,
       timestamp: row.ts,
-      data: JSON.parse(row.data)
+      data: parseStoredJson(row.data, `metrics.data for type=${row.type} ts=${row.ts}`)
     }));
   }
 
@@ -321,14 +348,7 @@ export class EventStore {
     });
   }
 
-  persistDecision(record: {
-    id: string;
-    subjectId: string;
-    timestampMs: number;
-    agent: string;
-    decisionJson: unknown;
-    reasoningJson: unknown;
-  }): void {
+  persistDecision(record: StoredDecisionRecord): void {
     this.runWrite(() => {
       this.insertDecision.run(
         record.id,
@@ -394,8 +414,8 @@ export class EventStore {
       subjectId: row.opportunity_id,
       timestamp: row.ts,
       agent: row.agent,
-      decision: JSON.parse(row.decision_json),
-      reasoning: JSON.parse(row.reasoning_json)
+      decision: parseStoredJson(row.decision_json, `decisions.decision_json for id=${row.id}`),
+      reasoning: parseStoredJson(row.reasoning_json, `decisions.reasoning_json for id=${row.id}`)
     }));
   }
 
@@ -460,39 +480,5 @@ export class EventStore {
       // Intentionally ignore close failures during recovery.
     }
     this.openDatabase();
-  }
-}
-
-function isReadonlyDatabaseMovedError(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const code = (error as { code?: unknown }).code;
-  return code === 'SQLITE_READONLY_DBMOVED';
-}
-
-function isCorruptDatabaseError(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false;
-  const code = String((error as { code?: unknown }).code ?? '').toUpperCase();
-  if (
-    code === 'SQLITE_CORRUPT' ||
-    code === 'SQLITE_NOTADB' ||
-    code.includes('CORRUPT') ||
-    code.includes('NOTADB') ||
-    code === 'UNKNOWN_SQLITE_ERROR_779'
-  ) {
-    return true;
-  }
-  const message = String((error as { message?: unknown }).message ?? '').toLowerCase();
-  return (
-    message.includes('database disk image is malformed') ||
-    message.includes('file is not a database') ||
-    message.includes('database is corrupt')
-  );
-}
-
-function rotateSqliteFiles(sourceBase: string, backupBase: string): void {
-  for (const suffix of SQLITE_FILE_SUFFIXES) {
-    const sourcePath = `${sourceBase}${suffix}`;
-    if (!existsSync(sourcePath)) continue;
-    renameSync(sourcePath, `${backupBase}${suffix}`);
   }
 }

@@ -1,4 +1,14 @@
 import type { Env } from './env.js';
+import {
+  resolveAlchemyRpcBaseUrl,
+  resolveAlchemyWsBaseUrl,
+  resolveAnkrRpcBaseUrl,
+  resolveChainstackRpcBaseUrl,
+  resolveChainstackWsBaseUrl,
+  resolvePrivateRpcBaseUrl,
+  resolvePrivateWsBaseUrl
+} from './rpcUrls.js';
+import { resolvePolymarketClobBaseUrl, resolvePolymarketDataApiBaseUrl } from '../services/PolymarketUrls.js';
 
 export interface InfraConfigSnapshot {
   ops: {
@@ -76,12 +86,12 @@ export function getInfraConfigSnapshot(env: Env): InfraConfigSnapshot {
       metricsPruneIntervalMs: env.EVENT_STORE_METRICS_PRUNE_INTERVAL_MS
     },
     polymarket: {
-      clobBaseUrl: env.POLYMARKET_CLOB_BASE_URL,
+      clobBaseUrl: resolvePolymarketClobBaseUrl(env.POLYMARKET_CLOB_BASE_URL),
       clobTimeoutMs: env.POLYMARKET_CLOB_TIMEOUT_MS,
       clobRateLimitPerSecond: env.POLYMARKET_CLOB_RATE_LIMIT_PER_SEC,
       clobRateLimitWindowMs: env.POLYMARKET_CLOB_RATE_LIMIT_WINDOW_MS,
       clobActiveOrdersPath: env.POLYMARKET_CLOB_ACTIVE_ORDERS_PATH,
-      dataApiBaseUrl: env.POLYMARKET_DATA_API_BASE_URL,
+      dataApiBaseUrl: resolvePolymarketDataApiBaseUrl(env.POLYMARKET_DATA_API_BASE_URL),
       dataApiTimeoutMs: env.POLYMARKET_DATA_API_TIMEOUT_MS,
       wsUrl: env.POLYMARKET_WS_URL,
       userWsUrl: env.POLYMARKET_USER_WS_URL,
@@ -97,8 +107,8 @@ export function getInfraConfigSnapshot(env: Env): InfraConfigSnapshot {
       waitTimeoutMs: env.RPC_WAIT_TIMEOUT_MS,
       providers: {
         alchemy: {
-          rpcBaseUrl: env.ALCHEMY_RPC_URL,
-          wsBaseUrl: env.ALCHEMY_WS_URL,
+          rpcBaseUrl: resolveAlchemyRpcBaseUrl(env.ALCHEMY_RPC_URL),
+          wsBaseUrl: resolveAlchemyWsBaseUrl(env.ALCHEMY_WS_URL),
           apiKeyConfigured: Boolean(env.ALCHEMY_API_KEY),
           rps: env.ALCHEMY_RPC_RPS
         },
@@ -107,18 +117,18 @@ export function getInfraConfigSnapshot(env: Env): InfraConfigSnapshot {
           rps: env.QUICKNODE_RPC_RPS
         },
         chainstack: {
-          rpcBaseUrl: env.CHAINSTACK_RPC_URL,
-          wsBaseUrl: env.CHAINSTACK_WS_URL,
+          rpcBaseUrl: resolveChainstackRpcBaseUrl(env.CHAINSTACK_RPC_URL),
+          wsBaseUrl: resolveChainstackWsBaseUrl(env.CHAINSTACK_WS_URL),
           rps: env.CHAINSTACK_RPC_RPS
         },
         ankr: {
-          rpcBaseUrl: env.ANKR_RPC_URL,
+          rpcBaseUrl: resolveAnkrRpcBaseUrl(env.ANKR_RPC_URL),
           rpsPhase1: env.ANKR_RPC_RPS_PHASE1,
           rpsPhase2: env.ANKR_RPC_RPS_PHASE2
         },
         privateNode: {
-          rpcBaseUrl: env.PRIVATE_RPC_URL,
-          wsBaseUrl: env.PRIVATE_WS_URL,
+          rpcBaseUrl: resolvePrivateRpcBaseUrl(env.PRIVATE_RPC_URL),
+          wsBaseUrl: resolvePrivateWsBaseUrl(env.PRIVATE_WS_URL),
           rps: env.PRIVATE_RPC_RPS
         }
       }

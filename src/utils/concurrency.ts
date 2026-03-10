@@ -1,13 +1,13 @@
-export async function mapWithConcurrency<T, R>(
+export function mapWithConcurrency<T, R>(
   items: T[],
   maxConcurrency: number,
   worker: (item: T, index: number) => Promise<R>
 ): Promise<R[]> {
-  if (items.length === 0) return [];
-  return runWithConcurrency(items, maxConcurrency, worker);
+  if (items.length === 0) return Promise.resolve([]);
+  return runConcurrentWorkers(items, maxConcurrency, worker);
 }
 
-export async function runWithConcurrency<T, R>(
+async function runConcurrentWorkers<T, R>(
   items: T[],
   maxConcurrency: number,
   worker: (item: T, index: number) => Promise<R>

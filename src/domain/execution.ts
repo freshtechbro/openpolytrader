@@ -1,4 +1,9 @@
 import type { OrderPlacement, OrderResponse } from './types.js';
+export {
+  createInitialBasketExecutionState,
+  transitionBasketExecutionState
+} from './basketExecution.js';
+export type { BasketExecutionLegState } from './basketExecution.js';
 
 /**
  * ExecutionState describes the lifecycle of a paired YES/NO arbitrage execution.
@@ -77,124 +82,6 @@ export interface PairedExecutionState {
   error?: string;
 }
 
-export type BasketExecutionState =
-  | 'submitted'
-  | 'failed'
-  | 'partial_fill'
-  | 'unwinding'
-  | 'complete';
-
-export interface BasketExecutionLegState {
-  marketId: string;
-  yesTokenId: string;
-  noTokenId: string;
-  state: 'pending' | 'submitted' | 'acked' | 'filled' | 'failed' | 'cancelled' | 'blocked';
-  executionId?: string;
-  idempotencyKey?: string;
-  reason?: string;
-}
-
-export interface BasketExecutionTrackingState {
-  id: string;
-  opportunityId: string;
-  state: BasketExecutionState;
-  legs: BasketExecutionLegState[];
-  createdAtMs: number;
-  lastUpdatedMs: number;
-  error?: string;
-}
-
-export type BasketExecutionEvent =
-  | { type: 'LEG_SUBMITTED'; atMs: number; marketId: string }
-  | { type: 'LEG_ACKED'; atMs: number; marketId: string }
-  | { type: 'LEG_FILLED'; atMs: number; marketId: string }
-  | { type: 'LEG_FAILED'; atMs: number; marketId: string; reason?: string }
-  | { type: 'LEG_CANCELLED'; atMs: number; marketId: string; reason?: string }
-  | { type: 'PARTIAL_FILL'; atMs: number; reason?: string }
-  | { type: 'START_UNWIND'; atMs: number }
-  | { type: 'UNWIND_COMPLETE'; atMs: number }
-  | { type: 'UNWIND_FAILED'; atMs: number; reason?: string }
-  | { type: 'FAILED'; atMs: number; reason?: string }
-  | { type: 'COMPLETE'; atMs: number };
-
-export function createInitialBasketExecutionState(input: {
-  id: string;
-  opportunityId: string;
-  markets: Array<{ marketId: string; yesTokenId: string; noTokenId: string; idempotencyKey?: string }>;
-  createdAtMs: number;
-}): BasketExecutionTrackingState {
-  return {
-    id: input.id,
-    opportunityId: input.opportunityId,
-    state: 'submitted',
-    createdAtMs: input.createdAtMs,
-    lastUpdatedMs: input.createdAtMs,
-    legs: input.markets.map((market) => ({
-      marketId: market.marketId,
-      yesTokenId: market.yesTokenId,
-      noTokenId: market.noTokenId,
-      idempotencyKey: market.idempotencyKey,
-      state: 'pending'
-    }))
-  };
-}
-
-export function transitionBasketExecutionState(
-  current: BasketExecutionTrackingState,
-  event: BasketExecutionEvent
-): BasketExecutionTrackingState {
-  const next: BasketExecutionTrackingState = {
-    ...current,
-    legs: current.legs.slice(),
-    lastUpdatedMs: event.atMs
-  };
-
-  switch (event.type) {
-    case 'LEG_SUBMITTED':
-      next.legs = setLegState(next.legs, event.marketId, 'submitted');
-      return next;
-    case 'LEG_ACKED':
-      next.legs = setLegState(next.legs, event.marketId, 'acked');
-      return next;
-    case 'LEG_FILLED':
-      next.legs = setLegState(next.legs, event.marketId, 'filled');
-      return next;
-    case 'LEG_FAILED':
-      next.legs = setLegState(next.legs, event.marketId, 'failed', event.reason);
-      next.state = 'failed';
-      next.error = event.reason ?? 'leg_failed';
-      return next;
-    case 'LEG_CANCELLED':
-      next.legs = setLegState(next.legs, event.marketId, 'cancelled', event.reason);
-      return next;
-    case 'PARTIAL_FILL':
-      next.state = 'partial_fill';
-      next.error = event.reason;
-      return next;
-    case 'START_UNWIND':
-      next.state = 'unwinding';
-      return next;
-    case 'UNWIND_COMPLETE':
-      next.state = 'complete';
-      next.error = undefined;
-      return next;
-    case 'UNWIND_FAILED':
-      next.state = 'failed';
-      next.error = event.reason ?? 'unwind_failed';
-      return next;
-    case 'FAILED':
-      next.state = 'failed';
-      next.error = event.reason ?? 'basket_failed';
-      return next;
-    case 'COMPLETE':
-      next.state = 'complete';
-      next.error = undefined;
-      return next;
-    default:
-      return next;
-  }
-}
-
 export interface UnwindResult {
   ok: boolean;
   leg: 'yes' | 'no';
@@ -204,7 +91,7 @@ export interface UnwindResult {
   error?: string;
 }
 
-export interface InitialExecutionInput {
+interface InitialExecutionInput {
   id: string;
   opportunityId: string;
   marketId: string;
@@ -235,6 +122,190 @@ export type ExecutionEvent =
   | { type: 'COMPLETE'; atMs: number };
 
 const TERMINAL_STATES = new Set<ExecutionState>(['failed', 'timeout', 'complete']);
+const SUBMIT_PENDING_STATES: ExecutionState[] = [
+  'idle',
+  'submitting',
+  'yes_pending',
+  'no_pending',
+  'both_pending'
+];
+const ACK_STATES: ExecutionState[] = [
+  'yes_pending',
+  'no_pending',
+  'both_pending',
+  'yes_acked',
+  'no_acked',
+  'both_acked'
+];
+const FILL_STATES: ExecutionState[] = [
+  'yes_pending',
+  'no_pending',
+  'both_pending',
+  'yes_acked',
+  'no_acked',
+  'both_acked',
+  'yes_filled',
+  'no_filled'
+];
+const CANCELLABLE_STATES: ExecutionState[] = [
+  'submitting',
+  'yes_pending',
+  'no_pending',
+  'both_pending',
+  'yes_acked',
+  'no_acked',
+  'both_acked',
+  'yes_filled',
+  'no_filled',
+  'partial_fill'
+];
+const FAILABLE_STATES: ExecutionState[] = [
+  ...CANCELLABLE_STATES,
+  'unwinding',
+  'cancelling'
+];
+const FINALIZE_STATES: ExecutionState[] = ['both_filled', 'unwind_complete', 'cancelled'];
+const AWAIT_ACK_STATES = new Set<ExecutionState>([
+  'submitting',
+  'yes_pending',
+  'no_pending',
+  'both_pending'
+]);
+const AWAIT_FILL_STATES = new Set<ExecutionState>([
+  'yes_acked',
+  'no_acked',
+  'both_acked',
+  'yes_filled',
+  'no_filled'
+]);
+const UNWIND_STATES = new Set<ExecutionState>(['partial_fill', 'unwinding']);
+const FINALIZE_ACTION_STATES = new Set<ExecutionState>([
+  'both_filled',
+  'unwind_complete',
+  'unwind_failed',
+  'cancelled'
+]);
+const NO_ACTION_STATES = new Set<ExecutionState>(['failed', 'timeout', 'complete']);
+
+type TransitionEvent = ExecutionEvent['type'];
+type TypedExecutionEvent<K extends TransitionEvent> = Extract<ExecutionEvent, { type: K }>;
+type ExecutionTransitionHandler<K extends TransitionEvent> = {
+  allowedStates: ExecutionState[];
+  apply: (next: PairedExecutionState, event: TypedExecutionEvent<K>) => void;
+};
+type ExecutionTransitionHandlers = {
+  [K in TransitionEvent]: ExecutionTransitionHandler<K>;
+};
+
+const EXECUTION_TRANSITIONS: ExecutionTransitionHandlers = {
+  SUBMIT_STARTED: {
+    allowedStates: ['idle'],
+    apply: (next) => {
+      next.state = 'submitting';
+    }
+  },
+  SUBMIT_YES: {
+    allowedStates: SUBMIT_PENDING_STATES,
+    apply: (next) => {
+      next.yesSubmitted = true;
+      next.state = next.noSubmitted ? 'both_pending' : 'yes_pending';
+    }
+  },
+  SUBMIT_NO: {
+    allowedStates: SUBMIT_PENDING_STATES,
+    apply: (next) => {
+      next.noSubmitted = true;
+      next.state = next.yesSubmitted ? 'both_pending' : 'no_pending';
+    }
+  },
+  ACK_YES: {
+    allowedStates: ACK_STATES,
+    apply: (next, event) => {
+      next.yesAcked = true;
+      next.yesOrder = event.order;
+      next.state = next.noAcked ? 'both_acked' : 'yes_acked';
+    }
+  },
+  ACK_NO: {
+    allowedStates: ACK_STATES,
+    apply: (next, event) => {
+      next.noAcked = true;
+      next.noOrder = event.order;
+      next.state = next.yesAcked ? 'both_acked' : 'no_acked';
+    }
+  },
+  FILL_YES: {
+    allowedStates: FILL_STATES,
+    apply: (next) => {
+      next.yesFilled = true;
+      next.state = next.noFilled ? 'both_filled' : 'yes_filled';
+    }
+  },
+  FILL_NO: {
+    allowedStates: FILL_STATES,
+    apply: (next) => {
+      next.noFilled = true;
+      next.state = next.yesFilled ? 'both_filled' : 'no_filled';
+    }
+  },
+  PARTIAL_FILL: {
+    allowedStates: ['yes_filled', 'no_filled', 'both_acked'],
+    apply: (next) => {
+      next.state = 'partial_fill';
+    }
+  },
+  START_UNWIND: {
+    allowedStates: ['partial_fill'],
+    apply: (next) => {
+      next.state = 'unwinding';
+    }
+  },
+  UNWIND_COMPLETE: {
+    allowedStates: ['unwinding'],
+    apply: (next) => {
+      next.state = 'unwind_complete';
+    }
+  },
+  UNWIND_FAILED: {
+    allowedStates: ['unwinding'],
+    apply: (next, event) => {
+      next.state = 'unwind_failed';
+      next.error = event.error ?? 'unwind_failed';
+    }
+  },
+  CANCEL_STARTED: {
+    allowedStates: CANCELLABLE_STATES,
+    apply: (next) => {
+      next.state = 'cancelling';
+    }
+  },
+  CANCELLED: {
+    allowedStates: ['cancelling'],
+    apply: (next) => {
+      next.state = 'cancelled';
+    }
+  },
+  FAILED: {
+    allowedStates: FAILABLE_STATES,
+    apply: (next, event) => {
+      next.state = 'failed';
+      next.error = event.reason;
+    }
+  },
+  TIMEOUT: {
+    allowedStates: FAILABLE_STATES,
+    apply: (next, event) => {
+      next.state = 'timeout';
+      next.error = event.phase ?? 'timeout';
+    }
+  },
+  COMPLETE: {
+    allowedStates: FINALIZE_STATES,
+    apply: (next) => {
+      next.state = 'complete';
+    }
+  }
+};
 
 export function createInitialExecutionState(input: InitialExecutionInput): PairedExecutionState {
   return {
@@ -270,202 +341,24 @@ export function transitionExecutionState(
     ...current,
     lastUpdatedMs: event.atMs
   };
-
-  switch (event.type) {
-    case 'SUBMIT_STARTED':
-      assertTransition(current.state, event.type, ['idle']);
-      next.state = 'submitting';
-      return next;
-    case 'SUBMIT_YES':
-      assertTransition(current.state, event.type, [
-        'idle',
-        'submitting',
-        'yes_pending',
-        'no_pending',
-        'both_pending'
-      ]);
-      next.yesSubmitted = true;
-      next.state = next.noSubmitted ? 'both_pending' : 'yes_pending';
-      return next;
-    case 'SUBMIT_NO':
-      assertTransition(current.state, event.type, [
-        'idle',
-        'submitting',
-        'yes_pending',
-        'no_pending',
-        'both_pending'
-      ]);
-      next.noSubmitted = true;
-      next.state = next.yesSubmitted ? 'both_pending' : 'no_pending';
-      return next;
-    case 'ACK_YES':
-      assertTransition(current.state, event.type, [
-        'yes_pending',
-        'no_pending',
-        'both_pending',
-        'yes_acked',
-        'no_acked',
-        'both_acked'
-      ]);
-      next.yesAcked = true;
-      next.yesOrder = event.order;
-      next.state = next.noAcked ? 'both_acked' : 'yes_acked';
-      return next;
-    case 'ACK_NO':
-      assertTransition(current.state, event.type, [
-        'yes_pending',
-        'no_pending',
-        'both_pending',
-        'yes_acked',
-        'no_acked',
-        'both_acked'
-      ]);
-      next.noAcked = true;
-      next.noOrder = event.order;
-      next.state = next.yesAcked ? 'both_acked' : 'no_acked';
-      return next;
-    case 'FILL_YES':
-      assertTransition(current.state, event.type, [
-        'yes_pending',
-        'no_pending',
-        'both_pending',
-        'yes_acked',
-        'no_acked',
-        'both_acked',
-        'yes_filled',
-        'no_filled'
-      ]);
-      next.yesFilled = true;
-      next.state = next.noFilled ? 'both_filled' : 'yes_filled';
-      return next;
-    case 'FILL_NO':
-      assertTransition(current.state, event.type, [
-        'yes_pending',
-        'no_pending',
-        'both_pending',
-        'yes_acked',
-        'no_acked',
-        'both_acked',
-        'yes_filled',
-        'no_filled'
-      ]);
-      next.noFilled = true;
-      next.state = next.yesFilled ? 'both_filled' : 'no_filled';
-      return next;
-    case 'PARTIAL_FILL':
-      assertTransition(current.state, event.type, ['yes_filled', 'no_filled', 'both_acked']);
-      next.state = 'partial_fill';
-      return next;
-    case 'START_UNWIND':
-      assertTransition(current.state, event.type, ['partial_fill']);
-      next.state = 'unwinding';
-      return next;
-    case 'UNWIND_COMPLETE':
-      assertTransition(current.state, event.type, ['unwinding']);
-      next.state = 'unwind_complete';
-      return next;
-    case 'UNWIND_FAILED':
-      assertTransition(current.state, event.type, ['unwinding']);
-      next.state = 'unwind_failed';
-      next.error = event.error ?? 'unwind_failed';
-      return next;
-    case 'CANCEL_STARTED':
-      assertTransition(current.state, event.type, [
-        'submitting',
-        'yes_pending',
-        'no_pending',
-        'both_pending',
-        'yes_acked',
-        'no_acked',
-        'both_acked',
-        'yes_filled',
-        'no_filled',
-        'partial_fill'
-      ]);
-      next.state = 'cancelling';
-      return next;
-    case 'CANCELLED':
-      assertTransition(current.state, event.type, ['cancelling']);
-      next.state = 'cancelled';
-      return next;
-    case 'FAILED':
-      assertTransition(current.state, event.type, [
-        'submitting',
-        'yes_pending',
-        'no_pending',
-        'both_pending',
-        'yes_acked',
-        'no_acked',
-        'both_acked',
-        'yes_filled',
-        'no_filled',
-        'partial_fill',
-        'unwinding',
-        'cancelling'
-      ]);
-      next.state = 'failed';
-      next.error = event.reason;
-      return next;
-    case 'TIMEOUT':
-      assertTransition(current.state, event.type, [
-        'submitting',
-        'yes_pending',
-        'no_pending',
-        'both_pending',
-        'yes_acked',
-        'no_acked',
-        'both_acked',
-        'yes_filled',
-        'no_filled',
-        'partial_fill',
-        'unwinding',
-        'cancelling'
-      ]);
-      next.state = 'timeout';
-      next.error = event.phase ?? 'timeout';
-      return next;
-    case 'COMPLETE':
-      assertTransition(current.state, event.type, ['both_filled', 'unwind_complete', 'cancelled']);
-      next.state = 'complete';
-      return next;
-    default:
-      throw new Error(`Unknown execution event: ${(event as { type?: unknown }).type ?? 'unknown'}`);
+  const handler = EXECUTION_TRANSITIONS[event.type];
+  if (!handler) {
+    throw new Error(`Unknown execution event: ${(event as { type?: unknown }).type ?? 'unknown'}`);
   }
+  assertTransition(current.state, event.type, handler.allowedStates);
+  handler.apply(next, event as never);
+  return next;
 }
 
 export function getRequiredAction(state: ExecutionState): ExecutionAction {
-  switch (state) {
-    case 'idle':
-      return 'submit';
-    case 'submitting':
-    case 'yes_pending':
-    case 'no_pending':
-    case 'both_pending':
-      return 'await_ack';
-    case 'yes_acked':
-    case 'no_acked':
-    case 'both_acked':
-    case 'yes_filled':
-    case 'no_filled':
-      return 'await_fill';
-    case 'both_filled':
-      return 'finalize';
-    case 'partial_fill':
-    case 'unwinding':
-      return 'unwind';
-    case 'cancelling':
-      return 'cancel';
-    case 'unwind_complete':
-    case 'unwind_failed':
-    case 'cancelled':
-      return 'finalize';
-    case 'failed':
-    case 'timeout':
-    case 'complete':
-      return 'none';
-    default:
-      return 'none';
-  }
+  if (state === 'idle') return 'submit';
+  if (AWAIT_ACK_STATES.has(state)) return 'await_ack';
+  if (AWAIT_FILL_STATES.has(state)) return 'await_fill';
+  if (UNWIND_STATES.has(state)) return 'unwind';
+  if (state === 'cancelling') return 'cancel';
+  if (FINALIZE_ACTION_STATES.has(state)) return 'finalize';
+  if (NO_ACTION_STATES.has(state)) return 'none';
+  return 'none';
 }
 
 function assertTransition(
@@ -540,20 +433,4 @@ export function isOrderFailure(response: unknown): boolean {
 
 export function coerceOrderResponse(response: unknown): OrderResponse {
   return response as OrderResponse;
-}
-
-function setLegState(
-  legs: BasketExecutionLegState[],
-  marketId: string,
-  state: BasketExecutionLegState['state'],
-  reason?: string
-): BasketExecutionLegState[] {
-  return legs.map((leg) => {
-    if (leg.marketId !== marketId) return leg;
-    return {
-      ...leg,
-      state,
-      reason: reason ?? leg.reason
-    };
-  });
 }

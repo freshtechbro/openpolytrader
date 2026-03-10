@@ -1,7 +1,8 @@
+import { writeCliFailureDetail } from '../utils/cliFailure.js';
 import { main } from './dependencyRelationCatalog.js';
 
 main(process.argv).catch((error) => {
-  // eslint-disable-next-line no-console
-  console.error(error);
+  writeCliFailureDetail('dependencyRelationCatalog failed', error);
   process.exitCode = 1;
+  return;
 });

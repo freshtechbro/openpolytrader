@@ -22,6 +22,28 @@ export function safeParseJSON(value: string | null | undefined): unknown {
   return null;
 }
 
+interface SafeParseJsonBodyResult {
+  parsed: unknown;
+  failed: boolean;
+}
+
+export function safeParseJsonBody(value: string | null | undefined): SafeParseJsonBodyResult {
+  if (typeof value !== 'string') {
+    return { parsed: null, failed: false };
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return { parsed: null, failed: false };
+  }
+
+  try {
+    return { parsed: JSON.parse(trimmed), failed: false };
+  } catch {
+    return { parsed: null, failed: true };
+  }
+}
+
 function tryParse(text: string): unknown | null {
   try {
     return JSON.parse(text);

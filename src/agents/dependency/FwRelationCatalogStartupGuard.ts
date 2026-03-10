@@ -1,7 +1,7 @@
 import type { TradePolicy } from '../../config/policy.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 
-export interface FwRelationCatalogStartupGuardInput {
+interface FwRelationCatalogStartupGuardInput {
   tradingEnabled: boolean;
   tradingMode: string;
   policy: TradePolicy;
@@ -40,4 +40,3 @@ export function ensureFwRelationCatalogStartupReady(
     `[boot] FW relation catalog is empty (${input.relationCatalogPath}). Run \`npm run catalog:relations:dev\` (or \`npm run catalog:relations\`) before paper-mode validation.`
   );
 }
-

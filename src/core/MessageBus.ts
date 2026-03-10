@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 
-export type EventMap = Record<string, unknown>;
+type EventMap = Record<string, unknown>;
 
 export class MessageBus<E extends EventMap = EventMap> {
   private emitter = new EventEmitter();
@@ -26,4 +26,23 @@ export class MessageBus<E extends EventMap = EventMap> {
   }
 }
 
-export const messageBus = new MessageBus();
+export function createMessageBus<E extends EventMap = EventMap>(maxListeners = 50): MessageBus<E> {
+  return new MessageBus<E>(maxListeners);
+}
+
+function isTestRuntime(): boolean {
+  return typeof globalThis === 'object' && '__vitest_worker__' in globalThis;
+}
+
+export function resolveMessageBus<E extends EventMap = EventMap>(
+  bus: MessageBus<E> | undefined,
+  owner?: string
+): MessageBus<E> {
+  if (bus) {
+    return bus;
+  }
+  if (owner && !isTestRuntime()) {
+    throw new Error(`${owner} requires a shared messageBus`);
+  }
+  return createMessageBus<E>();
+}

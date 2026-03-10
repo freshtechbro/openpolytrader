@@ -1,8 +1,9 @@
 import OpenAI, { APIConnectionTimeoutError, APIError } from 'openai';
 
+import { extractResponseText } from './extractResponseText.js';
 import type { LLMCallResult, LLMRequest, LLMUsage } from './types.js';
 
-export interface OpenAISdkClientOptions {
+interface OpenAISdkClientOptions {
   apiKey: string;
   baseURL: string;
   defaultHeaders?: Record<string, string>;
@@ -124,7 +125,7 @@ export class LLMTimeoutError extends Error {
   }
 }
 
-export class LLMAPIError extends Error {
+class LLMAPIError extends Error {
   status?: number;
   requestIdHeader?: string;
 
@@ -135,84 +136,7 @@ export class LLMAPIError extends Error {
 }
 
 export function extractTextFromOpenAIResponse(value: unknown): string | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-
-  const direct = coerceText(record.output_text ?? record.completion ?? record.text);
-  if (direct) return direct;
-
-  const parts: string[] = [];
-  collectTextParts(record.content, parts);
-  collectTextParts(record.message, parts);
-  collectTextParts(record.choices, parts);
-  collectTextParts(record.output, parts);
-  if (parts.length === 0) {
-    collectTextParts(record, parts);
-  }
-
-  if (parts.length === 0) return null;
-  return parts.join('\n').trim();
-}
-
-function coerceText(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function collectTextParts(input: unknown, parts: string[]): void {
-  if (!input) return;
-  if (typeof input === 'string') {
-    const trimmed = input.trim();
-    if (trimmed.length > 0) parts.push(trimmed);
-    return;
-  }
-  if (Array.isArray(input)) {
-    for (const item of input) {
-      collectTextParts(item, parts);
-    }
-    return;
-  }
-  if (typeof input !== 'object') return;
-
-  const record = input as Record<string, unknown>;
-  const text = record.text;
-  if (typeof text === 'string') {
-    const trimmed = text.trim();
-    if (trimmed.length > 0) parts.push(trimmed);
-  } else if (text) {
-    collectTextParts(text, parts);
-  }
-
-  const content = record.content;
-  if (typeof content === 'string') {
-    const trimmed = content.trim();
-    if (trimmed.length > 0) parts.push(trimmed);
-  } else if (content) {
-    collectTextParts(content, parts);
-  }
-
-  const value = record.value;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (trimmed.length > 0) parts.push(trimmed);
-  }
-
-  const completion = record.completion;
-  if (typeof completion === 'string') {
-    const trimmed = completion.trim();
-    if (trimmed.length > 0) parts.push(trimmed);
-  }
-
-  const outputText = record.output_text;
-  if (typeof outputText === 'string') {
-    const trimmed = outputText.trim();
-    if (trimmed.length > 0) parts.push(trimmed);
-  }
-
-  if (record.message) collectTextParts(record.message, parts);
-  if (record.choices) collectTextParts(record.choices, parts);
-  if (record.output) collectTextParts(record.output, parts);
+  return extractResponseText(value, { fallbackToRoot: true });
 }
 
 function mapChatUsage(

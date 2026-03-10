@@ -1,11 +1,15 @@
 import type { TradePolicy } from '../config/policy.js';
 import type { OrderBookState } from './orderbook.js';
-import { depthAtTopLevels, isAlignedToTick, spread, sweepCost } from './orderbook.js';
+import { sweepCost } from './orderbook.js';
 import type { VenueId } from '../config/venues.js';
 import type { FeeModel } from './feeModel.js';
 import type { FwBasketMarketLeg, FwProjectionMetadata } from './opportunity.js';
+import {
+  evaluateBaseGates,
+  resolveTickSize
+} from './gateSupport.js';
 
-export interface GateDecision {
+interface GateDecision {
   passed: boolean;
   reasons: string[];
   costPerSet: number;
@@ -29,7 +33,7 @@ export interface GateDecision {
   };
 }
 
-export interface GateInputs {
+interface GateInputs {
   yesBook: OrderBookState;
   noBook: OrderBookState;
   policy: TradePolicy;
@@ -38,7 +42,7 @@ export interface GateInputs {
   tickSize?: number;
 }
 
-export interface EvGateInputs {
+interface EvGateInputs {
   yesBook: OrderBookState;
   noBook: OrderBookState;
   policy: TradePolicy;
@@ -50,7 +54,7 @@ export interface EvGateInputs {
   tickSize?: number;
 }
 
-export interface FwProjectionGateInputs {
+interface FwProjectionGateInputs {
   yesBook: OrderBookState;
   noBook: OrderBookState;
   policy: TradePolicy;
@@ -60,7 +64,7 @@ export interface FwProjectionGateInputs {
   tickSize?: number;
 }
 
-export interface FwBasketGateInputs {
+interface FwBasketGateInputs {
   policy: TradePolicy;
   nowMs: number;
   markets: FwBasketMarketLeg[];
@@ -70,24 +74,181 @@ export interface FwBasketGateInputs {
   desiredSize?: number;
 }
 
-export interface ExecutableLowerBoundInputs {
-  theoreticalEdge: number;
-  feeCost: number;
-  sweepSlippageCost: number;
-  stalenessPenalty: number;
-  stabilityPenalty: number;
-  executionRiskBuffer: number;
+interface DepthGateInputs {
+  reasons: string[];
+  maxSizeByDepth: number;
+  minOrderSize: number;
+  desiredSize: number | undefined;
+  depthBufferMultiplier: number;
 }
 
-export interface ExecutableLowerBoundResult {
-  edgeLowerBound: number;
-  components: {
-    theoreticalEdge: number;
-    feeCost: number;
-    sweepSlippageCost: number;
-    stalenessPenalty: number;
-    stabilityPenalty: number;
-    executionRiskBuffer: number;
+interface DepthDiagnosticsInput {
+  maxSizeByDepth: number;
+  minOrderSize: number;
+  desiredSize: number | undefined;
+  depthBufferMultiplier: number;
+  depthHeadroomFraction: number;
+  depthLevels: number;
+  depthAtLevels: { yes: number; no: number };
+}
+
+interface EvThresholdInput {
+  reasons: string[];
+  policy: TradePolicy;
+  evEdge: number;
+  confidence: number;
+}
+
+interface SlippageGateInput {
+  reasons: string[];
+  book: OrderBookState;
+  askPrice: number;
+  desiredSize: number | undefined;
+  maxSlippage: number;
+  exhaustedReason: string;
+  slippageReason: string;
+}
+
+function applyDepthGateChecks(input: DepthGateInputs): void {
+  if (input.maxSizeByDepth <= 0) {
+    input.reasons.push('insufficient_depth');
+  }
+  if (input.maxSizeByDepth < input.minOrderSize) {
+    input.reasons.push('below_min_order_size');
+  }
+  if (input.desiredSize !== undefined && input.desiredSize > input.maxSizeByDepth) {
+    input.reasons.push('desired_size_exceeds_depth');
+  }
+  if (input.desiredSize !== undefined && input.desiredSize > 0 && input.depthBufferMultiplier > 0) {
+    const requiredDepth = input.desiredSize * input.depthBufferMultiplier;
+    if (input.maxSizeByDepth < requiredDepth) {
+      input.reasons.push('insufficient_depth_buffer');
+    }
+  }
+}
+
+function buildDepthDiagnostics(input: DepthDiagnosticsInput): GateDecision['depthDiagnostics'] {
+  const needsDepthDiagnostics =
+    input.maxSizeByDepth <= 0 ||
+    input.maxSizeByDepth < input.minOrderSize ||
+    (input.desiredSize !== undefined && input.desiredSize > input.maxSizeByDepth) ||
+    (input.desiredSize !== undefined &&
+      input.desiredSize > 0 &&
+      input.depthBufferMultiplier > 0 &&
+      input.maxSizeByDepth < input.desiredSize * input.depthBufferMultiplier);
+
+  return needsDepthDiagnostics
+    ? {
+        minOrderSize: input.minOrderSize,
+        maxSizeByDepth: input.maxSizeByDepth,
+        depthHeadroomFraction: input.depthHeadroomFraction,
+        depthLevels: input.depthLevels,
+        depthAtLevels: input.depthAtLevels
+      }
+    : undefined;
+}
+
+function resolveEffectiveConfidenceMin(policy: TradePolicy, evEdge: number): number {
+  const evMaxEdge = Number.isFinite(policy.evMaxEdge) ? policy.evMaxEdge : policy.maxEdge;
+  const confidenceFloor = Number.isFinite(policy.evConfidenceMinFloor)
+    ? Math.max(0, Math.min(policy.evConfidenceMinFloor, policy.evConfidenceMin))
+    : policy.evConfidenceMin;
+  const confidenceSpan =
+    Number.isFinite(evMaxEdge) && evMaxEdge > policy.evEdgeRequired
+      ? evMaxEdge - policy.evEdgeRequired
+      : 0;
+  const confidenceRatio =
+    Number.isFinite(evEdge) && confidenceSpan > 0
+      ? Math.max(0, Math.min(1, (evEdge - policy.evEdgeRequired) / confidenceSpan))
+      : 0;
+  return policy.evConfidenceMin - confidenceRatio * (policy.evConfidenceMin - confidenceFloor);
+}
+
+function applyEvThresholdChecks(input: EvThresholdInput): number {
+  if (!Number.isFinite(input.evEdge)) {
+    input.reasons.push('ev_edge_invalid');
+  }
+  if (!Number.isFinite(input.confidence)) {
+    input.reasons.push('ev_confidence_invalid');
+  }
+
+  const evMaxEdge = Number.isFinite(input.policy.evMaxEdge) ? input.policy.evMaxEdge : input.policy.maxEdge;
+  const effectiveConfidenceMin = resolveEffectiveConfidenceMin(input.policy, input.evEdge);
+  if (Number.isFinite(input.evEdge)) {
+    if (input.evEdge < input.policy.evEdgeRequired) {
+      input.reasons.push('ev_edge_below_threshold');
+    }
+    if (input.evEdge > evMaxEdge) {
+      input.reasons.push('ev_edge_above_max');
+    }
+  }
+  if (Number.isFinite(input.confidence) && input.confidence < effectiveConfidenceMin) {
+    input.reasons.push('ev_confidence_below_min');
+  }
+  return evMaxEdge;
+}
+
+function applyEdgeThresholdChecks(reasons: string[], policy: TradePolicy, edge: number): void {
+  if (edge < policy.edgeRequired) {
+    reasons.push('edge_below_threshold');
+  }
+
+  if (edge > policy.maxEdge) {
+    reasons.push('edge_above_max');
+  }
+}
+
+function applyMinEdgeTicksCheck(
+  reasons: string[],
+  minEdgeTicks: number,
+  edge: number,
+  tickSize: number | undefined
+): number | undefined {
+  const edgeInTicks = tickSize && tickSize > 0 ? edge / tickSize : undefined;
+  if (minEdgeTicks > 0 && edgeInTicks !== undefined && edgeInTicks < minEdgeTicks) {
+    reasons.push('edge_below_min_ticks');
+  }
+  return edgeInTicks;
+}
+
+function applySlippageChecks(input: SlippageGateInput): void {
+  if (input.desiredSize === undefined || input.desiredSize <= 0) {
+    return;
+  }
+
+  const sweep = sweepCost(input.book.asks, input.desiredSize);
+  if (sweep.exhausted) {
+    input.reasons.push(input.exhaustedReason);
+  }
+
+  const slippage = input.askPrice > 0 ? (sweep.averagePrice - input.askPrice) / input.askPrice : 0;
+  if (slippage > input.maxSlippage) {
+    input.reasons.push(input.slippageReason);
+  }
+}
+
+function buildGateDecision(input: {
+  base: ReturnType<typeof evaluateBaseGates>;
+  reasons: string[];
+  costPerSet: number;
+  edge: number;
+  edgeInTicks?: number;
+  maxSizeByDepth: number;
+  depthDiagnostics?: GateDecision['depthDiagnostics'];
+}): GateDecision {
+  return {
+    passed: input.reasons.length === 0,
+    reasons: input.reasons,
+    costPerSet: input.costPerSet,
+    edge: input.edge,
+    edgeInTicks: input.edgeInTicks,
+    maxSizeByDepth: input.maxSizeByDepth,
+    yesStalenessMs: input.base.yesStalenessMs,
+    noStalenessMs: input.base.noStalenessMs,
+    legSkewMs: input.base.legSkewMs,
+    depthAtLevels: input.base.depthAtLevels,
+    tickDiagnostics: input.base.tickDiagnostics,
+    depthDiagnostics: input.depthDiagnostics
   };
 }
 
@@ -101,96 +262,63 @@ export function evaluateGates(inputs: GateInputs): GateDecision {
   const noAskPrice = base.noAskPrice;
   const costPerSet = yesAskPrice + noAskPrice;
   const edge = 1 - costPerSet;
-
-  if (edge < policy.edgeRequired) {
-    reasons.push('edge_below_threshold');
-  }
-
-  if (edge > policy.maxEdge) {
-    reasons.push('edge_above_max');
-  }
+  applyEdgeThresholdChecks(reasons, policy, edge);
 
   const maxSizeByDepth = Math.min(base.depthAtLevels.yes, base.depthAtLevels.no) * policy.depthHeadroomFraction;
-
-  if (maxSizeByDepth <= 0) {
-    reasons.push('insufficient_depth');
-  }
-
   const minOrderSize = base.minOrderSize;
-  if (maxSizeByDepth < minOrderSize) {
-    reasons.push('below_min_order_size');
-  }
-
-  if (desiredSize !== undefined && desiredSize > maxSizeByDepth) {
-    reasons.push('desired_size_exceeds_depth');
-  }
-
-  if (desiredSize !== undefined && desiredSize > 0 && policy.depthBufferMultiplier > 0) {
-    const requiredDepth = desiredSize * policy.depthBufferMultiplier;
-    if (maxSizeByDepth < requiredDepth) {
-      reasons.push('insufficient_depth_buffer');
-    }
-  }
+  applyDepthGateChecks({
+    reasons,
+    maxSizeByDepth,
+    minOrderSize,
+    desiredSize,
+    depthBufferMultiplier: policy.depthBufferMultiplier
+  });
 
   const tickSize = resolveTickSize(
     inputs.tickSize,
     Math.max(yesBook.tickSize, noBook.tickSize),
     policy.fallbackTickSize
   );
-  const edgeInTicks = tickSize > 0 ? edge / tickSize : undefined;
-  if (policy.minEdgeTicks > 0 && edgeInTicks !== undefined && edgeInTicks < policy.minEdgeTicks) {
-    reasons.push('edge_below_min_ticks');
-  }
+  const edgeInTicks = applyMinEdgeTicksCheck(reasons, policy.minEdgeTicks, edge, tickSize);
+  const maxSlippage = policy.entrySlippageToleranceBps / 10000;
+  applySlippageChecks({
+    reasons,
+    book: yesBook,
+    askPrice: yesAskPrice,
+    desiredSize,
+    maxSlippage,
+    exhaustedReason: 'yes_depth_exhausted',
+    slippageReason: 'yes_slippage_exceeded'
+  });
+  applySlippageChecks({
+    reasons,
+    book: noBook,
+    askPrice: noAskPrice,
+    desiredSize,
+    maxSlippage,
+    exhaustedReason: 'no_depth_exhausted',
+    slippageReason: 'no_slippage_exceeded'
+  });
 
-  if (desiredSize !== undefined && desiredSize > 0) {
-    const maxSlippage = policy.entrySlippageToleranceBps / 10000;
-    const yesSweep = sweepCost(yesBook.asks, desiredSize);
-    const noSweep = sweepCost(noBook.asks, desiredSize);
-    if (yesSweep.exhausted) reasons.push('yes_depth_exhausted');
-    if (noSweep.exhausted) reasons.push('no_depth_exhausted');
+  const depthDiagnostics = buildDepthDiagnostics({
+    maxSizeByDepth,
+    minOrderSize,
+    desiredSize,
+    depthBufferMultiplier: policy.depthBufferMultiplier,
+    depthHeadroomFraction: policy.depthHeadroomFraction,
+    depthLevels: base.depthLevels,
+    depthAtLevels: base.depthAtLevels
+  });
 
-    const yesSlippage =
-      yesAskPrice > 0 ? (yesSweep.averagePrice - yesAskPrice) / yesAskPrice : 0;
-    const noSlippage =
-      noAskPrice > 0 ? (noSweep.averagePrice - noAskPrice) / noAskPrice : 0;
-
-    if (yesSlippage > maxSlippage) reasons.push('yes_slippage_exceeded');
-    if (noSlippage > maxSlippage) reasons.push('no_slippage_exceeded');
-  }
-
-  const needsDepthDiagnostics =
-    maxSizeByDepth <= 0 ||
-    maxSizeByDepth < minOrderSize ||
-    (desiredSize !== undefined && desiredSize > maxSizeByDepth) ||
-    (desiredSize !== undefined &&
-      desiredSize > 0 &&
-      policy.depthBufferMultiplier > 0 &&
-      maxSizeByDepth < desiredSize * policy.depthBufferMultiplier);
-
-  const depthDiagnostics = needsDepthDiagnostics
-    ? {
-        minOrderSize,
-        maxSizeByDepth,
-        depthHeadroomFraction: policy.depthHeadroomFraction,
-        depthLevels: base.depthLevels,
-        depthAtLevels: base.depthAtLevels
-      }
-    : undefined;
-
-  return {
-    passed: reasons.length === 0,
+  return buildGateDecision({
+    base,
     reasons,
     costPerSet,
     edge,
     edgeInTicks,
     maxSizeByDepth,
-    yesStalenessMs: base.yesStalenessMs,
-    noStalenessMs: base.noStalenessMs,
-    legSkewMs: base.legSkewMs,
-    depthAtLevels: base.depthAtLevels,
-    tickDiagnostics: base.tickDiagnostics,
     depthDiagnostics
-  };
+  });
 }
 
 export function evaluateEvGates(inputs: EvGateInputs): GateDecision {
@@ -204,117 +332,52 @@ export function evaluateEvGates(inputs: EvGateInputs): GateDecision {
   const sideDepth = side === 'yes' ? base.depthAtLevels.yes : base.depthAtLevels.no;
   const maxSizeByDepth = sideDepth * policy.depthHeadroomFraction;
   const minOrderSize = Math.max(sideBook.minOrderSize, 0);
-
-  if (!Number.isFinite(evEdge)) {
-    reasons.push('ev_edge_invalid');
-  }
-
-  if (!Number.isFinite(confidence)) {
-    reasons.push('ev_confidence_invalid');
-  }
-
-  if (maxSizeByDepth <= 0) {
-    reasons.push('insufficient_depth');
-  }
-
-  if (maxSizeByDepth < minOrderSize) {
-    reasons.push('below_min_order_size');
-  }
-
-  if (desiredSize !== undefined && desiredSize > maxSizeByDepth) {
-    reasons.push('desired_size_exceeds_depth');
-  }
-
-  if (desiredSize !== undefined && desiredSize > 0 && policy.depthBufferMultiplier > 0) {
-    const requiredDepth = desiredSize * policy.depthBufferMultiplier;
-    if (maxSizeByDepth < requiredDepth) {
-      reasons.push('insufficient_depth_buffer');
-    }
-  }
-
-  const evMaxEdge = Number.isFinite(policy.evMaxEdge) ? policy.evMaxEdge : policy.maxEdge;
-  const confidenceFloor = Number.isFinite(policy.evConfidenceMinFloor)
-    ? Math.max(0, Math.min(policy.evConfidenceMinFloor, policy.evConfidenceMin))
-    : policy.evConfidenceMin;
-  const confidenceSpan =
-    Number.isFinite(evMaxEdge) && evMaxEdge > policy.evEdgeRequired
-      ? evMaxEdge - policy.evEdgeRequired
-      : 0;
-  const confidenceRatio =
-    Number.isFinite(evEdge) && confidenceSpan > 0
-      ? Math.max(0, Math.min(1, (evEdge - policy.evEdgeRequired) / confidenceSpan))
-      : 0;
-  const effectiveConfidenceMin =
-    policy.evConfidenceMin - confidenceRatio * (policy.evConfidenceMin - confidenceFloor);
-  if (Number.isFinite(evEdge)) {
-    if (evEdge < policy.evEdgeRequired) {
-      reasons.push('ev_edge_below_threshold');
-    }
-    if (evEdge > evMaxEdge) {
-      reasons.push('ev_edge_above_max');
-    }
-  }
-
-  if (Number.isFinite(confidence) && confidence < effectiveConfidenceMin) {
-    reasons.push('ev_confidence_below_min');
-  }
+  applyDepthGateChecks({
+    reasons,
+    maxSizeByDepth,
+    minOrderSize,
+    desiredSize,
+    depthBufferMultiplier: policy.depthBufferMultiplier
+  });
+  applyEvThresholdChecks({ reasons, policy, evEdge, confidence });
 
   const tickSize = resolveTickSize(
     inputs.tickSize,
     Math.max(yesBook.tickSize, noBook.tickSize),
     policy.fallbackTickSize
   );
-  const edgeInTicks = tickSize > 0 && Number.isFinite(evEdge) ? evEdge / tickSize : undefined;
-  if (policy.minEdgeTicks > 0 && edgeInTicks !== undefined && edgeInTicks < policy.minEdgeTicks) {
-    reasons.push('edge_below_min_ticks');
-  }
+  const edgeInTicks =
+    Number.isFinite(evEdge) ? applyMinEdgeTicksCheck(reasons, policy.minEdgeTicks, evEdge, tickSize) : undefined;
+  const maxSlippage = policy.entrySlippageToleranceBps / 10000;
+  applySlippageChecks({
+    reasons,
+    book: sideBook,
+    askPrice: sideAskPrice,
+    desiredSize,
+    maxSlippage,
+    exhaustedReason: side === 'yes' ? 'yes_depth_exhausted' : 'no_depth_exhausted',
+    slippageReason: side === 'yes' ? 'yes_slippage_exceeded' : 'no_slippage_exceeded'
+  });
 
-  if (desiredSize !== undefined && desiredSize > 0) {
-    const maxSlippage = policy.entrySlippageToleranceBps / 10000;
-    const sweep = sweepCost(sideBook.asks, desiredSize);
-    if (sweep.exhausted) reasons.push(side === 'yes' ? 'yes_depth_exhausted' : 'no_depth_exhausted');
+  const depthDiagnostics = buildDepthDiagnostics({
+    maxSizeByDepth,
+    minOrderSize,
+    desiredSize,
+    depthBufferMultiplier: policy.depthBufferMultiplier,
+    depthHeadroomFraction: policy.depthHeadroomFraction,
+    depthLevels: base.depthLevels,
+    depthAtLevels: base.depthAtLevels
+  });
 
-    const slippage =
-      sideAskPrice > 0 ? (sweep.averagePrice - sideAskPrice) / sideAskPrice : 0;
-
-    if (slippage > maxSlippage) {
-      reasons.push(side === 'yes' ? 'yes_slippage_exceeded' : 'no_slippage_exceeded');
-    }
-  }
-
-  const needsDepthDiagnostics =
-    maxSizeByDepth <= 0 ||
-    maxSizeByDepth < minOrderSize ||
-    (desiredSize !== undefined && desiredSize > maxSizeByDepth) ||
-    (desiredSize !== undefined &&
-      desiredSize > 0 &&
-      policy.depthBufferMultiplier > 0 &&
-      maxSizeByDepth < desiredSize * policy.depthBufferMultiplier);
-
-  const depthDiagnostics = needsDepthDiagnostics
-    ? {
-        minOrderSize,
-        maxSizeByDepth,
-        depthHeadroomFraction: policy.depthHeadroomFraction,
-        depthLevels: base.depthLevels,
-        depthAtLevels: base.depthAtLevels
-      }
-    : undefined;
-
-  return {
-    passed: reasons.length === 0,
+  return buildGateDecision({
+    base,
     reasons,
     costPerSet: sideAskPrice,
     edge: evEdge,
     edgeInTicks,
     maxSizeByDepth,
-    yesStalenessMs: base.yesStalenessMs,
-    noStalenessMs: base.noStalenessMs,
-    legSkewMs: base.legSkewMs,
-    depthAtLevels: base.depthAtLevels,
-    tickDiagnostics: base.tickDiagnostics,
     depthDiagnostics
-  };
+  });
 }
 
 export function evaluateFwProjectionGates(inputs: FwProjectionGateInputs): GateDecision {
@@ -462,28 +525,7 @@ export function evaluateGatesWithFees(input: GateInputs & { venue: VenueId; feeM
   };
 }
 
-export function computeExecutableLowerBound(
-  input: ExecutableLowerBoundInputs
-): ExecutableLowerBoundResult {
-  const components = {
-    theoreticalEdge: ensureFinite(input.theoreticalEdge),
-    feeCost: clampNonNegative(input.feeCost),
-    sweepSlippageCost: clampNonNegative(input.sweepSlippageCost),
-    stalenessPenalty: clampNonNegative(input.stalenessPenalty),
-    stabilityPenalty: clampNonNegative(input.stabilityPenalty),
-    executionRiskBuffer: clampNonNegative(input.executionRiskBuffer)
-  };
-  return {
-    edgeLowerBound:
-      components.theoreticalEdge -
-      components.feeCost -
-      components.sweepSlippageCost -
-      components.stalenessPenalty -
-      components.stabilityPenalty -
-      components.executionRiskBuffer,
-    components
-  };
-}
+export { computeExecutableLowerBound } from './gateSupport.js';
 
 function fail(reasons: string[]): GateDecision {
   return {
@@ -493,163 +535,4 @@ function fail(reasons: string[]): GateDecision {
     edge: 0,
     maxSizeByDepth: 0
   };
-}
-
-function ensureFinite(value: number): number {
-  return Number.isFinite(value) ? value : 0;
-}
-
-function clampNonNegative(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, value);
-}
-
-function evaluateBaseGates(
-  inputs: GateInputs | EvGateInputs
-): {
-  fatal: boolean;
-  reasons: string[];
-  yesAskPrice: number;
-  noAskPrice: number;
-  yesStalenessMs: number;
-  noStalenessMs: number;
-  legSkewMs: number;
-  depthLevels: number;
-  depthAtLevels: { yes: number; no: number };
-  minOrderSize: number;
-  tickDiagnostics?: GateDecision['tickDiagnostics'];
-} {
-  const { yesBook, noBook, policy, nowMs } = inputs;
-  const reasons: string[] = [];
-
-  if (!yesBook.bestAsk || !noBook.bestAsk) {
-    reasons.push('missing_best_ask');
-    return {
-      fatal: true,
-      reasons,
-      yesAskPrice: 0,
-      noAskPrice: 0,
-      yesStalenessMs: 0,
-      noStalenessMs: 0,
-      legSkewMs: 0,
-      depthLevels: Math.max(1, Math.floor(policy.minDepthLevels)),
-      depthAtLevels: { yes: 0, no: 0 },
-      minOrderSize: 0
-    };
-  }
-
-  const yesAskPrice = yesBook.bestAsk.price;
-  const noAskPrice = noBook.bestAsk.price;
-  if (!Number.isFinite(yesAskPrice) || yesAskPrice <= 0 || yesAskPrice > 1) {
-    reasons.push('yes_best_ask_invalid');
-  }
-  if (!Number.isFinite(noAskPrice) || noAskPrice <= 0 || noAskPrice > 1) {
-    reasons.push('no_best_ask_invalid');
-  }
-  if (reasons.length > 0) {
-    return {
-      fatal: true,
-      reasons,
-      yesAskPrice,
-      noAskPrice,
-      yesStalenessMs: 0,
-      noStalenessMs: 0,
-      legSkewMs: 0,
-      depthLevels: Math.max(1, Math.floor(policy.minDepthLevels)),
-      depthAtLevels: { yes: 0, no: 0 },
-      minOrderSize: 0
-    };
-  }
-
-  const yesBidPrice = yesBook.bestBid?.price;
-  const noBidPrice = noBook.bestBid?.price;
-  if (
-    typeof yesBidPrice === 'number' &&
-    Number.isFinite(yesBidPrice) &&
-    yesBidPrice > yesAskPrice
-  ) {
-    reasons.push('yes_book_crossed');
-  }
-  if (
-    typeof noBidPrice === 'number' &&
-    Number.isFinite(noBidPrice) &&
-    noBidPrice > noAskPrice
-  ) {
-    reasons.push('no_book_crossed');
-  }
-
-  const yesSpread = spread(yesBook);
-  const noSpread = spread(noBook);
-
-  if (yesSpread === null || noSpread === null) {
-    reasons.push('missing_spread');
-  } else {
-    if (yesSpread > policy.maxSpread) reasons.push('yes_spread_too_wide');
-    if (noSpread > policy.maxSpread) reasons.push('no_spread_too_wide');
-  }
-
-  const yesStalenessMs = Math.max(0, nowMs - yesBook.lastUpdateMs);
-  const noStalenessMs = Math.max(0, nowMs - noBook.lastUpdateMs);
-  const maxStaleness = policy.maxBookStalenessMs ?? policy.orderbookFreshnessMs;
-  if (policy.requireFreshBook !== false) {
-    if (yesStalenessMs > maxStaleness) reasons.push('yes_book_stale');
-    if (noStalenessMs > maxStaleness) reasons.push('no_book_stale');
-  }
-
-  const legSkewMs = Math.abs(yesBook.lastUpdateMs - noBook.lastUpdateMs);
-  if (policy.maxLegSkewMs > 0 && legSkewMs > policy.maxLegSkewMs) {
-    reasons.push('leg_sync_skew');
-  }
-
-  const yesStable = nowMs - yesBook.stableSinceMs >= policy.topOfBookStabilityMs;
-  const noStable = nowMs - noBook.stableSinceMs >= policy.topOfBookStabilityMs;
-  if (!yesStable || !noStable) {
-    reasons.push('unstable_top_of_book');
-  }
-
-  const yesTickAligned = isAlignedToTick(yesAskPrice, yesBook.tickSize);
-  const noTickAligned = isAlignedToTick(noAskPrice, noBook.tickSize);
-  if (!yesTickAligned) {
-    reasons.push('yes_tick_misaligned');
-  }
-  if (!noTickAligned) {
-    reasons.push('no_tick_misaligned');
-  }
-
-  const depthLevels = Math.max(1, Math.floor(policy.minDepthLevels));
-  const yesDepth = depthAtTopLevels(yesBook.asks, depthLevels);
-  const noDepth = depthAtTopLevels(noBook.asks, depthLevels);
-  const depthAtLevels = { yes: yesDepth, no: noDepth };
-  const minOrderSize = Math.max(yesBook.minOrderSize, noBook.minOrderSize);
-
-  const tickDiagnostics =
-    !yesTickAligned || !noTickAligned
-      ? {
-          yes: { price: yesAskPrice, tickSize: yesBook.tickSize, aligned: yesTickAligned },
-          no: { price: noAskPrice, tickSize: noBook.tickSize, aligned: noTickAligned }
-        }
-      : undefined;
-
-  return {
-    fatal: false,
-    reasons,
-    yesAskPrice,
-    noAskPrice,
-    yesStalenessMs,
-    noStalenessMs,
-    legSkewMs,
-    depthLevels,
-    depthAtLevels,
-    minOrderSize,
-    tickDiagnostics
-  };
-}
-
-function resolveTickSize(...candidates: Array<number | undefined>): number {
-  const valid = candidates.filter(
-    (candidate): candidate is number =>
-      typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0
-  );
-  if (valid.length === 0) return 0;
-  return Math.max(...valid);
 }

@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 
 import type { AuthHeadersProvider } from './PolymarketClob.js';
 
-export interface PolymarketApiCreds {
+interface PolymarketApiCreds {
   apiKey: string;
   secret: string;
   passphrase: string;

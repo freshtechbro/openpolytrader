@@ -28,6 +28,11 @@ export function validateP0Config(policy: TradePolicy, risk: RiskConfig): void {
     throw new Error('Invalid config: fillTimeoutMs must be > 0 in near_zero_risk mode');
   }
 
+  validateEvPolicy(policy);
+  validateFwPolicy(policy);
+}
+
+function validateEvPolicy(policy: TradePolicy): void {
   if (policy.evEdgeRequired <= 0) {
     throw new Error(`Invalid config: evEdgeRequired=${policy.evEdgeRequired} (must be > 0)`);
   }
@@ -57,7 +62,9 @@ export function validateP0Config(policy: TradePolicy, risk: RiskConfig): void {
   if (policy.evWebSearchPrimary === 'firecrawl' && !policy.evWebSearchFirecrawlEnabled) {
     throw new Error('Invalid config: evWebSearchPrimary=firecrawl requires evWebSearchFirecrawlEnabled');
   }
+}
 
+function validateFwPolicy(policy: TradePolicy): void {
   if (policy.fwMaxPerMarketNotional > 0 && policy.fwMaxPortfolioNotional > 0) {
     if (policy.fwMaxPerMarketNotional > policy.fwMaxPortfolioNotional) {
       throw new Error(
@@ -101,5 +108,4 @@ export function validateP0Config(policy: TradePolicy, risk: RiskConfig): void {
       `Invalid config: fwRelationCandidatesPerMarketMax (${policy.fwRelationCandidatesPerMarketMax}) cannot exceed fwRelationCandidatesTotalMax (${policy.fwRelationCandidatesTotalMax})`
     );
   }
-
 }

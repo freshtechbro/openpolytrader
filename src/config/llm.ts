@@ -2,13 +2,26 @@ import { z } from 'zod';
 
 import type { Env } from './env.js';
 
-export const LLMProviderIdSchema = z.enum(['opencode-zen', 'openrouter']);
+const LLMProviderIdSchema = z.enum(['opencode-zen', 'openrouter']);
 export type LLMProviderId = z.infer<typeof LLMProviderIdSchema>;
 
 export type LLMExecutionMode = 'disabled' | 'shadow' | 'advisory';
 export type LLMLearningMode = 'disabled' | 'active';
 export type LLMAdvisoryMode = 'disabled' | 'advisory';
 export type LLMEndpoint = 'chat.completions' | 'responses' | 'messages';
+
+const DEFAULT_LLM_PROVIDER_HOST: Record<LLMProviderId, string> = {
+  'opencode-zen': 'opencode.ai',
+  openrouter: 'openrouter.ai'
+};
+
+const DEFAULT_LLM_PROVIDER_PATH: Record<LLMProviderId, string> = {
+  'opencode-zen': '/zen/v1',
+  openrouter: '/api/v1'
+};
+
+const HTTPS_PROTOCOL = 'https:';
+const URL_PROTOCOL_SEPARATOR = '//';
 
 export interface LLMProviderConfig {
   id: LLMProviderId;
@@ -116,6 +129,15 @@ function normalizeOptionalString(value: string | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function resolveDefaultProviderBaseUrl(providerId: LLMProviderId): string {
+  const origin = `${HTTPS_PROTOCOL}${URL_PROTOCOL_SEPARATOR}${DEFAULT_LLM_PROVIDER_HOST[providerId]}`;
+  return new URL(DEFAULT_LLM_PROVIDER_PATH[providerId], origin).toString().replace(/\/$/, '');
+}
+
+function resolveProviderBaseUrl(providerId: LLMProviderId, override: string | undefined): string {
+  return normalizeOptionalString(override) ?? resolveDefaultProviderBaseUrl(providerId);
+}
+
 function requireProviderIdsDistinct(primary: LLMProviderId, fallback: LLMProviderId): void {
   if (primary === fallback) {
     throw new Error(
@@ -157,7 +179,7 @@ export function loadLLMConfig(env: Env): LLMConfig {
   const providers = {
     [primaryProvider]: {
       id: primaryProvider,
-      baseUrl: env.LLM_PRIMARY_BASE_URL.trim(),
+      baseUrl: resolveProviderBaseUrl(primaryProvider, env.LLM_PRIMARY_BASE_URL),
       apiKey: primaryApiKey,
       defaultHeaders: primaryProvider === 'openrouter' ? openrouterHeaders : {},
       openrouter:
@@ -170,7 +192,7 @@ export function loadLLMConfig(env: Env): LLMConfig {
     },
     [fallbackProvider]: {
       id: fallbackProvider,
-      baseUrl: env.LLM_FALLBACK_BASE_URL.trim(),
+      baseUrl: resolveProviderBaseUrl(fallbackProvider, env.LLM_FALLBACK_BASE_URL),
       apiKey: fallbackApiKey,
       defaultHeaders: fallbackProvider === 'openrouter' ? openrouterHeaders : {},
       openrouter:

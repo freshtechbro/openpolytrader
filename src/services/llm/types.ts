@@ -1,3 +1,5 @@
+import type { LLMCallErrorInfo } from '../../domain/llm.js';
+
 export type LLMProviderId = 'opencode-zen' | 'openrouter';
 
 export type LLMAgentId =
@@ -19,6 +21,8 @@ export interface LLMUsage {
   totalTokens?: number;
 }
 
+export type LLMCallError = LLMCallErrorInfo;
+
 export interface LLMCallResult {
   status: 'success' | 'fallback' | 'timeout' | 'error' | 'disabled';
   providerId: LLMProviderId | null;
@@ -35,7 +39,7 @@ export interface LLMCallResult {
   requestIdBody?: string;
   responseId?: string;
   usage?: LLMUsage;
-  error?: { type: string; status?: number; message: string };
+  error?: LLMCallError;
   fallbackReason?: string;
 }
 
@@ -74,3 +78,7 @@ export interface LLMMessagesRequest {
 }
 
 export type LLMRequest = LLMChatRequest | LLMResponsesRequest | LLMMessagesRequest;
+
+export interface LLMClientPort<TAgent extends LLMAgentId = LLMAgentId> {
+  call(agent: TAgent, request: LLMRequest, nowMs?: number): Promise<LLMCallResult>;
+}

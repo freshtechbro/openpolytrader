@@ -1,5 +1,18 @@
-import type { OrderBookResponse } from '../services/PolymarketClob.js';
 import type { OrderBookLevel } from './types.js';
+
+export interface RawOrderBookLevel {
+  price: string;
+  size: string;
+}
+
+export interface RawOrderBookSnapshot {
+  bids: RawOrderBookLevel[];
+  asks: RawOrderBookLevel[];
+  min_order_size?: string;
+  tick_size?: string;
+  timestamp?: string;
+  hash?: string;
+}
 
 export interface OrderBookSnapshot {
   bids: OrderBookLevel[];
@@ -10,7 +23,7 @@ export interface OrderBookSnapshot {
   hash?: string;
 }
 
-export interface OrderBookDefaults {
+interface OrderBookDefaults {
   tickSize: number;
   minOrderSize: number;
 }
@@ -49,7 +62,7 @@ export function coercePositiveNumber(value: unknown): number | null {
 
 export function normalizeOrderBook(
   tokenId: string,
-  raw: OrderBookResponse,
+  raw: RawOrderBookSnapshot,
   receivedAtMs: number,
   defaults: OrderBookDefaults,
   previous?: OrderBookState

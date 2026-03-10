@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
-import type { EventStore } from '../../core/EventStore.js';
-import { messageBus } from '../../core/MessageBus.js';
+import type { DecisionStore, StoredDecisionRecord } from '../../core/EventStore.js';
+import type { MessageBus } from '../../core/MessageBus.js';
+import type { RuntimeEventMap } from '../../core/runtimeEvents.js';
 import { LLMDecisionReasoningV1Schema, LLMDecisionRecordV1Schema } from '../../domain/llm.js';
 import { sha256 } from '../../utils/crypto.js';
 import { clamp01 } from '../../utils/math.js';
 import type { LLMCallResult, LLMAgentId, LLMEndpoint, LLMMode, LLMProviderId, LLMRequest } from './types.js';
 
-export interface LLMDecisionLoggerArgs {
+interface LLMDecisionLoggerArgs {
   agent: LLMAgentId;
   mode: LLMMode;
   task: string;
@@ -31,7 +32,8 @@ export interface LLMDecisionLoggerArgs {
     endpoint: LLMEndpoint;
     model: string;
   };
-  store?: EventStore;
+  messageBus?: MessageBus<RuntimeEventMap>;
+  store?: DecisionStore;
 }
 
 export function logLLMDecision(args: LLMDecisionLoggerArgs): void {
@@ -52,17 +54,8 @@ export function logLLMDecision(args: LLMDecisionLoggerArgs): void {
   const promptHash = sha256(JSON.stringify(args.promptEnvelopeForHash));
   const contextHash = sha256(JSON.stringify(args.contextForHash));
 
-  const errorPayload =
-    args.call.error ??
-    (args.call.status === 'disabled' ? { type: 'disabled', message: 'disabled' } : undefined);
-
   const reasoning = {
-    provider: {
-      provider_id: args.call.providerId ?? args.providerFallback.providerId,
-      base_url: args.call.baseUrl ?? args.providerFallback.baseUrl,
-      endpoint: args.call.endpoint ?? args.providerFallback.endpoint,
-      model: args.call.model ?? args.providerFallback.model
-    },
+    provider: buildProviderPayload(args),
     request_identity: {
       request_id_header: args.call.requestIdHeader,
       request_id_body: args.call.requestIdBody,
@@ -80,28 +73,14 @@ export function logLLMDecision(args: LLMDecisionLoggerArgs): void {
     params: {
       temperature: args.request.temperature,
       top_p: args.request.top_p,
-      max_output_tokens:
-        args.request.endpoint === 'responses' ? args.request.max_output_tokens : args.request.max_tokens,
-      response_format: args.request.endpoint === 'chat.completions' ? args.request.response_format : undefined
+      max_output_tokens: getRequestMaxOutputTokens(args.request),
+      response_format: getChatResponseFormat(args.request)
     },
     hashes: { prompt_hash: promptHash, context_hash: contextHash, prompt_version: args.promptVersion },
-    usage: args.call.usage
-      ? {
-          input_tokens: args.call.usage.inputTokens,
-          output_tokens: args.call.usage.outputTokens,
-          total_tokens: args.call.usage.totalTokens
-        }
-      : undefined,
+    usage: buildUsagePayload(args.call),
     result: {
-      status:
-        args.call.status === 'fallback'
-          ? 'fallback'
-          : args.call.status === 'timeout'
-            ? 'timeout'
-            : args.call.status === 'error' || args.call.status === 'disabled'
-              ? 'error'
-              : 'success',
-      error: errorPayload
+      status: getReasoningStatus(args.call),
+      error: getErrorPayload(args.call)
     },
     policy_snapshots: {
       trade_policy_hash: args.policyHashes.tradePolicyHash,
@@ -112,8 +91,9 @@ export function logLLMDecision(args: LLMDecisionLoggerArgs): void {
 
   const decisionParsed = LLMDecisionRecordV1Schema.safeParse(decision);
   const reasoningParsed = LLMDecisionReasoningV1Schema.safeParse(reasoning);
+
   if (decisionParsed.success && reasoningParsed.success) {
-    messageBus.emit('llm:decision', {
+    args.messageBus?.emit('llm:decision', {
       decision: decisionParsed.data,
       reasoning: reasoningParsed.data,
       at_ms: args.nowMs
@@ -122,12 +102,61 @@ export function logLLMDecision(args: LLMDecisionLoggerArgs): void {
 
   const decisionPayload = decisionParsed.success ? decisionParsed.data : decision;
   const reasoningPayload = reasoningParsed.success ? reasoningParsed.data : reasoning;
-  args.store?.persistDecision({
+  const record: StoredDecisionRecord = {
     id: randomUUID(),
     subjectId: args.subject,
     timestampMs: args.nowMs,
     agent: args.agent,
     decisionJson: decisionPayload,
     reasoningJson: reasoningPayload
-  });
+  };
+  args.store?.persistDecision(record);
+}
+
+function buildProviderPayload(args: LLMDecisionLoggerArgs) {
+  return {
+    provider_id: args.call.providerId ?? args.providerFallback.providerId,
+    base_url: args.call.baseUrl ?? args.providerFallback.baseUrl,
+    endpoint: args.call.endpoint ?? args.providerFallback.endpoint,
+    model: args.call.model ?? args.providerFallback.model
+  };
+}
+
+function getRequestMaxOutputTokens(request: LLMRequest): number | undefined {
+  return request.endpoint === 'responses' ? request.max_output_tokens : request.max_tokens;
+}
+
+function getChatResponseFormat(request: LLMRequest) {
+  return request.endpoint === 'chat.completions' ? request.response_format : undefined;
+}
+
+function buildUsagePayload(call: LLMCallResult) {
+  if (!call.usage) return undefined;
+  return {
+    input_tokens: call.usage.inputTokens,
+    output_tokens: call.usage.outputTokens,
+    total_tokens: call.usage.totalTokens
+  };
+}
+
+function getReasoningStatus(call: LLMCallResult): 'success' | 'fallback' | 'timeout' | 'error' {
+  switch (call.status) {
+    case 'fallback':
+      return 'fallback';
+    case 'timeout':
+      return 'timeout';
+    case 'error':
+    case 'disabled':
+      return 'error';
+    default:
+      return 'success';
+  }
+}
+
+function getErrorPayload(call: LLMCallResult) {
+  if (call.error) return call.error;
+  if (call.status === 'disabled') {
+    return { type: 'disabled', message: 'disabled' };
+  }
+  return undefined;
 }

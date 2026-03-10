@@ -1,44 +1,10 @@
 import { z } from 'zod';
 
-export type ConfigSectionKey = 'policy' | 'risk';
-
-export interface ConfigFieldBase {
-  key: string;
-  label: string;
-  description?: string;
-}
-
-export interface NumberField extends ConfigFieldBase {
-  type: 'number';
-  min?: number;
-  max?: number;
-  step?: number;
-  unit?: string;
-  integer?: boolean;
-}
-
-export interface BooleanField extends ConfigFieldBase {
-  type: 'boolean';
-}
-
-export interface EnumField extends ConfigFieldBase {
-  type: 'enum';
-  options: string[];
-}
-
-export type ConfigField = NumberField | BooleanField | EnumField;
-
-export interface ConfigSection {
-  key: ConfigSectionKey;
-  label: string;
-  description?: string;
-  fields: ConfigField[];
-}
-
-export interface ConfigSchema {
-  version: string;
-  sections: ConfigSection[];
-}
+export type {
+  ConfigField,
+  ConfigSection,
+} from './schemaTypes.js';
+import type { ConfigField, ConfigSchema, ConfigSection, ConfigSectionKey } from './schemaTypes.js';
 
 const POLICY_FIELDS: ConfigField[] = [
   { key: 'edgeRequired', label: 'Edge Required', type: 'number', min: 0.0001, max: 1, step: 0.0001, unit: 'fraction' },

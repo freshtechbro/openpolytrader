@@ -2,7 +2,7 @@ import type { EventEmitter } from 'node:events';
 
 import { PolymarketClob } from '../services/PolymarketClob.js';
 import { PolymarketRealtime } from '../services/PolymarketRealtime.js';
-import type { OrderBookResponse } from '../services/PolymarketClob.js';
+import type { RawOrderBookSnapshot } from '../domain/orderbook.js';
 import type { VenueAdapter, VenueOrderPlacement } from './VenueAdapter.js';
 
 export class PolymarketAdapter implements VenueAdapter {
@@ -25,7 +25,7 @@ export class PolymarketAdapter implements VenueAdapter {
     return this.realtime;
   }
 
-  async getOrderBook(tokenId: string): Promise<OrderBookResponse> {
+  async getOrderBook(tokenId: string): Promise<RawOrderBookSnapshot> {
     return this.clob.getOrderBook(tokenId);
   }
 

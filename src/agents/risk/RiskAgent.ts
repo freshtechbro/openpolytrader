@@ -3,7 +3,7 @@ import type { ArbitrageOpportunity } from '../../domain/opportunity.js';
 import type { PortfolioSnapshot } from '../../domain/portfolio.js';
 import type { RiskAdvisor } from './RiskAdvisor.js';
 
-export interface RiskDecision {
+interface RiskDecision {
   approved: boolean;
   reason: string;
   positionSize?: number;
@@ -32,7 +32,7 @@ export interface RiskDecision {
   worstCaseLoss?: number;
 }
 
-export interface RiskAgentOptions {
+interface RiskAgentOptions {
   maxOpenInventorySeconds: number;
   fallbackTickSize: number;
   depthBufferMultiplier: number;

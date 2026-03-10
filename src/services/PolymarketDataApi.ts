@@ -1,9 +1,12 @@
 import { RateLimiter } from './RateLimiter.js';
 import { RetryPolicy } from './RetryPolicy.js';
+import { resolvePolymarketDataApiBaseUrl } from './PolymarketUrls.js';
+import { DataApiError, executeDataApiRequest } from './PolymarketDataApiRequest.js';
+import { normalizeVenuePosition } from './PolymarketPositionNormalization.js';
 import type { VenuePosition } from '../domain/venue.js';
 
-export interface PolymarketDataApiConfig {
-  baseUrl: string;
+interface PolymarketDataApiConfig {
+  baseUrl?: string;
   requestTimeoutMs: number;
   rateLimitPerSecond: number;
   rateLimitWindowMs: number;
@@ -13,7 +16,7 @@ export interface PolymarketDataApiConfig {
   retryMaxDelayMs: number;
 }
 
-export interface GetPositionsParams {
+interface GetPositionsParams {
   user: string;
   markets?: string[];
   sizeThreshold?: number;
@@ -29,7 +32,7 @@ export class PolymarketDataApi {
   private positionsPath: string;
 
   constructor(config: PolymarketDataApiConfig) {
-    this.baseUrl = config.baseUrl;
+    this.baseUrl = resolvePolymarketDataApiBaseUrl(config.baseUrl);
     this.timeoutMs = config.requestTimeoutMs;
     this.limiter = new RateLimiter(config.rateLimitPerSecond, config.rateLimitWindowMs);
     this.positionsPath = config.positionsPath;
@@ -67,96 +70,8 @@ export class PolymarketDataApi {
   private async request<T>(method: string, path: string): Promise<T> {
     await this.limiter.acquire();
 
-    return this.retryPolicy.execute(async () => {
-      const url = new URL(path, this.baseUrl).toString();
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'User-Agent': 'openpolytrader/0.1.0'
-      };
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
-      try {
-        const response = await fetch(url, { method, headers, signal: controller.signal });
-        const text = await response.text();
-        const parsedResult = safeParseJson(text);
-
-        if (!response.ok) {
-          throw new DataApiError(
-            `Polymarket Data API error ${response.status} for ${method} ${path}`,
-            response.status,
-            parsedResult.failed ? { raw: text } : parsedResult.parsed
-          );
-        }
-
-        if (parsedResult.failed) {
-          const snippet = text.slice(0, 200);
-          throw new Error(`Polymarket Data API invalid JSON for ${method} ${path}: ${snippet}`);
-        }
-
-        return parsedResult.parsed as T;
-      } finally {
-        clearTimeout(timeout);
-      }
-    });
-  }
-}
-
-export class DataApiError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-    public readonly body: unknown
-  ) {
-    super(message);
-    this.name = 'DataApiError';
-  }
-}
-
-function normalizeVenuePosition(raw: unknown): VenuePosition | null {
-  const payload = raw as Record<string, unknown>;
-  const tokenId =
-    typeof payload?.asset === 'string'
-      ? payload.asset
-      : typeof payload?.asset_id === 'string'
-        ? payload.asset_id
-        : typeof payload?.assetId === 'string'
-          ? payload.assetId
-          : '';
-
-  if (!tokenId) return null;
-
-  return {
-    tokenId,
-    marketId: typeof payload?.conditionId === 'string' ? payload.conditionId : undefined,
-    size: parseNumber(payload?.size) ?? 0,
-    avgPrice:
-      parseNumber(payload?.avgPrice) ?? undefined,
-    currentPrice:
-      parseNumber(payload?.curPrice) ?? undefined,
-    raw
-  };
-}
-
-function parseNumber(value: unknown): number | undefined {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : undefined;
-  }
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
-function safeParseJson(text: string): { parsed: unknown; failed: boolean } {
-  if (!text || text.trim().length === 0) {
-    return { parsed: null, failed: false };
-  }
-  try {
-    return { parsed: JSON.parse(text), failed: false };
-  } catch {
-    return { parsed: null, failed: true };
+    return this.retryPolicy.execute(() =>
+      executeDataApiRequest<T>({ baseUrl: this.baseUrl, method, path, timeoutMs: this.timeoutMs })
+    );
   }
 }

@@ -2,18 +2,12 @@ import 'dotenv/config';
 
 import { loadEnv } from '../src/config/env.js';
 import { MarketCatalog } from '../src/services/MarketCatalog.js';
-import { PolymarketClob } from '../src/services/PolymarketClob.js';
 import { PolymarketRealtime } from '../src/services/PolymarketRealtime.js';
+import { writeCliFailure } from '../src/utils/cliFailure.js';
+import { createPolymarketClobFromEnv, requireNonEmpty } from './lib/polymarket.js';
+import { runCliMain } from './lib/runCli.js';
 
-function requireNonEmpty(value: string | undefined, label: string): string {
-  const trimmed = value?.trim() ?? '';
-  if (!trimmed) {
-    throw new Error(`Missing required ${label}`);
-  }
-  return trimmed;
-}
-
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const env = loadEnv();
   const catalog = new MarketCatalog({ filePath: env.MARKET_CATALOG_PATH });
   const pairs = catalog.loadPairs();
@@ -25,33 +19,18 @@ async function main(): Promise<void> {
   const { marketId, yesTokenId, noTokenId } = pairs[0]!;
   const tokenId = requireNonEmpty(yesTokenId, 'yesTokenId');
 
-  const clob = new PolymarketClob({
-    baseUrl: env.POLYMARKET_CLOB_BASE_URL,
-    requestTimeoutMs: env.POLYMARKET_CLOB_TIMEOUT_MS,
-    rateLimitPerSecond: env.POLYMARKET_CLOB_RATE_LIMIT_PER_SEC,
-    rateLimitWindowMs: env.POLYMARKET_CLOB_RATE_LIMIT_WINDOW_MS,
-    orderPath: env.POLYMARKET_CLOB_ORDER_PATH,
-    batchOrderPath: env.POLYMARKET_CLOB_BATCH_ORDER_PATH,
-    cancelOrderPath: env.POLYMARKET_CLOB_CANCEL_ORDER_PATH,
-    cancelOrdersPath: env.POLYMARKET_CLOB_CANCEL_ORDERS_PATH,
-    cancelAllPath: env.POLYMARKET_CLOB_CANCEL_ALL_PATH,
-    cancelMarketOrdersPath: env.POLYMARKET_CLOB_CANCEL_MARKET_ORDERS_PATH,
-    activeOrdersPath: env.POLYMARKET_CLOB_ACTIVE_ORDERS_PATH,
-    retryMaxRetries: env.POLYMARKET_CLOB_RETRY_MAX_RETRIES,
-    retryBaseDelayMs: env.POLYMARKET_CLOB_RETRY_BASE_DELAY_MS,
-    retryMaxDelayMs: env.POLYMARKET_CLOB_RETRY_MAX_DELAY_MS
-  });
+  const clob = createPolymarketClobFromEnv(env);
 
   const book = await clob.getOrderBook(tokenId);
   const topBid = book.bids[0];
   const topAsk = book.asks[0];
 
-  console.log('[polymarket] catalog ok', {
+  console.log('Polymarket catalog ok', {
     marketId,
     yesTokenId,
     noTokenId
   });
-  console.log('[polymarket] clob ok', {
+  console.log('Polymarket CLOB ok', {
     tokenId,
     bid: topBid ? { price: topBid.price, size: topBid.size } : null,
     ask: topAsk ? { price: topAsk.price, size: topAsk.size } : null,
@@ -93,13 +72,13 @@ async function main(): Promise<void> {
         }
       : { kind: typeof firstMessage, value: String(firstMessage).slice(0, 200) };
 
-  console.log('[polymarket] ws ok', wsSummary);
+  console.log('Polymarket websocket ok', wsSummary);
 
   realtime.close();
 }
 
-await main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`[polymarket] check failed: ${message}`);
+runCliMain(import.meta.url, main, (error) => {
+  writeCliFailure('Polymarket live check failed', error);
   process.exitCode = 1;
+  return;
 });

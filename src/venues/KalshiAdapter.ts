@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 
 import type { VenueAdapter, VenueOrderPlacement } from './VenueAdapter.js';
 
-import type { OrderBookResponse } from '../services/PolymarketClob.js';
+import type { RawOrderBookSnapshot } from '../domain/orderbook.js';
 
 export class KalshiAdapter implements VenueAdapter {
   readonly venue = 'kalshi';
@@ -22,7 +22,7 @@ export class KalshiAdapter implements VenueAdapter {
     return this.emitter;
   }
 
-  async getOrderBook(_tokenId: string): Promise<OrderBookResponse> {
+  async getOrderBook(_tokenId: string): Promise<RawOrderBookSnapshot> {
     throw new Error('KalshiAdapter not implemented');
   }
 

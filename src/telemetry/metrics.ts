@@ -42,7 +42,7 @@ export interface MetricEvent {
   data: unknown;
 }
 
-export interface MetricsSnapshot {
+interface MetricsSnapshot {
   counts: Record<MetricEventType, number>;
   lastEventAt: number | null;
 }

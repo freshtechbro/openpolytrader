@@ -1,7 +1,8 @@
-import { messageBus } from '../../core/MessageBus.js';
+import { resolveMessageBus, type MessageBus } from '../../core/MessageBus.js';
+import type { RuntimeEventMap } from '../../core/runtimeEvents.js';
 import { clamp, clamp01 } from '../../utils/math.js';
 
-export interface ExecutionHint {
+interface ExecutionHint {
   timeoutMultiplier: number;
   unwindHint: 'aggressive' | 'neutral' | 'conservative';
   confidence: number;
@@ -10,17 +11,19 @@ export interface ExecutionHint {
 
 export class ExecutionAdvisor {
   private hintsByMarketId = new Map<string, ExecutionHint>();
-  private handler: ((payload: unknown) => void) | null = null;
+  private handler: ((payload: RuntimeEventMap['learning:insight']) => void) | null = null;
+  private messageBus: MessageBus<RuntimeEventMap>;
 
-  constructor(private config: { enabled: boolean }) {
+  constructor(private config: { enabled: boolean; messageBus?: MessageBus<RuntimeEventMap> }) {
+    this.messageBus = resolveMessageBus<RuntimeEventMap>(config.messageBus, 'ExecutionAdvisor');
     if (!config.enabled) return;
     this.handler = (payload) => this.handleInsight(payload);
-    messageBus.on('learning:insight', this.handler);
+    this.messageBus.on('learning:insight', this.handler);
   }
 
   stop(): void {
     if (this.handler) {
-      messageBus.off('learning:insight', this.handler);
+      this.messageBus.off('learning:insight', this.handler);
       this.handler = null;
     }
   }
@@ -35,12 +38,10 @@ export class ExecutionAdvisor {
     return hint;
   }
 
-  private handleInsight(payload: unknown): void {
-    const envelope = payload as { insights?: Array<{ market_id?: string; signal?: string; value?: number; ttl_ms?: number; confidence?: number }> };
-    if (!Array.isArray(envelope.insights)) return;
-
+  private handleInsight(payload: RuntimeEventMap['learning:insight']): void {
     const nowMs = Date.now();
-    for (const insight of envelope.insights) {
+    const insights = Array.isArray(payload.insights) ? payload.insights : [];
+    for (const insight of insights) {
       const marketId = typeof insight.market_id === 'string' ? insight.market_id : null;
       if (!marketId) continue;
       const ttlMs = typeof insight.ttl_ms === 'number' && Number.isFinite(insight.ttl_ms) ? insight.ttl_ms : 0;

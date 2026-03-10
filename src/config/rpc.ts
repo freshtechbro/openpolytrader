@@ -14,40 +14,18 @@
  */
 
 import { ethers, JsonRpcProvider, WebSocketProvider } from 'ethers';
-import { loadEnv, type Env } from './env.js';
 
-/**
- * RPC Provider Configuration
- */
-export interface RpcProviderConfig {
-  name: string;
-  url: string;
-  apiKey?: string;
-  rps: number;           // Rate limit per second
-  priority: number;       // Lower = higher priority
-  wsUrl?: string;         // WebSocket URL (optional)
-  rateLimitWindowMs: number;
+import { CircuitBreaker } from '../core/CircuitBreaker.js';
+import { RateLimiter } from '../services/RateLimiter.js';
+import type { Env } from './env.js';
+import { getRpcConfig, type RpcConfig, type RpcProviderConfig } from './rpcConfig.js';
+
+function writeRpcWarning(message: string): void {
+  process.stderr.write(`${message}\n`);
 }
 
-/**
- * RPC Configuration for Different Phases
- */
-export interface RpcConfig {
-  phase: 1 | 2 | 3;
-  primary: RpcProviderConfig;
-  fallbacks: RpcProviderConfig[];
-  websocket: RpcProviderConfig | null;
-  circuitBreaker: {
-    failureThreshold: number;
-    timeout: number;
-    halfOpenRequests: number;
-  };
-}
-
-function normalizeUrl(value?: string): string | null {
-  if (!value) return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+function writeRpcInfo(message: string): void {
+  process.stdout.write(`${message}\n`);
 }
 
 function joinUrlPath(base: string, suffix: string): string {
@@ -56,251 +34,8 @@ function joinUrlPath(base: string, suffix: string): string {
   return `${left}/${right}`;
 }
 
-function buildCircuitBreaker(env: Env, phase: 1 | 2 | 3): RpcConfig['circuitBreaker'] {
-  if (phase === 1) {
-    return {
-      failureThreshold: env.RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE1,
-      timeout: env.RPC_CIRCUIT_TIMEOUT_MS_PHASE1,
-      halfOpenRequests: env.RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE1
-    };
-  }
-  if (phase === 2) {
-    return {
-      failureThreshold: env.RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE2,
-      timeout: env.RPC_CIRCUIT_TIMEOUT_MS_PHASE2,
-      halfOpenRequests: env.RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE2
-    };
-  }
-  return {
-    failureThreshold: env.RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE3,
-    timeout: env.RPC_CIRCUIT_TIMEOUT_MS_PHASE3,
-    halfOpenRequests: env.RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE3
-  };
-}
-
-function buildPhase1Config(env: Env): RpcConfig {
-  const rateLimitWindowMs = env.RPC_RATE_LIMIT_WINDOW_MS;
-  const fallbacks: RpcProviderConfig[] = [];
-  let priority = 2;
-
-  const quicknodeUrl = normalizeUrl(env.QUICKNODE_RPC_URL);
-  if (quicknodeUrl) {
-    fallbacks.push({
-      name: 'QuickNode',
-      url: quicknodeUrl,
-      rps: env.QUICKNODE_RPC_RPS,
-      priority: priority++,
-      rateLimitWindowMs
-    });
-  }
-
-  const ankrUrl = normalizeUrl(env.ANKR_RPC_URL);
-  if (ankrUrl) {
-    fallbacks.push({
-      name: 'Ankr',
-      url: ankrUrl,
-      rps: env.ANKR_RPC_RPS_PHASE1,
-      priority: priority++,
-      rateLimitWindowMs
-    });
-  }
-
-  return {
-    phase: 1,
-    primary: {
-      name: 'Alchemy',
-      url: env.ALCHEMY_RPC_URL,
-      apiKey: env.ALCHEMY_API_KEY,
-      rps: env.ALCHEMY_RPC_RPS,
-      priority: 1,
-      wsUrl: env.ALCHEMY_WS_URL,
-      rateLimitWindowMs
-    },
-    fallbacks,
-    websocket: {
-      name: 'Alchemy WebSocket',
-      url: env.ALCHEMY_WS_URL,
-      apiKey: env.ALCHEMY_API_KEY,
-      rps: env.ALCHEMY_RPC_RPS,
-      priority: 1,
-      rateLimitWindowMs
-    },
-    circuitBreaker: buildCircuitBreaker(env, 1)
-  };
-}
-
-function buildPhase2Config(env: Env): RpcConfig {
-  const rateLimitWindowMs = env.RPC_RATE_LIMIT_WINDOW_MS;
-  const fallbacks: RpcProviderConfig[] = [];
-  let priority = 2;
-
-  const alchemyUrl = normalizeUrl(env.ALCHEMY_RPC_URL);
-  if (alchemyUrl) {
-    fallbacks.push({
-      name: 'Alchemy Growth',
-      url: alchemyUrl,
-      apiKey: env.ALCHEMY_API_KEY,
-      rps: env.ALCHEMY_RPC_RPS,
-      priority: priority++,
-      rateLimitWindowMs
-    });
-  }
-
-  const ankrUrl = normalizeUrl(env.ANKR_RPC_URL);
-  if (ankrUrl) {
-    fallbacks.push({
-      name: 'Ankr',
-      url: ankrUrl,
-      rps: env.ANKR_RPC_RPS_PHASE2,
-      priority: priority++,
-      rateLimitWindowMs
-    });
-  }
-
-  return {
-    phase: 2,
-    primary: {
-      name: 'Chainstack Pro',
-      url: env.CHAINSTACK_RPC_URL,
-      rps: env.CHAINSTACK_RPC_RPS,
-      priority: 1,
-      rateLimitWindowMs
-    },
-    fallbacks,
-    websocket: {
-      name: 'Chainstack WebSocket',
-      url: env.CHAINSTACK_WS_URL,
-      rps: env.CHAINSTACK_RPC_RPS,
-      priority: 1,
-      rateLimitWindowMs
-    },
-    circuitBreaker: buildCircuitBreaker(env, 2)
-  };
-}
-
-function buildPhase3Config(env: Env): RpcConfig {
-  const rateLimitWindowMs = env.RPC_RATE_LIMIT_WINDOW_MS;
-  const fallbacks: RpcProviderConfig[] = [];
-  let priority = 2;
-
-  const chainstackUrl = normalizeUrl(env.CHAINSTACK_RPC_URL);
-  if (chainstackUrl) {
-    fallbacks.push({
-      name: 'Chainstack Pro',
-      url: chainstackUrl,
-      rps: env.CHAINSTACK_RPC_RPS,
-      priority: priority++,
-      rateLimitWindowMs
-    });
-  }
-
-  return {
-    phase: 3,
-    primary: {
-      name: 'Private Node',
-      url: env.PRIVATE_RPC_URL,
-      rps: env.PRIVATE_RPC_RPS,
-      priority: 1,
-      rateLimitWindowMs
-    },
-    fallbacks,
-    websocket: {
-      name: 'Private Node WebSocket',
-      url: env.PRIVATE_WS_URL,
-      rps: env.PRIVATE_RPC_RPS,
-      priority: 1,
-      rateLimitWindowMs
-    },
-    circuitBreaker: buildCircuitBreaker(env, 3)
-  };
-}
-
-/**
- * Auto-select configuration based on capital
- */
-export function getRpcConfig(env: Env, capital: number): RpcConfig {
-  if (capital >= 5000) {
-    return buildPhase3Config(env);
-  }
-  if (capital >= 2000) {
-    return buildPhase2Config(env);
-  }
-  return buildPhase1Config(env);
-}
-
-/**
- * Circuit Breaker State
- */
-type CircuitState = 'closed' | 'open' | 'half-open';
-
-class CircuitBreaker {
-  private state: CircuitState = 'closed';
-  private failures = 0;
-  private lastFailureTime = 0;
-  private successesInHalfOpen = 0;
-
-  constructor(private config: RpcConfig['circuitBreaker'], private serviceName: string) {}
-
-  async execute<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.state === 'open') {
-      const timeSinceLastFailure = Date.now() - this.lastFailureTime;
-      
-      if (timeSinceLastFailure < this.config.timeout) {
-        throw new Error(`Circuit breaker is open for ${this.serviceName}`);
-      } else {
-        console.log(`[CircuitBreaker] Moving to half-open for ${this.serviceName}`);
-        this.state = 'half-open';
-        this.successesInHalfOpen = 0;
-      }
-    }
-
-    try {
-      const result = await fn();
-      this.onSuccess();
-      return result;
-    } catch (error) {
-      this.onFailure();
-      throw error;
-    }
-  }
-
-  private onSuccess(): void {
-    this.failures = 0;
-
-    if (this.state === 'half-open') {
-      this.successesInHalfOpen++;
-      
-      if (this.successesInHalfOpen >= this.config.halfOpenRequests) {
-        console.log(`[CircuitBreaker] Closing circuit for ${this.serviceName}`);
-        this.state = 'closed';
-      }
-    }
-  }
-
-  private onFailure(): void {
-    this.failures++;
-    this.lastFailureTime = Date.now();
-
-    if (this.failures >= this.config.failureThreshold) {
-      console.error(`[CircuitBreaker] Opening circuit for ${this.serviceName} (${this.failures} failures)`);
-      this.state = 'open';
-    }
-  }
-
-  getState(): CircuitState {
-    return this.state;
-  }
-
-  getFailureCount(): number {
-    return this.failures;
-  }
-
-  reset(): void {
-    this.state = 'closed';
-    this.failures = 0;
-    this.lastFailureTime = 0;
-    this.successesInHalfOpen = 0;
-  }
+function createSharedCircuitBreaker(config: RpcConfig['circuitBreaker'], serviceName: string): CircuitBreaker {
+  return new CircuitBreaker(config, serviceName);
 }
 
 /**
@@ -326,13 +61,13 @@ export class RpcProvider {
   private initializeProvider(config: RpcProviderConfig): void {
     const url = config.apiKey ? joinUrlPath(config.url, config.apiKey) : config.url;
     const provider = new ethers.JsonRpcProvider(url);
-    const circuitBreaker = new CircuitBreaker(this.config.circuitBreaker, config.name);
+    const circuitBreaker = createSharedCircuitBreaker(this.config.circuitBreaker, config.name);
     const rateLimiter = new RateLimiter(config.rps, config.rateLimitWindowMs);
 
     this.providers.set(config.name, { provider, circuitBreaker });
     this.rateLimiters.set(config.name, rateLimiter);
 
-    console.log(`[RpcProvider] Initialized ${config.name} (${url})`);
+    console.log(`RPC provider initialized: ${config.name} (${url})`);
   }
 
   /**
@@ -349,22 +84,26 @@ export class RpcProvider {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[RpcProvider] Error on ${this.currentProviderName}:`, message);
-      
+      writeRpcWarning(`RPC provider error on ${this.currentProviderName}: ${message}`);
+      const currentProviderName = this.currentProviderName;
+
       // Try fallback providers
       for (const [name, entry] of this.providers.entries()) {
-        if (name !== this.currentProviderName && entry.circuitBreaker.getState() !== 'open') {
-          console.log(`[RpcProvider] Falling back to ${name}`);
-          this.currentProviderName = name;
-          
+        if (
+          name !== currentProviderName &&
+          entry.circuitBreaker.refreshAndGetState() !== 'open'
+        ) {
           try {
             await this.rateLimiters.get(name)!.acquire();
-            return await entry.circuitBreaker.execute(async () => {
+            const result = await entry.circuitBreaker.execute(async () => {
               return (await entry.provider.send(method, params ?? [])) as Promise<T>;
             });
+            writeRpcInfo(`RPC provider falling back to ${name}`);
+            this.currentProviderName = name;
+            return result;
           } catch (fallbackError) {
             const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-            console.error(`[RpcProvider] Fallback ${name} also failed:`, message);
+            writeRpcWarning(`RPC provider fallback ${name} also failed: ${message}`);
           }
         }
       }
@@ -414,7 +153,7 @@ export class RpcProvider {
       throw new Error(`Provider ${providerName} not configured`);
     }
 
-    console.log(`[RpcProvider] Switching to ${providerName}`);
+    writeRpcInfo(`RPC provider switched to ${providerName}`);
     this.currentProviderName = providerName;
   }
 
@@ -433,7 +172,7 @@ export class RpcProvider {
 
     for (const [name, entry] of this.providers.entries()) {
       status[name] = {
-        state: entry.circuitBreaker.getState(),
+        state: entry.circuitBreaker.refreshAndGetState(),
         failures: entry.circuitBreaker.getFailureCount(),
         isCurrent: name === this.currentProviderName
       };
@@ -444,53 +183,10 @@ export class RpcProvider {
 }
 
 /**
- * Simple Rate Limiter
- */
-class RateLimiter {
-  private requestTimes: number[] = [];
-
-  constructor(private rps: number, private windowMs: number) {}
-
-  async acquire(): Promise<void> {
-    const now = Date.now();
-    
-    // Remove requests outside the configured window
-    this.requestTimes = this.requestTimes.filter((t) => now - t < this.windowMs);
-
-    if (this.requestTimes.length >= this.rps) {
-      const oldestRequest = this.requestTimes[0];
-      const waitTime = this.windowMs - (now - oldestRequest);
-      
-      if (waitTime > 0) {
-        await new Promise((resolve) => setTimeout(resolve, waitTime));
-      }
-    }
-
-    this.requestTimes.push(now);
-  }
-}
-
-/**
  * Create RPC provider for given capital
  */
 export function createRpcProvider(env: Env, capital?: number): RpcProvider {
   const resolvedCapital = capital ?? env.TOTAL_CAPITAL;
   const config = getRpcConfig(env, resolvedCapital);
   return new RpcProvider(config);
-}
-
-/**
- * Singleton instance (useful for application-wide access)
- */
-let rpcProviderInstance: RpcProvider | null = null;
-
-export function getRpcProvider(env: Env = loadEnv()): RpcProvider {
-  if (!rpcProviderInstance) {
-    rpcProviderInstance = createRpcProvider(env);
-  }
-  return rpcProviderInstance;
-}
-
-export function resetRpcProvider(): void {
-  rpcProviderInstance = null;
 }

@@ -1,6 +1,6 @@
 import type { EventEmitter } from 'node:events';
 
-import type { OrderBookResponse } from '../services/PolymarketClob.js';
+import type { RawOrderBookSnapshot } from '../domain/orderbook.js';
 
 export type VenueSide = 'BUY' | 'SELL';
 
@@ -20,6 +20,6 @@ export interface VenueAdapter {
   subscribeMarkets(tokenIds: string[]): void;
   marketDataEmitter(): EventEmitter;
 
-  getOrderBook(tokenId: string): Promise<OrderBookResponse>;
+  getOrderBook(tokenId: string): Promise<RawOrderBookSnapshot>;
   placeOrder(order: VenueOrderPlacement): Promise<unknown>;
 }

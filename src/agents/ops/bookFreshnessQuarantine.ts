@@ -2,13 +2,13 @@ import type { MarketAllowlist } from '../../domain/allowlist.js';
 import type { IncidentTracker } from '../../services/IncidentTracker.js';
 import type { HealthCheckResult } from './OpsAgent.js';
 
-export interface OpsAlertPayload {
+interface OpsAlertPayload {
   check: string;
   result: HealthCheckResult;
   timestamp: number;
 }
 
-export interface BookFreshnessQuarantineConfig {
+interface BookFreshnessQuarantineConfig {
   threshold: number;
   windowMs: number;
   cooldownMs: number;
@@ -50,7 +50,7 @@ export function createBookFreshnessQuarantine(input: {
   config: BookFreshnessQuarantineConfig;
   allowlist: MarketAllowlist;
   incidentTracker: IncidentTracker;
-  tokenToMarketId: Record<string, string>;
+  getMarketIdForToken: (tokenId: string) => string | undefined;
   now?: () => number;
 }): {
   handle: (alert: OpsAlertPayload) => void;
@@ -77,7 +77,7 @@ export function createBookFreshnessQuarantine(input: {
     if (!info) return;
     const { tokenId, stalenessMs } = parseBookFreshnessInfo(info);
     if (!tokenId) return;
-    const marketId = input.tokenToMarketId[tokenId];
+    const marketId = input.getMarketIdForToken(tokenId);
     if (!marketId) return;
 
     const timestamp = Number.isFinite(alert.timestamp) ? alert.timestamp : now();

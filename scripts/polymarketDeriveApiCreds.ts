@@ -5,14 +5,9 @@ import path from 'node:path';
 
 import { loadEnv } from '../src/config/env.js';
 import { derivePolymarketL2Creds } from '../src/services/PolymarketApiCreds.js';
-
-function requireNonEmpty(value: string | undefined, label: string): string {
-  const trimmed = value?.trim() ?? '';
-  if (!trimmed) {
-    throw new Error(`Missing required ${label}`);
-  }
-  return trimmed;
-}
+import { writeCliFailure } from '../src/utils/cliFailure.js';
+import { requireNonEmpty } from './lib/polymarket.js';
+import { runCliMain } from './lib/runCli.js';
 
 function upsertEnvVar(contents: string, key: string, value: string): string {
   const lineRe = new RegExp(`^${key}=.*$`, 'm');
@@ -24,7 +19,7 @@ function upsertEnvVar(contents: string, key: string, value: string): string {
   return `${contents}${suffix}${nextLine}\n`;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const env = loadEnv();
 
   const privateKey = requireNonEmpty(
@@ -52,14 +47,14 @@ async function main(): Promise<void> {
 
   fs.writeFileSync(envPath, next, 'utf8');
 
-  console.log('[polymarket] derived api creds and updated .env', {
+  console.log('Polymarket API creds derived and .env updated', {
     address: creds.address,
     updated: ['POLYMARKET_API_KEY', 'POLYMARKET_API_SECRET', 'POLYMARKET_PASSPHRASE', 'POLYMARKET_POSITIONS_USER']
   });
 }
 
-await main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`[polymarket] derive creds failed: ${message}`);
+runCliMain(import.meta.url, main, (error) => {
+  writeCliFailure('Polymarket credential derivation failed', error);
   process.exitCode = 1;
+  return;
 });

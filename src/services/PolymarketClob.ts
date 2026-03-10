@@ -1,6 +1,9 @@
 import { RateLimiter } from './RateLimiter.js';
 import { RetryPolicy } from './RetryPolicy.js';
+import { resolvePolymarketClobBaseUrl } from './PolymarketUrls.js';
+import type { RawOrderBookSnapshot } from '../domain/orderbook.js';
 import type { VenueOpenOrder } from '../domain/venue.js';
+import { safeParseJsonBody } from '../utils/serialization.js';
 
 export interface AuthHeadersProvider {
   getHeaders(input: {
@@ -10,8 +13,8 @@ export interface AuthHeadersProvider {
   }): Promise<Record<string, string>> | Record<string, string>;
 }
 
-export interface PolymarketClobConfig {
-  baseUrl: string;
+interface PolymarketClobConfig {
+  baseUrl?: string;
   requestTimeoutMs: number;
   rateLimitPerSecond: number;
   rateLimitWindowMs: number;
@@ -32,7 +35,7 @@ function withNonce(
   payload: unknown,
   allocate: () => number
 ): unknown {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+  if (!isRecord(payload)) {
     return payload;
   }
 
@@ -40,7 +43,7 @@ function withNonce(
     return payload;
   }
 
-  return { ...(payload as Record<string, unknown>), nonce: allocate() };
+  return { ...payload, nonce: allocate() };
 }
 
 export class ApiError extends Error {
@@ -53,20 +56,11 @@ export class ApiError extends Error {
   }
 }
 
-export interface OrderBookResponse {
-  bids: Array<{ price: string; size: string }>;
-  asks: Array<{ price: string; size: string }>;
-  min_order_size?: string;
-  tick_size?: string;
-  timestamp?: string;
-  hash?: string;
-}
-
-export interface MidpointResponse {
+interface MidpointResponse {
   mid: string;
 }
 
-export interface PricesRequest {
+interface PricesRequest {
   token_id: string;
   side: 'BUY' | 'SELL';
 }
@@ -76,12 +70,12 @@ export interface CancelOrdersResponse {
   not_canceled?: Record<string, unknown>;
 }
 
-export interface CancelMarketOrdersParams {
+interface CancelMarketOrdersParams {
   market?: string;
   assetId?: string;
 }
 
-export interface ActiveOrdersParams {
+interface ActiveOrdersParams {
   orderId?: string;
   market?: string;
   assetId?: string;
@@ -112,7 +106,7 @@ export class PolymarketClob {
   private nextNonce = Date.now() * 1000;
 
   constructor(config: PolymarketClobConfig) {
-    this.baseUrl = config.baseUrl;
+    this.baseUrl = resolvePolymarketClobBaseUrl(config.baseUrl);
     this.timeoutMs = config.requestTimeoutMs;
     this.limiter = new RateLimiter(config.rateLimitPerSecond, config.rateLimitWindowMs);
     this.authProvider = config.authProvider;
@@ -138,7 +132,7 @@ export class PolymarketClob {
 
   async getMarket(conditionId: string): Promise<MarketInfo | null> {
     try {
-      return await this.request<MarketInfo>('GET', `/markets/${conditionId}`);
+      return parseMarketInfo(await this.requestJson('GET', `/markets/${conditionId}`));
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) {
         return null;
@@ -147,22 +141,22 @@ export class PolymarketClob {
     }
   }
 
-  async getOrderBook(tokenId: string): Promise<OrderBookResponse> {
-    return this.request<OrderBookResponse>('GET', `/book?token_id=${tokenId}`);
+  async getOrderBook(tokenId: string): Promise<RawOrderBookSnapshot> {
+    return parseOrderBookResponse(await this.requestJson('GET', `/book?token_id=${tokenId}`));
   }
 
   async getMidpoint(tokenId: string): Promise<MidpointResponse> {
-    return this.request<MidpointResponse>('GET', `/midpoint?token_id=${tokenId}`);
+    return parseMidpointResponse(await this.requestJson('GET', `/midpoint?token_id=${tokenId}`));
   }
 
   async getPrices(requests: PricesRequest[]): Promise<Record<string, { BUY?: string; SELL?: string }>> {
-    return this.request('POST', '/prices', requests);
+    return parsePricesResponse(await this.requestJson('POST', '/prices', requests));
   }
 
   async createOrder(payload: unknown): Promise<unknown> {
     const body = withNonce(payload, () => this.allocateNonce());
     try {
-      return await this.request('POST', this.orderPath, body);
+      return await this.requestJson('POST', this.orderPath, body);
     } catch (error) {
       if (isDuplicateOrderError(error)) {
         return buildDuplicateOrderResponse((error as ApiError).body);
@@ -172,7 +166,7 @@ export class PolymarketClob {
   }
 
   async createBatchOrders(payload: unknown): Promise<unknown> {
-    return this.request('POST', this.batchOrderPath, payload);
+    return this.requestJson('POST', this.batchOrderPath, payload);
   }
 
   reserveNonce(): string {
@@ -180,22 +174,26 @@ export class PolymarketClob {
   }
 
   async cancelOrder(orderId: string): Promise<CancelOrdersResponse> {
-    return this.request('DELETE', this.cancelOrderPath, { orderID: orderId });
+    return parseCancelOrdersResponse(
+      await this.requestJson('DELETE', this.cancelOrderPath, { orderID: orderId })
+    );
   }
 
   async cancelOrders(orderIds: string[]): Promise<CancelOrdersResponse> {
-    return this.request('DELETE', this.cancelOrdersPath, orderIds);
+    return parseCancelOrdersResponse(await this.requestJson('DELETE', this.cancelOrdersPath, orderIds));
   }
 
   async cancelAll(): Promise<CancelOrdersResponse> {
-    return this.request('DELETE', this.cancelAllPath);
+    return parseCancelOrdersResponse(await this.requestJson('DELETE', this.cancelAllPath));
   }
 
   async cancelMarketOrders(params: CancelMarketOrdersParams): Promise<CancelOrdersResponse> {
     const payload: Record<string, string> = {};
     if (params.market) payload.market = params.market;
     if (params.assetId) payload.asset_id = params.assetId;
-    return this.request('DELETE', this.cancelMarketOrdersPath, payload);
+    return parseCancelOrdersResponse(
+      await this.requestJson('DELETE', this.cancelMarketOrdersPath, payload)
+    );
   }
 
   async getActiveOrders(params?: ActiveOrdersParams): Promise<VenueOpenOrder[]> {
@@ -205,7 +203,7 @@ export class PolymarketClob {
     if (params?.assetId) query.set('asset_id', params.assetId);
 
     const path = query.toString().length > 0 ? `${this.activeOrdersPath}?${query.toString()}` : this.activeOrdersPath;
-    const response = await this.request<unknown>('GET', path);
+    const response = await this.requestJson('GET', path);
     if (!Array.isArray(response)) return [];
 
     return response.map((entry) => normalizeVenueOpenOrder(entry));
@@ -217,7 +215,7 @@ export class PolymarketClob {
     return nonce;
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async requestJson(method: string, path: string, body?: unknown): Promise<unknown> {
     await this.limiter.acquire();
 
     return this.retryPolicy.execute(async () => {
@@ -244,7 +242,7 @@ export class PolymarketClob {
         });
 
         const text = await response.text();
-        const parsedResult = safeParseJson(text);
+        const parsedResult = safeParseJsonBody(text);
 
         if (!response.ok) {
           throw new ApiError(
@@ -259,12 +257,100 @@ export class PolymarketClob {
           throw new Error(`Polymarket CLOB invalid JSON for ${method} ${path}: ${snippet}`);
         }
 
-        return parsedResult.parsed as T;
+        return parsedResult.parsed;
       } finally {
         clearTimeout(timeout);
       }
     });
   }
+}
+
+function parseMarketInfo(payload: unknown): MarketInfo {
+  if (!isRecord(payload) || typeof payload.condition_id !== 'string' || typeof payload.question !== 'string') {
+    throw new Error('Polymarket CLOB returned invalid market payload');
+  }
+
+  return {
+    condition_id: payload.condition_id,
+    question: payload.question,
+    ...(typeof payload.description === 'string' ? { description: payload.description } : {}),
+    ...(typeof payload.market_slug === 'string' ? { market_slug: payload.market_slug } : {}),
+    ...(typeof payload.end_date_iso === 'string' ? { end_date_iso: payload.end_date_iso } : {}),
+    ...(Array.isArray(payload.tokens) ? { tokens: parseMarketTokens(payload.tokens) } : {})
+  };
+}
+
+function parseMarketTokens(tokens: unknown[]): MarketInfo['tokens'] {
+  return tokens.flatMap((token) =>
+    isRecord(token) && typeof token.token_id === 'string' && typeof token.outcome === 'string'
+      ? [{ token_id: token.token_id, outcome: token.outcome }]
+      : []
+  );
+}
+
+function parseOrderBookResponse(payload: unknown): RawOrderBookSnapshot {
+  if (!isRecord(payload) || !isOrderLevels(payload.bids) || !isOrderLevels(payload.asks)) {
+    throw new Error('Polymarket CLOB returned invalid order book payload');
+  }
+
+  return {
+    bids: payload.bids,
+    asks: payload.asks,
+    ...(typeof payload.min_order_size === 'string' || typeof payload.min_order_size === 'number'
+      ? { min_order_size: String(payload.min_order_size) }
+      : {}),
+    ...(typeof payload.tick_size === 'string' || typeof payload.tick_size === 'number'
+      ? { tick_size: String(payload.tick_size) }
+      : {}),
+    ...(typeof payload.timestamp === 'string' ? { timestamp: payload.timestamp } : {}),
+    ...(typeof payload.hash === 'string' ? { hash: payload.hash } : {})
+  };
+}
+
+function parseMidpointResponse(payload: unknown): MidpointResponse {
+  if (!isRecord(payload) || typeof payload.mid !== 'string') {
+    throw new Error('Polymarket CLOB returned invalid midpoint payload');
+  }
+  return { mid: payload.mid };
+}
+
+function parsePricesResponse(payload: unknown): Record<string, { BUY?: string; SELL?: string }> {
+  if (!isRecord(payload)) {
+    throw new Error('Polymarket CLOB returned invalid prices payload');
+  }
+
+  const prices: Record<string, { BUY?: string; SELL?: string }> = {};
+  for (const [tokenId, value] of Object.entries(payload)) {
+    if (!isRecord(value)) continue;
+    const entry: { BUY?: string; SELL?: string } = {};
+    if (typeof value.BUY === 'string') entry.BUY = value.BUY;
+    if (typeof value.SELL === 'string') entry.SELL = value.SELL;
+    prices[tokenId] = entry;
+  }
+  return prices;
+}
+
+function parseCancelOrdersResponse(payload: unknown): CancelOrdersResponse {
+  if (!isRecord(payload)) {
+    throw new Error('Polymarket CLOB returned invalid cancel response payload');
+  }
+
+  const response: CancelOrdersResponse = {};
+  if (Array.isArray(payload.canceled)) {
+    response.canceled = payload.canceled.filter((entry): entry is string => typeof entry === 'string');
+  }
+  if (isRecord(payload.not_canceled)) {
+    response.not_canceled = payload.not_canceled;
+  }
+  return response;
+}
+
+function isOrderLevels(value: unknown): value is RawOrderBookSnapshot['bids'] {
+  return Array.isArray(value) && value.every((entry) => isRecord(entry) && typeof entry.price === 'string' && typeof entry.size === 'string');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isDuplicateOrderError(error: unknown): error is ApiError {
@@ -273,15 +359,26 @@ function isDuplicateOrderError(error: unknown): error is ApiError {
 }
 
 function isDuplicateOrderBody(body: unknown): boolean {
-  const payload = body as { error?: string; errorMsg?: string; message?: string };
   const message =
-    payload?.error ?? payload?.errorMsg ?? payload?.message ?? '';
+    isRecord(body) && typeof body.error === 'string'
+      ? body.error
+      : isRecord(body) && typeof body.errorMsg === 'string'
+        ? body.errorMsg
+        : isRecord(body) && typeof body.message === 'string'
+          ? body.message
+          : '';
   return typeof message === 'string' && message.toUpperCase().includes('INVALID_ORDER_DUPLICATED');
 }
 
 function buildDuplicateOrderResponse(body: unknown): Record<string, unknown> {
-  const payload = body as { orderID?: string; orderId?: string; id?: string };
-  const orderID = payload?.orderID ?? payload?.orderId ?? payload?.id;
+  const orderID =
+    isRecord(body) && typeof body.orderID === 'string'
+      ? body.orderID
+      : isRecord(body) && typeof body.orderId === 'string'
+        ? body.orderId
+        : isRecord(body) && typeof body.id === 'string'
+          ? body.id
+          : undefined;
   const response: Record<string, unknown> = {
     success: true,
     status: 'LIVE',
@@ -291,19 +388,8 @@ function buildDuplicateOrderResponse(body: unknown): Record<string, unknown> {
   return response;
 }
 
-function safeParseJson(text: string): { parsed: unknown; failed: boolean } {
-  if (!text || text.trim().length === 0) {
-    return { parsed: null, failed: false };
-  }
-  try {
-    return { parsed: JSON.parse(text), failed: false };
-  } catch {
-    return { parsed: null, failed: true };
-  }
-}
-
 function normalizeVenueOpenOrder(raw: unknown): VenueOpenOrder {
-  const payload = raw as Record<string, unknown>;
+  const payload = isRecord(raw) ? raw : {};
   const orderId =
     typeof payload?.id === 'string'
       ? payload.id

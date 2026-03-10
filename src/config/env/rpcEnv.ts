@@ -1,0 +1,31 @@
+import { z } from 'zod';
+
+export const rpcEnvShape = {
+  ALCHEMY_API_KEY: z.string().optional(),
+  ALCHEMY_RPC_URL: z.string().optional(),
+  ALCHEMY_WS_URL: z.string().optional(),
+  ALCHEMY_RPC_RPS: z.coerce.number().int().positive().default(125),
+  QUICKNODE_RPC_URL: z.string().optional(),
+  QUICKNODE_RPC_RPS: z.coerce.number().int().positive().default(10),
+  CHAINSTACK_RPC_URL: z.string().optional(),
+  CHAINSTACK_WS_URL: z.string().optional(),
+  CHAINSTACK_RPC_RPS: z.coerce.number().int().positive().default(600),
+  ANKR_RPC_URL: z.string().optional(),
+  ANKR_RPC_RPS_PHASE1: z.coerce.number().int().positive().default(30),
+  ANKR_RPC_RPS_PHASE2: z.coerce.number().int().positive().default(1500),
+  PRIVATE_RPC_URL: z.string().optional(),
+  PRIVATE_WS_URL: z.string().optional(),
+  PRIVATE_RPC_RPS: z.coerce.number().int().positive().default(10000),
+  RPC_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(1000),
+  RPC_WAIT_CONFIRMATIONS: z.coerce.number().int().positive().default(1),
+  RPC_WAIT_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
+  RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE1: z.coerce.number().int().positive().default(5),
+  RPC_CIRCUIT_TIMEOUT_MS_PHASE1: z.coerce.number().int().positive().default(60000),
+  RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE1: z.coerce.number().int().positive().default(3),
+  RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE2: z.coerce.number().int().positive().default(3),
+  RPC_CIRCUIT_TIMEOUT_MS_PHASE2: z.coerce.number().int().positive().default(30000),
+  RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE2: z.coerce.number().int().positive().default(5),
+  RPC_CIRCUIT_FAILURE_THRESHOLD_PHASE3: z.coerce.number().int().positive().default(2),
+  RPC_CIRCUIT_TIMEOUT_MS_PHASE3: z.coerce.number().int().positive().default(15000),
+  RPC_CIRCUIT_HALF_OPEN_REQUESTS_PHASE3: z.coerce.number().int().positive().default(10)
+};

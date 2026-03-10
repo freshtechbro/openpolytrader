@@ -1,8 +1,8 @@
 import type { VenueId } from '../config/venues.js';
 
-export type CanonicalContractId = string;
+type CanonicalContractId = string;
 
-export interface ContractMapping {
+interface ContractMapping {
   canonicalId: CanonicalContractId;
   venue: VenueId;
   venueContractId: string;

@@ -1,4 +1,4 @@
-export type CircuitState = 'closed' | 'open' | 'half-open';
+type CircuitState = 'closed' | 'open' | 'half-open';
 
 export interface CircuitBreakerConfig {
   failureThreshold: number;
@@ -6,7 +6,7 @@ export interface CircuitBreakerConfig {
   halfOpenSuccesses: number;
 }
 
-export interface CircuitBreakerStateSnapshot {
+interface CircuitBreakerStateSnapshot {
   state: CircuitState;
   failures: number;
 }
@@ -47,7 +47,11 @@ export class CircuitBreaker {
     this.onSuccess();
   }
 
-  getState(): CircuitState {
+  currentState(): CircuitState {
+    return this.state;
+  }
+
+  refreshAndGetState(): CircuitState {
     if (this.state === 'open') {
       const elapsed = Date.now() - this.lastFailureTime;
       if (elapsed >= this.config.cooldownMs) {
@@ -115,13 +119,13 @@ export class CircuitBreakerRegistry {
 
   isOpen(marketId: string): boolean {
     const breaker = this.breakers.get(marketId);
-    return breaker?.getState() === 'open';
+    return breaker?.refreshAndGetState() === 'open';
   }
 
   getOpenMarkets(): string[] {
     const open: string[] = [];
     for (const [marketId, breaker] of this.breakers.entries()) {
-      if (breaker.getState() === 'open') open.push(marketId);
+      if (breaker.refreshAndGetState() === 'open') open.push(marketId);
     }
     return open;
   }
@@ -129,7 +133,10 @@ export class CircuitBreakerRegistry {
   getSummary(): Map<string, CircuitBreakerStateSnapshot> {
     const summary = new Map<string, CircuitBreakerStateSnapshot>();
     for (const [marketId, breaker] of this.breakers.entries()) {
-      summary.set(marketId, { state: breaker.getState(), failures: breaker.getFailureCount() });
+      summary.set(marketId, {
+        state: breaker.refreshAndGetState(),
+        failures: breaker.getFailureCount()
+      });
     }
     return summary;
   }
