@@ -12,4 +12,5 @@ Applies to `dashboard/src/components/`.
 - Avoid ad-hoc styling; prefer shared CSS tokens.
 
 ## Tests
-- Covered by dashboard e2e (`npm run test:e2e`).
+- `npm run test -- tests/unit/dashboard-components.test.ts tests/unit/dashboard-layouts.test.ts`
+- `npm --prefix dashboard run test:e2e`

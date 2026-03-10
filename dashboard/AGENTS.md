@@ -2,20 +2,20 @@
 
 ## Overview
 
-React 18 + Vite ops dashboard for monitoring trading system.
+React 18 + Vite public site plus ops dashboard for the trading system.
 
 ## Structure
 
 ```
 dashboard/
 ├── src/
-│   ├── components/   # Reusable UI (14 files)
-│   ├── pages/        # Route pages (11 files)
-│   ├── hooks/        # Custom hooks
-│   ├── lib/          # Utilities (opsClient, config)
-│   ├── routes/       # React Router layouts/router
-│   └── styles/       # CSS (tokens.css, app.css)
-├── tests/e2e/        # Playwright specs (4 files)
+│   ├── components/   # Shared ops/public UI primitives
+│   ├── hooks/        # Shared runtime hooks
+│   ├── lib/          # API/runtime helpers
+│   ├── pages/        # Public pages plus ops feature folders
+│   ├── routes/       # AppRouter, public/ops layouts, controller hooks
+│   └── styles/       # Tokens + split app/dashboard/ops/public stylesheets
+├── tests/e2e/        # Playwright smoke and flow specs
 └── index.html        # Vite entry
 ```
 
@@ -24,10 +24,15 @@ dashboard/
 Local `AGENTS.md` files refine these rules:
 - `dashboard/src/AGENTS.md`
 - `dashboard/src/components/AGENTS.md`
+- `dashboard/src/components/public/AGENTS.md`
 - `dashboard/src/pages/AGENTS.md`
+- `dashboard/src/pages/public/AGENTS.md`
 - `dashboard/src/hooks/AGENTS.md`
 - `dashboard/src/lib/AGENTS.md`
+- `dashboard/src/routes/AGENTS.md`
 - `dashboard/src/styles/AGENTS.md`
+- `dashboard/public/AGENTS.md`
+- `dashboard/scripts/AGENTS.md`
 - `dashboard/tests/AGENTS.md`
 - `dashboard/tests/e2e/AGENTS.md`
 
@@ -54,17 +59,17 @@ Local `AGENTS.md` files refine these rules:
 | `/ops/markets` | `Markets` | Market allowlist | Ops layout |
 | `/ops/incidents` | `Incidents` | Failure log | Ops layout |
 | `/ops/positions` | `Positions` | Portfolio state | Ops layout |
-| `/ops/risk` | `RiskGates` | Gate status/config | 708 lines, 27694 bytes |
+| `/ops/risk` | `RiskGates` | Gate status/config | Split across `pages/risk-gates/*` helpers |
 | `/ops/decisions` | `Decisions` | Decision stream and outcomes | Ops layout |
 
-Navigation uses React Router (`AppRouter`) with public routes and nested `/ops/*` routes.
+Navigation uses React Router (`AppRouter`) with public routes and nested `/ops/*` routes backed by `useOpsLayoutController`.
 
 ## Patterns
 
 ### State Management
-- Local `useState` / `useEffect`
-- No Redux/Zustand - simple prop drilling
-- Data fetched via `opsClient`
+- Route-level controller hooks (`useOpsLayoutController`, `useRiskGatesController`, `useDecisionsController`)
+- Local `useState` / `useEffect` for page state
+- Data fetched via `opsClient` helpers
 
 ### Real-time Updates
 - `useEventStream` hook for SSE
@@ -74,7 +79,7 @@ Navigation uses React Router (`AppRouter`) with public routes and nested `/ops/*
 
 ### Styling
 - CSS variables in `tokens.css`
-- Glass effects with `backdrop-filter`
+- Split global styles across `app-base.css`, `app-dashboard.css`, `app-ops.css`, `app-public.css`, and `app-responsive.css`
 - No Tailwind or CSS-in-JS
 
 ## API Client
@@ -91,14 +96,17 @@ Env vars: `VITE_OPS_BASE_URL`
 ## Commands
 
 ```bash
-(cd .. && npm run help) # root command/tool/flag reference
-npm run dev      # Vite :5173
-npm run build    # Production
-npm run test:e2e # Playwright
+# From dashboard/
+npm run dev
+npm run build
+npm run test:e2e
 
 # Live (from repo root)
-npm run dev:live      # Docker backend + local dashboard dev server
-npm run dev:live:down # Stop Docker backend
+npm run help
+npm run dev:live
+npm run dev:live:down
+npm --prefix dashboard run build
+npm --prefix dashboard run test:e2e
 ```
 
 ## Conventions
@@ -107,4 +115,5 @@ npm run dev:live:down # Stop Docker backend
 - Functional components only
 - Props interfaces for each component
 - Error handling with try/catch
-- useMemo for computed values
+- Prefer controller/helper extraction over adding inline route logic
+- Avoid memoization unless it materially simplifies or stabilizes the current code path

@@ -14,8 +14,10 @@ Applies to `src/core/`.
 
 ## Tests
 - `npm run test -- tests/unit/supervisor-reconciliation.test.ts`
+- `npm run test -- tests/unit/supervisor-assembly.test.ts`
 - `npm run test -- tests/unit/message-bus.test.ts`
+- `npm run test -- tests/unit/event-store.test.ts`
+- `npm run test -- tests/unit/event-store-recovery.test.ts`
 - `npm run test -- tests/unit/state-rebuilder.test.ts`
 - `npm run test -- tests/unit/trading-state-manager.test.ts`
 - `npm run test -- tests/unit/main-shutdown.test.ts`
-- `npm run test -- tests/integration/event-store.test.ts`

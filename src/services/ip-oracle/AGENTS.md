@@ -12,5 +12,5 @@ Applies to `src/services/ip-oracle/`.
 - Surface failures with actionable, typed error context.
 
 ## Tests
-- `npm run test -- tests/integration/ip-oracle-sidecar-smoke.test.ts`
+- `npm run test -- tests/unit/ip-oracle-client.test.ts`
 - `npm run test -- tests/unit/fw-projection-agent.test.ts`

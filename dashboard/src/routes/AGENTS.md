@@ -13,4 +13,5 @@ Applies to `dashboard/src/routes/`.
 - Centralize layout-level data loading and unauthorized handling.
 
 ## Tests
+- `npm run test -- tests/unit/dashboard-public-router.test.ts tests/unit/dashboard-ops-route-helpers.test.ts tests/unit/dashboard-ops-shell-content-direct.test.ts`
 - `npm --prefix dashboard run test:e2e`

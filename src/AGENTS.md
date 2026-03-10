@@ -19,38 +19,29 @@ Runtime strategy types (`src/domain/opportunity.ts`) and their distinguishing be
 
 ```
 src/
-├── agents/           # Specialized agents + dependency/projection modules
-│   ├── dependency/   # Dependency extraction + graph resolution helpers
-│   ├── execution/    # Order execution state machine (HOTSPOT: 2229 lines)
-│   ├── portfolio/    # Position/PnL management (650 lines, 21262 bytes)
-│   ├── scanner/      # Opportunity detection
-│   ├── risk/         # Risk gate evaluation
-│   ├── ops/          # Ops API agent
-│   ├── market-data/  # Market data processing
-│   ├── projection/   # Frank-Wolfe projection agent
-│   ├── signal/       # Signal aggregation and web search insights
-│   └── learning/     # Trade telemetry + advisory insights
-├── core/             # Infrastructure
-│   ├── Supervisor.ts # Agent orchestration (1054 lines, 36589 bytes)
-│   ├── MessageBus.ts # Typed event-driven communication
-│   └── EventStore.ts # SQLite event sourcing
-├── domain/           # Business logic (16 files + AGENTS.md)
-├── services/         # External integrations (11 top-level files + nested providers)
-├── config/           # Environment, policy, risk (14 files)
-├── venues/           # Exchange adapters
-├── telemetry/        # Metrics, SLO monitoring
+├── agents/           # Runtime agents plus dependency/projection helpers
+├── api/              # Fastify contracts, route handlers, session helpers
+├── boot/             # Runtime assembly and startup lifecycle
+├── config/           # Split env loaders, policy/risk, RPC, profile store
+├── core/             # Supervisor, MessageBus, EventStore, lifecycle infra
+├── db/               # SQLite schema + migrations
+├── domain/           # Pure business logic, gates, math, shared contracts
 ├── security/         # Auth utilities
-├── api/              # Fastify server
-└── db/               # Migrations
+├── services/         # Polymarket, market catalog, LLM, web-search, sidecars
+├── telemetry/        # Metrics, SLO streams, telemetry events
+├── tools/            # CLI entrypoints and prestart helpers
+├── utils/            # Shared helpers
+└── venues/           # Exchange adapters
 ```
 
 ## Local Instructions
 
 Local `AGENTS.md` files in subdirectories refine these rules for specific areas:
 - `src/agents/**/AGENTS.md` for each agent
-- `src/core/AGENTS.md`, `src/domain/AGENTS.md`, `src/services/AGENTS.md`
-- `src/config/AGENTS.md`, `src/api/AGENTS.md`, `src/telemetry/AGENTS.md`
-- `src/tools/AGENTS.md`, `src/utils/AGENTS.md`, `src/security/AGENTS.md`, `src/venues/AGENTS.md`
+- `src/api/AGENTS.md`, `src/config/AGENTS.md`, `src/core/AGENTS.md`
+- `src/db/AGENTS.md`, `src/domain/AGENTS.md`, `src/security/AGENTS.md`
+- `src/services/AGENTS.md`, `src/telemetry/AGENTS.md`, `src/tools/AGENTS.md`
+- `src/utils/AGENTS.md`, `src/venues/AGENTS.md`
 
 Read the nearest `AGENTS.md` before editing files in that subtree.
 
@@ -87,15 +78,15 @@ Events: `market:updated` → `opportunity:detected` → `fw_projection` (optiona
 
 | Service | Role |
 |---------|------|
-| `PolymarketClob` | REST API for orders |
-| `PolymarketRealtime` | WebSocket market data |
-| `PolymarketDataApi` | Positions/portfolio API |
+| `PolymarketClob` / `PolymarketRealtime` / `PolymarketDataApi` | Exchange REST/WS/portfolio clients |
+| `PolymarketAuth` / `PolymarketApiCreds` / `PolymarketUrls` | Auth and endpoint helpers |
 | `PolygonRpc` | Blockchain via ethers |
 | `RateLimiter` | Sliding window throttle |
 | `RetryPolicy` | Exponential backoff |
 | `IncidentTracker` | Failure logging |
-| `MarketCatalog` | Market pair loading |
-| `MarketCatalogRefresher` | Catalog refresh loop and cadence |
+| `MarketCatalog*` | Catalog loading, refresh, metadata/book helpers |
+| `AgentLlm`, `LLMRouter`, provider clients | Advisory model routing and logging |
+| `ExaClient`, `FirecrawlClient`, `WebSearch*` | Search providers, cache, runtime normalization |
 | `IpOracleClient` | Public IP discovery for sidecar networking checks |
 
 ## Execution State Machine

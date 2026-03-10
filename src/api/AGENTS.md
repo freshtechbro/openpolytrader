@@ -14,4 +14,5 @@ Applies to `src/api/`.
 ## Tests
 - `npm run test -- tests/unit/api-config.test.ts`
 - `npm run test -- tests/unit/api-config-missing-schema.test.ts`
-- `npm run test -- tests/integration/ops-agent.test.ts`
+- `npm run test -- tests/unit/server-routes-direct.test.ts`
+- `npm run test -- tests/unit/server-session-direct.test.ts`

@@ -13,8 +13,11 @@ Applies to `src/services/llm/`.
 - Keep provider fallbacks deterministic and bounded.
 
 ## Tests
+- `npm run test -- tests/unit/agent-llm-direct.test.ts`
 - `npm run test -- tests/unit/llm-config.test.ts`
+- `npm run test -- tests/unit/llm-request-normalization-direct.test.ts`
+- `npm run test -- tests/unit/llm-runtime-contracts.test.ts`
 - `npm run test -- tests/unit/llm-services.test.ts`
 - `npm run test -- tests/unit/llm-decision-logger.test.ts`
+- `npm run test -- tests/unit/openai-sdk-client-extract.test.ts`
 - `npm run test -- tests/unit/zen-messages-client.test.ts`
-- `npm run test -- tests/integration/llm-shadow.test.ts`

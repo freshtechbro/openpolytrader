@@ -11,4 +11,5 @@ Applies to `src/db/migrations/`.
 - Add new migration files with incremental ordering.
 
 ## Tests
-- `npm run test -- tests/integration/event-store.test.ts`
+- `npm run test -- tests/unit/event-store.test.ts`
+- `npm run test -- tests/unit/event-store-recovery.test.ts`
