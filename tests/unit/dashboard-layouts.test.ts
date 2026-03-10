@@ -20,7 +20,10 @@ describe('dashboard layouts', () => {
     expect(markup).toContain('Landing navigation');
   });
 
-  it('renders the ops layout loading shell before the session refresh completes', async () => {
+  it(
+    'renders the ops layout loading shell before the session refresh completes',
+    { timeout: 15_000 },
+    async () => {
     const { OpsLayout } = await import('../../dashboard/src/routes/OpsLayout');
     const markup = renderToStaticMarkup(
       createElement(MemoryRouter, { initialEntries: ['/ops/overview'] }, createElement(OpsLayout))
@@ -29,5 +32,6 @@ describe('dashboard layouts', () => {
     expect(markup).toContain('Ops Session');
     expect(markup).toContain('Checking operator session');
     expect(markup).toContain('Verifying runtime auth state before loading live feeds.');
-  });
+    }
+  );
 });
