@@ -236,6 +236,7 @@ flowchart TD
 |----------|---------|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, agent details, data flow |
 | [`docs/ARCHITECTURE_EVENT_FLOW.asc`](docs/ARCHITECTURE_EVENT_FLOW.asc) | ASCII end-to-end event flow diagram |
+| [`docs/SEARCH_PROVIDER_ROUTING_TECHNICAL_SPEC.md`](docs/SEARCH_PROVIDER_ROUTING_TECHNICAL_SPEC.md) | Detailed EV web-search routing and provider-selection contract |
 | [`docs/Development/architecture-decisions.md`](docs/Development/architecture-decisions.md) | ADRs for key architectural choices |
 
 ### 💻 Development

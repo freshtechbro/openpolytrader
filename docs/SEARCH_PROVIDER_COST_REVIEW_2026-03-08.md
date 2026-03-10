@@ -2,6 +2,8 @@
 
 This report reviews OpenPolyTrader's current EV web-search path, critiques the proposed `GDELT -> Exa|Serper` idea, compares current provider facts as of March 8, 2026, and recommends the lowest-cost deployment shape that preserves decision quality and speed.
 
+Companion implementation contract: [SEARCH_PROVIDER_ROUTING_TECHNICAL_SPEC.md](./SEARCH_PROVIDER_ROUTING_TECHNICAL_SPEC.md)
+
 Audit refresh on March 10, 2026:
 
 - corrected "current repo behavior" to distinguish policy defaults from runtime activation;

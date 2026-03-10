@@ -409,6 +409,7 @@ curl -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/health
 
 - API reference: `docs/API.md`
 - Architecture (with end-to-end event flow diagrams): `docs/ARCHITECTURE.md`
+- Search-provider routing technical spec: `docs/SEARCH_PROVIDER_ROUTING_TECHNICAL_SPEC.md`
 - Operator strategy report: `docs/Operations/operator-strategy-report.md`
 - Local setup spec and quickstart details: `docs/Development/setup.md`
 - Full command reference (start/help/stop/kill + diagnostics): `docs/Development/commands.md`
