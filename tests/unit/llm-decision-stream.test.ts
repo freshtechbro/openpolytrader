@@ -1,8 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { attachLLMDecisionStream } from '../../src/telemetry/llmDecisionStream.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+
+let messageBus = createMessageBus();
+
+beforeEach(() => {
+  messageBus = createMessageBus();
+});
 
 const BASE_DECISION = {
   schema_version: 1,
@@ -61,7 +67,7 @@ describe('LLM decision stream bridge', () => {
     };
 
     metrics.on('event', handler);
-    const detach = attachLLMDecisionStream(metrics);
+    const detach = attachLLMDecisionStream(metrics, messageBus);
 
     messageBus.emit('llm:decision', {
       decision: BASE_DECISION,
@@ -85,7 +91,7 @@ describe('LLM decision stream bridge', () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(456);
 
     metrics.on('event', handler);
-    const detach = attachLLMDecisionStream(metrics);
+    const detach = attachLLMDecisionStream(metrics, messageBus);
 
     messageBus.emit('llm:decision', {
       decision: BASE_DECISION,

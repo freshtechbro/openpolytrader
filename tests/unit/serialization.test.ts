@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { safeParseJSON } from '../../src/utils/serialization.js';
+import { safeParseJSON, safeParseJsonBody } from '../../src/utils/serialization.js';
 
 describe('safeParseJSON', () => {
   it('returns null for non-string input', () => {
@@ -51,5 +51,21 @@ describe('safeParseJSON', () => {
 
   it('falls back to JSON substring when a fenced block is present but invalid', () => {
     expect(safeParseJSON('```json\nnot-json\n```\n{"ok":true}')).toEqual({ ok: true });
+  });
+});
+
+describe('safeParseJsonBody', () => {
+  it('treats blank and non-string bodies as empty rather than failed', () => {
+    expect(safeParseJsonBody(null)).toEqual({ parsed: null, failed: false });
+    expect(safeParseJsonBody('   \n\t')).toEqual({ parsed: null, failed: false });
+  });
+
+  it('parses exact JSON bodies', () => {
+    expect(safeParseJsonBody(' {"ok":true} ')).toEqual({ parsed: { ok: true }, failed: false });
+  });
+
+  it('marks invalid or mixed-content bodies as failed', () => {
+    expect(safeParseJsonBody('not-json')).toEqual({ parsed: null, failed: true });
+    expect(safeParseJsonBody('prefix {"ok":true} postfix')).toEqual({ parsed: null, failed: true });
   });
 });

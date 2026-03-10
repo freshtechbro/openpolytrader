@@ -55,6 +55,22 @@ afterEach(() => {
 });
 
 describe('ExaClient', () => {
+  it('uses the canonical Exa base URL when no override is provided', async () => {
+    const fetchSpy = stubFetch({ results: [] });
+
+    const cache = new WebSearchCache();
+    const client = new ExaClient({ ...BASE_EXA, baseUrl: undefined, cache });
+
+    await client.search('market news', {
+      lookbackDays: 1,
+      maxResults: 1,
+      cacheTtlSeconds: 0
+    });
+
+    const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.exa.ai/search');
+  });
+
   it('caches search responses and passes domain filters', async () => {
     const fetchSpy = stubFetch({
       results: [{ url: 'https://example.com', title: 'Example', text: 'alpha' }]
@@ -629,6 +645,20 @@ describe('ExaClient', () => {
 });
 
 describe('FirecrawlClient', () => {
+  it('uses the canonical Firecrawl base URL when no override is provided', async () => {
+    const fetchSpy = stubFetch({
+      data: { web: [] }
+    });
+
+    const cache = new WebSearchCache();
+    const client = new FirecrawlClient({ ...BASE_FIRECRAWL, baseUrl: undefined, cache });
+
+    await client.search('polymarket', { lookbackDays: 1, maxResults: 1, cacheTtlSeconds: 0 });
+
+    const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.firecrawl.dev/v2/search');
+  });
+
   it('adds tbs and domain filters to search payload', async () => {
     const fetchSpy = stubFetch({
       data: { web: [{ url: 'https://example.com', title: 'Example', description: 'x' }] }
@@ -815,6 +845,31 @@ describe('FirecrawlClient', () => {
     expect(results).toEqual([]);
   });
 
+  it('skips search entries with missing or non-string urls', async () => {
+    const fetchSpy = stubFetch({
+      data: {
+        web: [
+          { title: 'Missing url' },
+          { url: 123, title: 'Wrong type' },
+          { url: 'https://example.com/story', description: 'kept' }
+        ]
+      }
+    });
+
+    const cache = new WebSearchCache();
+    const client = new FirecrawlClient({ ...BASE_FIRECRAWL, cache });
+
+    const results = await client.search('polymarket', { lookbackDays: 7, maxResults: 3, cacheTtlSeconds: 0 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(results).toEqual([
+      {
+        url: 'https://example.com/story',
+        source: 'example.com',
+        snippet: 'kept'
+      }
+    ]);
+  });
+
   it('caches scraped contents', async () => {
     const fetchSpy = stubFetch({
       data: { markdown: 'hello world', title: 'Example' }
@@ -910,6 +965,27 @@ describe('FirecrawlClient', () => {
     expect(contents[0]?.text).toBe('');
   });
 
+  it('handles entirely missing scrape payload data safely', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({})
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new FirecrawlClient({ ...BASE_FIRECRAWL, crawlEnabled: false, cache });
+
+    const contents = await client.fetchContents(['https://example.com'], 60);
+    expect(contents).toEqual([
+      {
+        url: 'https://example.com',
+        source: 'example.com',
+        text: ''
+      }
+    ]);
+  });
+
   it('returns scrape content when crawl pages are invalid', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce({
@@ -966,6 +1042,33 @@ describe('FirecrawlClient', () => {
 
     const contents = await client.fetchContents(['https://example.com'], 60);
     expect(contents[0]?.text).toBe('');
+  });
+
+  it('returns scrape content when crawl data omits pages', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: { markdown: '' } })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: {} })
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new FirecrawlClient({ ...BASE_FIRECRAWL, crawlEnabled: true, cache });
+
+    const contents = await client.fetchContents(['https://example.com'], 60);
+    expect(contents).toEqual([
+      {
+        url: 'https://example.com',
+        source: 'example.com',
+        text: ''
+      }
+    ]);
   });
 
   it('truncates crawl content when maxContentBytes is small', async () => {

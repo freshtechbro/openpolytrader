@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest';
 
-import '../../src/telemetry/events.js';
-
 describe('telemetry events module', () => {
-  it('loads without runtime exports', () => {
-    expect(true).toBe(true);
+  it('compiles to a type-only module with no runtime exports', async () => {
+    const runtimeModule = await import('../../src/telemetry/events.js');
+
+    expect(Object.keys(runtimeModule)).toEqual([]);
   });
 });
-

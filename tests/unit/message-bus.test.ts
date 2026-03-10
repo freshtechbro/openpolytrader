@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-import { MessageBus } from '../../src/core/MessageBus.js';
+import { MessageBus, resolveMessageBus } from '../../src/core/MessageBus.js';
 
 describe('MessageBus', () => {
   it('handles on/emit and off', () => {
@@ -24,5 +24,16 @@ describe('MessageBus', () => {
     bus.emit('ping', 1);
     bus.emit('ping', 2);
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws outside test runtime when a required shared bus is missing', () => {
+    const previousWorker = (globalThis as { __vitest_worker__?: unknown }).__vitest_worker__;
+    delete (globalThis as { __vitest_worker__?: unknown }).__vitest_worker__;
+
+    expect(() => resolveMessageBus(undefined, 'ExampleAgent')).toThrow(
+      'ExampleAgent requires a shared messageBus'
+    );
+
+    (globalThis as { __vitest_worker__?: unknown }).__vitest_worker__ = previousWorker;
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -7,14 +7,25 @@ import { rmSync } from 'node:fs';
 import { OpsAgent } from '../../src/agents/ops/OpsAgent.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { attachLLMDecisionStream } from '../../src/telemetry/llmDecisionStream.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import { loadEnv } from '../../src/config/env.js';
 import { loadLLMConfig } from '../../src/config/llm.js';
 import { MockLLMClient } from '../../src/services/llm/MockLLMClient.js';
 import { EventStore } from '../../src/core/EventStore.js';
 
+let messageBus = createMessageBus();
+
+const createAgent = (
+  config: ConstructorParameters<typeof OpsAgent>[0],
+  metrics?: ConstructorParameters<typeof OpsAgent>[1]
+) => new OpsAgent({ messageBus, ...config }, metrics);
+
 describe('OpsAgent LLM health summary', () => {
   const paths: string[] = [];
+
+  beforeEach(() => {
+    messageBus = createMessageBus();
+  });
 
   afterEach(() => {
     for (const path of paths.splice(0, paths.length)) {
@@ -49,7 +60,7 @@ describe('OpsAgent LLM health summary', () => {
       messageBus.once('ops:health_summary', (payload) => resolve(payload))
     );
 
-    const agent = new OpsAgent(
+    const agent = createAgent(
       {
         intervalMs: 1000,
         checks: [{ name: 'ok', check: async () => ({ ok: true, info: 'ok' }) }],
@@ -63,7 +74,7 @@ describe('OpsAgent LLM health summary', () => {
       metrics
     );
 
-    const detach = attachLLMDecisionStream(metrics);
+    const detach = attachLLMDecisionStream(metrics, messageBus);
     await agent.runOnce();
     detach();
 
@@ -95,17 +106,17 @@ describe('OpsAgent LLM health summary', () => {
     });
 
     let received: unknown = null;
-    const handler = (payload: unknown) => {
+    const summaryHandler = (payload: unknown) => {
       received = payload;
     };
     let decision: unknown = null;
     const decisionHandler = (payload: unknown) => {
       decision = payload;
     };
-    messageBus.on('ops:health_summary', handler);
+    messageBus.on('ops:health_summary', summaryHandler);
     messageBus.on('llm:decision', decisionHandler);
 
-    const agent = new OpsAgent(
+    const agent = createAgent(
       {
         intervalMs: 1000,
         checks: [{ name: 'ok', check: async () => ({ ok: true, info: 'ok' }) }],
@@ -121,7 +132,7 @@ describe('OpsAgent LLM health summary', () => {
 
     await agent.runOnce();
 
-    messageBus.off('ops:health_summary', handler);
+    messageBus.off('ops:health_summary', summaryHandler);
     messageBus.off('llm:decision', decisionHandler);
 
     expect(received).toBeNull();
@@ -186,12 +197,12 @@ describe('OpsAgent LLM health summary', () => {
     });
 
     const decisions: Array<{ reasoning: { result: { status: string } } }> = [];
-    const handler = (payload: unknown) => {
+    const decisionEventHandler = (payload: unknown) => {
       decisions.push(payload as { reasoning: { result: { status: string } } });
     };
-    messageBus.on('llm:decision', handler);
+    messageBus.on('llm:decision', decisionEventHandler);
 
-    const agent = new OpsAgent(
+    const agent = createAgent(
       {
         intervalMs: 1000,
         checks: [{ name: 'ok', check: async () => ({ ok: true, info: 'ok' }) }],
@@ -210,7 +221,7 @@ describe('OpsAgent LLM health summary', () => {
     await agent.runOnce();
     await agent.runOnce();
 
-    messageBus.off('llm:decision', handler);
+    messageBus.off('llm:decision', decisionEventHandler);
 
     expect(decisions.map((d) => d.reasoning.result.status)).toEqual(['fallback', 'timeout', 'error']);
     expect(store.listDecisions({ subjectId: 'system:ops-health' })).toHaveLength(3);
@@ -242,12 +253,12 @@ describe('OpsAgent LLM health summary', () => {
     });
 
     let emitted = 0;
-    const handler = () => {
+    const noDecisionHandler = () => {
       emitted += 1;
     };
-    messageBus.on('llm:decision', handler);
+    messageBus.on('llm:decision', noDecisionHandler);
 
-    const agent = new OpsAgent(
+    const agent = createAgent(
       {
         intervalMs: 1000,
         checks: [{ name: 'ok', check: async () => ({ ok: true, info: 'ok' }) }],
@@ -263,7 +274,7 @@ describe('OpsAgent LLM health summary', () => {
 
     await agent.runOnce();
 
-    messageBus.off('llm:decision', handler);
+    messageBus.off('llm:decision', noDecisionHandler);
 
     expect(emitted).toBe(0);
   });
@@ -302,12 +313,12 @@ describe('OpsAgent LLM health summary', () => {
       });
 
       let summaryReceived: unknown = null;
-      const handler = (payload: unknown) => {
+      const disabledSummaryHandler = (payload: unknown) => {
         summaryReceived = payload;
       };
-      messageBus.on('ops:health_summary', handler);
+      messageBus.on('ops:health_summary', disabledSummaryHandler);
 
-      const agent = new OpsAgent({
+      const agent = createAgent({
         intervalMs: 1000,
         checks: [{ name: 'ok', check: async () => ({ ok: true, info: 'ok' }) }],
         llm: {
@@ -320,7 +331,7 @@ describe('OpsAgent LLM health summary', () => {
 
       await agent.runOnce();
 
-      messageBus.off('ops:health_summary', handler);
+      messageBus.off('ops:health_summary', disabledSummaryHandler);
 
       expect(summaryReceived).toBeNull();
     }
@@ -348,17 +359,17 @@ describe('OpsAgent LLM health summary', () => {
     });
 
     let summaryReceived: unknown = null;
-    const handler = (payload: unknown) => {
+    const missingOutputSummaryHandler = (payload: unknown) => {
       summaryReceived = payload;
     };
     let decision: unknown = null;
     const decisionHandler = (payload: unknown) => {
       decision = payload;
     };
-    messageBus.on('ops:health_summary', handler);
+    messageBus.on('ops:health_summary', missingOutputSummaryHandler);
     messageBus.on('llm:decision', decisionHandler);
 
-    const agent = new OpsAgent({
+    const agent = createAgent({
       intervalMs: 1000,
       checks: [{ name: 'ok', check: async () => ({ ok: true, info: 'ok' }) }],
       llm: {
@@ -370,7 +381,7 @@ describe('OpsAgent LLM health summary', () => {
     });
 
     await agent.runOnce();
-    messageBus.off('ops:health_summary', handler);
+    messageBus.off('ops:health_summary', missingOutputSummaryHandler);
     messageBus.off('llm:decision', decisionHandler);
     expect(summaryReceived).toBeNull();
     expect(decision).toMatchObject({
@@ -410,7 +421,7 @@ describe('OpsAgent LLM health summary', () => {
     };
     messageBus.on('llm:error', errorHandler);
 
-    const agent = new OpsAgent({
+    const agent = createAgent({
       intervalMs: 1000,
       checks: [{ name: 'ok', check: async () => ({ ok: true, info: 'ok' }) }],
       llm: {
@@ -456,7 +467,7 @@ describe('OpsAgent LLM health summary', () => {
       attempt: 1
     });
 
-    const agent = new OpsAgent({
+    const agent = createAgent({
       intervalMs: 1000,
       checks: [{ name: 'ok', check: async () => ({ ok: true, latencyMs: 12 }) }],
       llm: {

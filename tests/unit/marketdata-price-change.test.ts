@@ -2,18 +2,24 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { MarketDataAgent } from '../../src/agents/market-data/MarketDataAgent.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
-import type { OrderBookResponse } from '../../src/services/PolymarketClob.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
+import type { RawOrderBookSnapshot } from '../../src/domain/orderbook.js';
 import type { PolymarketClob } from '../../src/services/PolymarketClob.js';
 import type { PolymarketRealtime } from '../../src/services/PolymarketRealtime.js';
 
 function seedBook(
   agent: MarketDataAgent,
   tokenId: string,
-  snapshot: OrderBookResponse,
+  snapshot: RawOrderBookSnapshot,
   receivedAtMs = 1
 ): void {
   (agent as unknown as {
-    updateBook: (tokenId: string, raw: OrderBookResponse, receivedAtMs: number, options?: { force?: boolean }) => void;
+    updateBook: (
+      tokenId: string,
+      raw: RawOrderBookSnapshot,
+      receivedAtMs: number,
+      options?: { force?: boolean }
+    ) => void;
   }).updateBook(tokenId, snapshot, receivedAtMs, { force: true });
 }
 
@@ -22,7 +28,11 @@ describe('MarketDataAgent price_change handling', () => {
     const clob = { getOrderBook: vi.fn() } as unknown as PolymarketClob;
     const realtime = {} as unknown as PolymarketRealtime;
 
-    const agent = new MarketDataAgent({ tokenIds: [], policy: DEFAULT_TRADE_POLICY }, clob, realtime);
+    const agent = new MarketDataAgent(
+      { tokenIds: [], policy: DEFAULT_TRADE_POLICY, messageBus: createMessageBus() },
+      clob,
+      realtime
+    );
 
     seedBook(agent, 'token-1', {
       bids: [{ price: '0.4', size: '5' }],
@@ -74,7 +84,7 @@ describe('MarketDataAgent price_change handling', () => {
   });
 
   it('triggers snapshot resync on best bid/ask mismatch', async () => {
-    const snapshot: OrderBookResponse = {
+    const snapshot: RawOrderBookSnapshot = {
       bids: [{ price: '0.4', size: '5' }],
       asks: [{ price: '0.6', size: '5' }],
       tick_size: '0.01',
@@ -87,7 +97,11 @@ describe('MarketDataAgent price_change handling', () => {
     } as unknown as PolymarketClob;
     const realtime = {} as unknown as PolymarketRealtime;
 
-    const agent = new MarketDataAgent({ tokenIds: [], policy: DEFAULT_TRADE_POLICY }, clob, realtime);
+    const agent = new MarketDataAgent(
+      { tokenIds: [], policy: DEFAULT_TRADE_POLICY, messageBus: createMessageBus() },
+      clob,
+      realtime
+    );
     (agent as unknown as { snapshotResyncCooldownMs: number }).snapshotResyncCooldownMs = 0;
 
     seedBook(agent, 'token-1', snapshot);
@@ -116,7 +130,11 @@ describe('MarketDataAgent price_change handling', () => {
     const clob = { getOrderBook: vi.fn() } as unknown as PolymarketClob;
     const realtime = {} as unknown as PolymarketRealtime;
 
-    const agent = new MarketDataAgent({ tokenIds: [], policy: DEFAULT_TRADE_POLICY }, clob, realtime);
+    const agent = new MarketDataAgent(
+      { tokenIds: [], policy: DEFAULT_TRADE_POLICY, messageBus: createMessageBus() },
+      clob,
+      realtime
+    );
 
     seedBook(agent, 'token-1', {
       bids: [{ price: '0.4', size: '5' }],

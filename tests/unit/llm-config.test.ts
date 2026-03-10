@@ -14,6 +14,8 @@ describe('llm config', () => {
     expect(cfg.primaryRetryCount).toBe(1);
     expect(cfg.primaryProvider).toBe('opencode-zen');
     expect(cfg.fallbackProvider).toBe('openrouter');
+    expect(cfg.providers['opencode-zen'].baseUrl).toBe('https://opencode.ai/zen/v1');
+    expect(cfg.providers.openrouter.baseUrl).toBe('https://openrouter.ai/api/v1');
 
     expect(cfg.agents.ExecutionAgent.mode).toBe('advisory');
     expect(cfg.agents.ExecutionAgent.provider).toBe('opencode-zen');
@@ -35,6 +37,17 @@ describe('llm config', () => {
     expect(cfg.agents.ScannerAgent.scoreTopN).toBe(20);
     expect(cfg.agents.ScannerAgent.scoreConcurrency).toBe(3);
     expect(cfg.agents.ScannerAgent.shadowMinIntervalMs).toBe(500);
+  });
+
+  it('uses explicit base-url overrides when provided', () => {
+    const env = loadEnv({
+      LLM_PRIMARY_BASE_URL: 'https://primary.example/v1',
+      LLM_FALLBACK_BASE_URL: 'https://fallback.example/v1'
+    });
+
+    const cfg = loadLLMConfig(env);
+    expect(cfg.providers['opencode-zen'].baseUrl).toBe('https://primary.example/v1');
+    expect(cfg.providers.openrouter.baseUrl).toBe('https://fallback.example/v1');
   });
 
   it('loads per-agent fallback provider model overrides from env', () => {

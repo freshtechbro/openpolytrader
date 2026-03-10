@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Supervisor } from '../../src/core/Supervisor.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
+import { Supervisor, type SupervisorDeps } from '../../src/core/Supervisor.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { MarketAllowlist } from '../../src/domain/allowlist.js';
 import { IncidentTracker } from '../../src/services/IncidentTracker.js';
@@ -16,7 +17,76 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function withMessageBus(deps: Omit<SupervisorDeps, 'messageBus'>): SupervisorDeps {
+  return {
+    messageBus: createMessageBus(),
+    ...deps
+  };
+}
+
 describe('Supervisor reconciliation', () => {
+  it('fails startup when market-data realtime cannot connect', async () => {
+    const metrics = new MetricsStore(1000);
+    const allowlist = new MarketAllowlist({ autoResume: false });
+    const incidentTracker = new IncidentTracker(allowlist, metrics, {
+      cooldownMs: 1,
+      maxIncidents: 10
+    });
+    const portfolio = new PortfolioAgent(1000);
+    const realtime = {
+      connect: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('marketdata offline'))
+        .mockResolvedValueOnce(undefined),
+      on: vi.fn(),
+      subscribeMarkets: vi.fn()
+    } as unknown as PolymarketRealtime;
+    const clob = {
+      getActiveOrders: vi.fn().mockResolvedValue([])
+    } as unknown as PolymarketClob;
+    const dataApi = {
+      getPositions: vi.fn().mockResolvedValue([])
+    } as unknown as PolymarketDataApi;
+
+    const supervisor = new Supervisor(
+      {
+        marketPairs: [{ marketId: 'market-1', yesTokenId: 'yes-1', noTokenId: 'no-1' }],
+        policy: { ...DEFAULT_TRADE_POLICY },
+        riskConfig: { ...DEFAULT_RISK_CONFIG },
+        capital: 1000,
+        tradingEnabled: false,
+        tradingMode: 'off',
+        reconciliation: {
+          intervalMs: 0,
+          afterIncidentDelayMs: 0,
+          positionSizeTolerance: 0,
+          positionsUser: '0xabc',
+          positionsSizeThreshold: 0,
+          positionsLimit: 100,
+          positionsOffset: 0
+        }
+      },
+      withMessageBus({
+        clob,
+        dataApi,
+        realtime,
+        allowlist,
+        metrics,
+        incidentTracker,
+        portfolio
+      })
+    );
+
+    await expect(supervisor.start()).rejects.toThrow('marketdata offline');
+    expect(metrics.recent('error', 2).map((event) => event.data?.message)).toEqual([
+      'realtime_connect_failed',
+      'startup_dependency_failed'
+    ]);
+
+    await expect(supervisor.start()).resolves.toBeUndefined();
+    expect(realtime.connect).toHaveBeenCalledTimes(2);
+  });
+
   it('runs reconciliation on startup', async () => {
     const metrics = new MetricsStore(1000);
     const allowlist = new MarketAllowlist({ autoResume: false });
@@ -60,7 +130,7 @@ describe('Supervisor reconciliation', () => {
           positionsOffset: 0
         }
       },
-      {
+      withMessageBus({
         clob,
         dataApi,
         realtime,
@@ -68,7 +138,7 @@ describe('Supervisor reconciliation', () => {
         metrics,
         incidentTracker,
         portfolio
-      }
+      })
     );
 
     await supervisor.start();
@@ -121,7 +191,7 @@ describe('Supervisor reconciliation', () => {
           positionsOffset: 0
         }
       },
-      {
+      withMessageBus({
         clob,
         dataApi,
         realtime,
@@ -129,7 +199,7 @@ describe('Supervisor reconciliation', () => {
         metrics,
         incidentTracker,
         portfolio
-      }
+      })
     );
 
     await supervisor.start();
@@ -184,7 +254,7 @@ describe('Supervisor fee-aware near-zero gate recheck', () => {
         tradingEnabled: true,
         tradingMode: 'paper'
       },
-      {
+      withMessageBus({
         clob,
         dataApi,
         realtime,
@@ -192,7 +262,7 @@ describe('Supervisor fee-aware near-zero gate recheck', () => {
         metrics,
         incidentTracker,
         portfolio
-      }
+      })
     );
 
     return { supervisor, metrics };
@@ -326,7 +396,7 @@ describe('Supervisor gate rejection dedupe', () => {
         tradingMode: 'paper',
         ...configOverrides
       },
-      {
+      withMessageBus({
         clob: {} as unknown as PolymarketClob,
         dataApi: {} as unknown as PolymarketDataApi,
         realtime,
@@ -334,7 +404,7 @@ describe('Supervisor gate rejection dedupe', () => {
         metrics,
         incidentTracker,
         portfolio
-      }
+      })
     );
 
     return { supervisor, metrics };
@@ -462,7 +532,7 @@ describe('Supervisor FW market metadata wiring', () => {
         tradingEnabled: false,
         tradingMode: 'off'
       },
-      {
+      withMessageBus({
         clob: {} as unknown as PolymarketClob,
         dataApi: {} as unknown as PolymarketDataApi,
         realtime,
@@ -470,14 +540,14 @@ describe('Supervisor FW market metadata wiring', () => {
         metrics,
         incidentTracker,
         portfolio
-      }
+      })
     );
 
-    const scanFwPair = vi.fn().mockResolvedValue(null);
+    const scanFwUniverse = vi.fn().mockResolvedValue([]);
     const internals = supervisor as unknown as {
       scanner: {
         scanPair: (...args: unknown[]) => unknown;
-        scanFwPair: (...args: unknown[]) => Promise<unknown>;
+        scanFwUniverse: (...args: unknown[]) => Promise<unknown[]>;
       };
       marketData: { getOrderBook: (tokenId: string) => unknown };
       handleMarketUpdated: (event: { tokenId: string }) => Promise<void>;
@@ -485,7 +555,7 @@ describe('Supervisor FW market metadata wiring', () => {
 
     internals.scanner = {
       scanPair: () => null,
-      scanFwPair
+      scanFwUniverse
     };
     internals.marketData = {
       getOrderBook: () => undefined
@@ -493,8 +563,8 @@ describe('Supervisor FW market metadata wiring', () => {
 
     await internals.handleMarketUpdated({ tokenId: 'yes-1' });
 
-    expect(scanFwPair).toHaveBeenCalledTimes(1);
-    expect(scanFwPair.mock.calls[0]?.[3]).toEqual([
+    expect(scanFwUniverse).toHaveBeenCalledTimes(1);
+    expect(scanFwUniverse.mock.calls[0]?.[1]).toEqual([
       {
         marketId: 'market-1',
         yesTokenId: 'yes-1',
@@ -533,7 +603,7 @@ describe('Supervisor FW scan coalescing', () => {
         tradingEnabled: true,
         tradingMode: 'paper'
       },
-      {
+      withMessageBus({
         clob: {} as unknown as PolymarketClob,
         dataApi: {} as unknown as PolymarketDataApi,
         realtime,
@@ -541,7 +611,7 @@ describe('Supervisor FW scan coalescing', () => {
         metrics,
         incidentTracker,
         portfolio
-      }
+      })
     );
 
     let resolveFirst: ((value: unknown) => void) | null = null;
@@ -642,7 +712,7 @@ describe('Supervisor FW universe mode selection', () => {
         tradingEnabled: true,
         tradingMode: 'paper'
       },
-      {
+      withMessageBus({
         clob: {} as unknown as PolymarketClob,
         dataApi: {} as unknown as PolymarketDataApi,
         realtime,
@@ -650,7 +720,7 @@ describe('Supervisor FW universe mode selection', () => {
         metrics,
         incidentTracker,
         portfolio
-      }
+      })
     );
 
     const scanFwUniverse = vi.fn(async () => []);
@@ -676,7 +746,10 @@ describe('Supervisor FW universe mode selection', () => {
 
     expect(scanFwUniverse).toHaveBeenCalledTimes(1);
     const selectedUniverse = scanFwUniverse.mock.calls[0]?.[1] as Array<{ marketId: string }>;
-    expect(selectedUniverse.map((entry) => entry.marketId).sort()).toEqual(['m-a', 'm-b']);
+    expect(selectedUniverse.map((entry) => entry.marketId).sort((left, right) => left.localeCompare(right))).toEqual([
+      'm-a',
+      'm-b'
+    ]);
   });
 
   it('falls back to broad rotation when dependency cohort graph is sparse', async () => {
@@ -719,7 +792,7 @@ describe('Supervisor FW universe mode selection', () => {
         tradingEnabled: true,
         tradingMode: 'paper'
       },
-      {
+      withMessageBus({
         clob: {} as unknown as PolymarketClob,
         dataApi: {} as unknown as PolymarketDataApi,
         realtime,
@@ -727,7 +800,7 @@ describe('Supervisor FW universe mode selection', () => {
         metrics,
         incidentTracker,
         portfolio
-      }
+      })
     );
 
     const scanFwUniverse = vi.fn(async () => []);
@@ -753,6 +826,9 @@ describe('Supervisor FW universe mode selection', () => {
 
     expect(scanFwUniverse).toHaveBeenCalledTimes(1);
     const selectedUniverse = scanFwUniverse.mock.calls[0]?.[1] as Array<{ marketId: string }>;
-    expect(selectedUniverse.map((entry) => entry.marketId).sort()).toEqual(['m-x', 'm-y']);
+    expect(selectedUniverse.map((entry) => entry.marketId).sort((left, right) => left.localeCompare(right))).toEqual([
+      'm-x',
+      'm-y'
+    ]);
   });
 });

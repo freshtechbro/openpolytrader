@@ -4,6 +4,7 @@ import { createOpsServer, startOpsServer, type OpsServerDeps } from '../../src/a
 import { ConfigStore } from '../../src/config/store.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import { DEFAULT_RISK_CONFIG } from '../../src/config/risk.js';
+import { RISK_PROFILE_IDS } from '../../src/config/riskProfile.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { MarketAllowlist } from '../../src/domain/allowlist.js';
 import { OpsAgent } from '../../src/agents/ops/OpsAgent.js';
@@ -63,6 +64,20 @@ function buildServer(options?: {
   );
 
   return { app, metrics, allowlist };
+}
+
+function expectOpsErrorResponse(
+  body: unknown,
+  code: string,
+  options?: { message?: string; details?: unknown }
+): void {
+  expect(body).toMatchObject({
+    error: {
+      code,
+      ...(options?.message ? { message: options.message } : {}),
+      ...(options && 'details' in options ? { details: options.details } : {})
+    }
+  });
 }
 
 describe('ops config endpoints', () => {
@@ -201,7 +216,7 @@ describe('ops config endpoints', () => {
       risk: { ...DEFAULT_RISK_CONFIG },
       persisted: true
     });
-    const { app } = buildServer({
+    const { app, metrics } = buildServer({
       applyRiskProfile,
       riskProfile: { id: 'near_zero', source: 'defaults' }
     });
@@ -214,11 +229,16 @@ describe('ops config endpoints', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      ok: true,
       profile: { id: 'high', source: 'test' },
       persisted: true
     });
     expect(applyRiskProfile).toHaveBeenCalledWith('high', undefined);
+    expect(metrics.recent('info', 1)[0]?.data).toMatchObject({
+      message: 'privileged_mutation_applied',
+      action: 'risk_profile_applied',
+      profile: 'high',
+      persisted: true
+    });
 
     await app.close();
   });
@@ -235,7 +255,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toMatchObject({ error: 'risk_profile_not_configured' });
+    expectOpsErrorResponse(response.json(), 'risk_profile_not_configured');
 
     await app.close();
   });
@@ -304,7 +324,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ error: 'risk_profile_apply_failed' });
+    expectOpsErrorResponse(response.json(), 'risk_profile_apply_failed', { message: 'boom' });
 
     await app.close();
   });
@@ -325,7 +345,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ error: 'risk_profile_apply_failed', message: 'boom' });
+    expectOpsErrorResponse(response.json(), 'risk_profile_apply_failed', { message: 'boom' });
 
     await app.close();
   });
@@ -344,9 +364,8 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    const body = response.json() as { error?: string; validProfiles?: string[] };
-    expect(body.error).toBe('invalid_profile');
-    expect(Array.isArray(body.validProfiles)).toBe(true);
+    const body = response.json();
+    expectOpsErrorResponse(body, 'invalid_profile', { details: { validProfiles: RISK_PROFILE_IDS } });
     expect(applyRiskProfile).not.toHaveBeenCalled();
 
     await app.close();
@@ -365,7 +384,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ error: 'invalid_profile' });
+    expectOpsErrorResponse(response.json(), 'invalid_profile', { details: { validProfiles: RISK_PROFILE_IDS } });
     expect(applyRiskProfile).not.toHaveBeenCalled();
 
     await app.close();
@@ -385,7 +404,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ error: 'invalid_profile' });
+    expectOpsErrorResponse(response.json(), 'invalid_profile', { details: { validProfiles: RISK_PROFILE_IDS } });
     expect(applyRiskProfile).not.toHaveBeenCalled();
 
     await app.close();
@@ -409,7 +428,7 @@ describe('ops config endpoints', () => {
     const response = await app.inject({ method: 'GET', url: '/config/infra' });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: 'infra_config_not_configured' });
+    expectOpsErrorResponse(response.json(), 'infra_config_not_configured');
 
     await app.close();
   });
@@ -419,7 +438,7 @@ describe('ops config endpoints', () => {
     const response = await app.inject({ method: 'GET', url: '/slo' });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: 'event_store_not_configured' });
+    expectOpsErrorResponse(response.json(), 'event_store_not_configured');
 
     await app.close();
   });
@@ -455,7 +474,7 @@ describe('ops config endpoints', () => {
     const response = await app.inject({ method: 'GET', url: '/decisions' });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: 'event_store_not_configured' });
+    expectOpsErrorResponse(response.json(), 'event_store_not_configured');
 
     await app.close();
   });
@@ -651,7 +670,7 @@ describe('ops config endpoints', () => {
 
     const response = await app.inject({ method: 'GET', url: '/slo' });
     expect(response.statusCode).toBe(500);
-    expect(response.json().error).toBe('slo_compute_failed');
+    expectOpsErrorResponse(response.json(), 'slo_compute_failed', { message: 'boom' });
 
     await app.close();
   });
@@ -674,7 +693,7 @@ describe('ops config endpoints', () => {
 
     const response = await app.inject({ method: 'GET', url: '/slo' });
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toMatchObject({ error: 'slo_compute_failed', message: 'boom' });
+    expectOpsErrorResponse(response.json(), 'slo_compute_failed', { message: 'boom' });
 
     await app.close();
   });
@@ -684,13 +703,13 @@ describe('ops config endpoints', () => {
     const response = await app.inject({ method: 'GET', url: '/config/infra' });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: 'infra_config_not_configured' });
+    expectOpsErrorResponse(response.json(), 'infra_config_not_configured');
 
     await app.close();
   });
 
   it('updates policy and risk', async () => {
-    const { app } = buildServer();
+    const { app, metrics } = buildServer();
 
     const policyResponse = await app.inject({
       method: 'PATCH',
@@ -707,6 +726,18 @@ describe('ops config endpoints', () => {
     });
     expect(riskResponse.statusCode).toBe(200);
     expect(riskResponse.json().risk.maxPerTradeLossDollars).toBe(30);
+    expect(metrics.recent('info', 2).map((event) => event.data)).toEqual([
+      expect.objectContaining({
+        message: 'privileged_mutation_applied',
+        action: 'policy_updated',
+        fields: ['maxDecisionLatencyMs']
+      }),
+      expect.objectContaining({
+        message: 'privileged_mutation_applied',
+        action: 'risk_updated',
+        fields: ['maxPerTradeLossDollars']
+      })
+    ]);
 
     await app.close();
   });
@@ -761,7 +792,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ error: 'invalid_policy_update', message: 'boom' });
+    expectOpsErrorResponse(response.json(), 'invalid_policy_update', { message: 'boom' });
     await app.close();
   });
 
@@ -797,8 +828,8 @@ describe('ops config endpoints', () => {
     const { app } = buildServer();
     const response = await app.inject({ method: 'GET', url: '/portfolio' });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json().error).toBe('portfolio agent not configured');
+    expect(response.statusCode).toBe(503);
+    expectOpsErrorResponse(response.json(), 'portfolio_agent_not_configured');
     await app.close();
   });
 
@@ -885,6 +916,28 @@ describe('ops config endpoints', () => {
       headers: { 'x-ops-token': 'secret' }
     });
     expect(authorized.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it('limits query token auth to the stream route when configured', async () => {
+    const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const allowlist = new MarketAllowlist(DEFAULT_ALLOWLIST_CONFIG);
+    const opsAgent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const app = createOpsServer(
+      { metrics, allowlist, opsAgent },
+      { authToken: 'secret', incidentsLimit, streamHeartbeatMs: defaultStreamHeartbeatMs }
+    );
+
+    const health = await app.inject({ method: 'GET', url: '/health?token=secret' });
+    const sessionStatus = await app.inject({ method: 'GET', url: '/ops/session?token=secret' });
+    const stream = await app.inject({ method: 'GET', url: '/stream?once=1&token=secret' });
+
+    expect(health.statusCode).toBe(401);
+    expect(sessionStatus.statusCode).toBe(200);
+    expect(sessionStatus.json()).toMatchObject({ authenticated: false, authRequired: true });
+    expect(stream.statusCode).toBe(200);
+    expect(stream.payload).toContain('stream_connected');
 
     await app.close();
   });
@@ -1146,7 +1199,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(login.statusCode).toBe(401);
-    expect(login.json()).toEqual({ error: 'unauthorized' });
+    expectOpsErrorResponse(login.json(), 'unauthorized');
 
     await app.close();
   });
@@ -1188,7 +1241,7 @@ describe('ops config endpoints', () => {
       payload: { token: 'wrong' }
     });
     expect(login.statusCode).toBe(401);
-    expect(login.json().error).toBe('unauthorized');
+    expectOpsErrorResponse(login.json(), 'unauthorized');
 
     await app.close();
   });
@@ -1208,7 +1261,7 @@ describe('ops config endpoints', () => {
       payload: {}
     });
     expect(login.statusCode).toBe(401);
-    expect(login.json().error).toBe('unauthorized');
+    expectOpsErrorResponse(login.json(), 'unauthorized');
 
     await app.close();
   });
@@ -1294,7 +1347,7 @@ describe('ops config endpoints', () => {
     const response = await app.inject({ method: 'POST', url: '/allowlist/%20/resume' });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json().error).toBe('missing_market_id');
+    expectOpsErrorResponse(response.json(), 'missing_market_id');
     await app.close();
   });
 
@@ -1449,7 +1502,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json().message).toBe('boom');
+    expectOpsErrorResponse(response.json(), 'invalid_risk_update', { message: 'boom' });
     await app.close();
   });
 
@@ -1470,7 +1523,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json().message).toBe('boom');
+    expectOpsErrorResponse(response.json(), 'invalid_risk_update', { message: 'boom' });
     await app.close();
   });
 
@@ -1483,7 +1536,7 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json().error).toBe('trading_state_manager_not_configured');
+    expectOpsErrorResponse(response.json(), 'trading_state_manager_not_configured');
     await app.close();
   });
 
@@ -1505,7 +1558,9 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json().error).toBe('invalid_mode');
+    expectOpsErrorResponse(response.json(), 'invalid_mode', {
+      details: { validModes: ['off', 'shadow', 'paper', 'live'] }
+    });
     await app.close();
   });
 
@@ -1527,7 +1582,9 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json().error).toBe('live_mode_requires_confirmation');
+    expectOpsErrorResponse(response.json(), 'live_mode_requires_confirmation', {
+      message: 'Add ?confirm=true to enable live trading'
+    });
     await app.close();
   });
 
@@ -1549,7 +1606,6 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().ok).toBe(true);
     expect(response.json().state.mode).toBe('live');
     await app.close();
   });
@@ -1572,7 +1628,6 @@ describe('ops config endpoints', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().ok).toBe(true);
     expect(response.json().state.enabled).toBe(true);
     await app.close();
   });
@@ -1704,19 +1759,24 @@ describe('allowlist endpoints', () => {
     const response = await app.inject({ method: 'POST', url: '/allowlist/%20/resume' });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'missing_market_id' });
+    expectOpsErrorResponse(response.json(), 'missing_market_id');
 
     await app.close();
   });
 
   it('resumes allowlist entries by market id', async () => {
-    const { app, allowlist } = buildServer();
+    const { app, allowlist, metrics } = buildServer();
     allowlist.quarantine('market-1', 'testing', 60_000);
 
     const response = await app.inject({ method: 'POST', url: '/allowlist/market-1/resume' });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ ok: true, marketId: 'market-1' });
+    expect(response.json()).toMatchObject({ marketId: 'market-1' });
+    expect(metrics.recent('info', 1)[0]?.data).toMatchObject({
+      message: 'privileged_mutation_applied',
+      action: 'allowlist_resumed',
+      marketId: 'market-1'
+    });
 
     await app.close();
   });
@@ -1804,7 +1864,7 @@ describe('ops debug endpoints', () => {
     const response = await app.inject({ method: 'POST', url: '/debug/learning/synthesize' });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: 'learning_agent_not_configured' });
+    expectOpsErrorResponse(response.json(), 'learning_agent_not_configured');
 
     await app.close();
   });
@@ -1822,8 +1882,8 @@ describe('ops debug endpoints', () => {
 
     const response = await app.inject({ method: 'POST', url: '/debug/learning/synthesize' });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true });
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe('');
     expect(learningAgent.synthesizeNow).toHaveBeenCalledTimes(1);
 
     await app.close();
@@ -1835,7 +1895,7 @@ describe('ops debug endpoints', () => {
     const response = await app.inject({ method: 'POST', url: '/debug/portfolio/analyze' });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: 'portfolio_agent_not_configured' });
+    expectOpsErrorResponse(response.json(), 'portfolio_agent_not_configured');
 
     await app.close();
   });
@@ -1853,8 +1913,8 @@ describe('ops debug endpoints', () => {
 
     const response = await app.inject({ method: 'POST', url: '/debug/portfolio/analyze' });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true });
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe('');
     expect(portfolioAgent.analyzeAnomalies).toHaveBeenCalledTimes(1);
 
     await app.close();
@@ -1870,7 +1930,7 @@ describe('ops debug endpoints', () => {
     });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: 'marketdata_debug_not_configured' });
+    expectOpsErrorResponse(response.json(), 'marketdata_debug_not_configured');
 
     await app.close();
   });
@@ -1886,7 +1946,7 @@ describe('ops debug endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'missing_token_id' });
+    expectOpsErrorResponse(response.json(), 'missing_token_id');
 
     await app.close();
   });
@@ -1902,7 +1962,7 @@ describe('ops debug endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'missing_token_id' });
+    expectOpsErrorResponse(response.json(), 'missing_token_id');
 
     await app.close();
   });
@@ -1918,7 +1978,7 @@ describe('ops debug endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ ok: false, error: 'orderbook_missing' });
+    expectOpsErrorResponse(response.json(), 'orderbook_missing');
 
     await app.close();
   });
@@ -1934,7 +1994,7 @@ describe('ops debug endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ ok: false, error: 'marketdata_outlier_failed' });
+    expectOpsErrorResponse(response.json(), 'marketdata_outlier_failed');
 
     await app.close();
   });
@@ -1949,8 +2009,8 @@ describe('ops debug endpoints', () => {
       payload: { tokenId: 'token-1' }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true });
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe('');
     expect(debugMarketDataOutlier).toHaveBeenCalledWith('token-1');
 
     await app.close();
@@ -1962,7 +2022,7 @@ describe('ops debug endpoints', () => {
     const response = await app.inject({ method: 'POST', url: '/debug/synthetic-opportunity' });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: 'synthetic_opportunity_not_configured' });
+    expectOpsErrorResponse(response.json(), 'synthetic_opportunity_not_configured');
 
     await app.close();
   });
@@ -1985,7 +2045,10 @@ describe('ops debug endpoints', () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ ok: false, message: 'no-op' });
+    expectOpsErrorResponse(response.json(), 'synthetic_opportunity_failed', {
+      message: 'no-op',
+      details: { ok: false, message: 'no-op' }
+    });
 
     await app.close();
   });
@@ -2008,7 +2071,7 @@ describe('ops debug endpoints', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true, marketId: 'm-1' });
+    expect(response.json()).toEqual({ marketId: 'm-1' });
 
     await app.close();
   });

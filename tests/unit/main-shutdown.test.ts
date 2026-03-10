@@ -58,6 +58,15 @@ describe('createShutdownHandler', () => {
     expect(userRealtime.close).toHaveBeenCalledOnce();
   });
 
+  it('stops the learning loop when provided', async () => {
+    const learning = { stop: vi.fn() };
+    const shutdown = createShutdownHandler(buildDeps({ learning }));
+
+    await shutdown('SIGTERM');
+
+    expect(learning.stop).toHaveBeenCalledOnce();
+  });
+
   it('records supervisor shutdown failures', async () => {
     const error = new Error('supervisor failed');
     const supervisor = { shutdown: vi.fn().mockRejectedValue(error) };

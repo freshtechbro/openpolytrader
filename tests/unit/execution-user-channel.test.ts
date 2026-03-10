@@ -418,9 +418,15 @@ describe('ExecutionAgent (user channel)', () => {
 
     const waitForFillOutcome = (
       agent as unknown as {
-        waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<Outcome>;
+        orderTracker: {
+          waitForFillOutcome: (
+            orderId: string,
+            desiredSize: number,
+            timeoutMs: number
+          ) => Promise<Outcome>;
+        };
       }
-    ).waitForFillOutcome.bind(agent);
+    ).orderTracker.waitForFillOutcome.bind((agent as unknown as { orderTracker: unknown }).orderTracker);
 
     const immediateOutcome = await waitForFillOutcome('order-0', 1, 0);
     expect(immediateOutcome.timedOut).toBe(true);
@@ -482,9 +488,9 @@ describe('ExecutionAgent (user channel)', () => {
 
     (
       agent as unknown as {
-        markIdempotencyFailed: (key: string, nowMs: number) => void;
+        idempotency: { markFailed: (key: string, nowMs: number) => void };
       }
-    ).markIdempotencyFailed('missing', Date.now());
+    ).idempotency.markFailed('missing', Date.now());
 
     expect(true).toBe(true);
   });

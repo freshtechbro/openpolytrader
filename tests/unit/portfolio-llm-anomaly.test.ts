@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { rmSync } from 'node:fs';
 
 import { PortfolioAgent } from '../../src/agents/portfolio/PortfolioAgent.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import { loadEnv } from '../../src/config/env.js';
 import { loadLLMConfig } from '../../src/config/llm.js';
 import { MockLLMClient } from '../../src/services/llm/MockLLMClient.js';
@@ -41,12 +41,14 @@ describe('PortfolioAgent LLM anomaly detection', () => {
       model: llmConfig.agents.PortfolioAgent.model,
       outputText: JSON.stringify({ ...fixture, anomaly: true, severity: 'high', reason: 'drift' })
     });
+    const messageBus = createMessageBus();
 
     const alertPromise = new Promise((resolve) =>
       messageBus.once('ops:alert', (payload) => resolve(payload))
     );
 
     const agent = new PortfolioAgent(1000, undefined, {
+      messageBus,
       llm: {
         config: llmConfig,
         client: llmClient,
@@ -89,6 +91,7 @@ describe('PortfolioAgent LLM anomaly detection', () => {
       outputText: JSON.stringify({ ...fixture, anomaly: false, reason: null, confidence: 0.5 }),
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
     });
+    const messageBus = createMessageBus();
 
     let alertReceived: unknown = null;
     const alertHandler = (payload: unknown) => {
@@ -103,6 +106,7 @@ describe('PortfolioAgent LLM anomaly detection', () => {
     messageBus.on('llm:decision', decisionHandler);
 
     const agent = new PortfolioAgent(1000, undefined, {
+      messageBus,
       eventStore: store,
       llm: {
         config: llmConfig,
@@ -153,6 +157,7 @@ describe('PortfolioAgent LLM anomaly detection', () => {
       outputText: JSON.stringify({ ...fixture, anomaly: false, reason: null, confidence: 0.5 }),
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
     });
+    const messageBus = createMessageBus();
 
     const statuses: string[] = [];
     const handler = (payload: unknown) => {
@@ -161,6 +166,7 @@ describe('PortfolioAgent LLM anomaly detection', () => {
     messageBus.on('llm:decision', handler);
 
     const agent = new PortfolioAgent(1000, undefined, {
+      messageBus,
       eventStore: store,
       llm: {
         config: llmConfig,
@@ -201,12 +207,14 @@ describe('PortfolioAgent LLM anomaly detection', () => {
       model: llmConfig.agents.PortfolioAgent.model,
       outputText: JSON.stringify({ ...fixture, anomaly: true, severity: undefined, reason: 'drift', confidence: 0.9 })
     });
+    const messageBus = createMessageBus();
 
     const alertPromise = new Promise((resolve) =>
       messageBus.once('ops:alert', (payload) => resolve(payload))
     );
 
     const agent = new PortfolioAgent(1000, undefined, {
+      messageBus,
       llm: {
         config: llmConfig,
         client: llmClient,
@@ -241,6 +249,7 @@ describe('PortfolioAgent LLM anomaly detection', () => {
       model: llmConfig.agents.PortfolioAgent.model,
       outputText: '{'
     });
+    const messageBus = createMessageBus();
 
     let received: unknown = null;
     const handler = (payload: unknown) => {
@@ -249,6 +258,7 @@ describe('PortfolioAgent LLM anomaly detection', () => {
     messageBus.on('ops:alert', handler);
 
     const agent = new PortfolioAgent(1000, undefined, {
+      messageBus,
       llm: {
         config: llmConfig,
         client: llmClient,
@@ -284,6 +294,7 @@ describe('PortfolioAgent LLM anomaly detection', () => {
       model: llmConfig.agents.PortfolioAgent.model,
       outputText: null
     });
+    const messageBus = createMessageBus();
 
     let decisionReceived: unknown = null;
     const handler = (payload: unknown) => {
@@ -292,6 +303,7 @@ describe('PortfolioAgent LLM anomaly detection', () => {
     messageBus.on('llm:decision', handler);
 
     const agent = new PortfolioAgent(1000, undefined, {
+      messageBus,
       llm: {
         config: llmConfig,
         client: llmClient,

@@ -6,7 +6,7 @@ import { ScannerAgent } from '../../src/agents/scanner/ScannerAgent.js';
 import { MarketAllowlist } from '../../src/domain/allowlist.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import { loadEnv } from '../../src/config/env.js';
 import { loadLLMConfig } from '../../src/config/llm.js';
 import type { ArbitrageOpportunity } from '../../src/domain/opportunity.js';
@@ -252,6 +252,16 @@ describe('ScannerAgent LLM prioritization', () => {
       max_tokens: 300,
       response_format: { type: 'json_object' }
     });
+    const userMessage = (capturedRequest as { messages?: Array<{ role?: string; content?: string }> })
+      ?.messages?.find((message) => message.role === 'user')?.content;
+    expect(JSON.parse(userMessage ?? '{}')).toMatchObject({
+      inputs: {
+        book_quality: {
+          tick_size: 0.01
+        }
+      }
+    });
+    expect(JSON.parse(userMessage ?? '{}').inputs.book_quality).not.toHaveProperty('spread');
     const developerMessage = (capturedRequest as { messages?: Array<{ role?: string; content?: string }> })
       ?.messages?.find((message) => message.role === 'developer')?.content;
     expect(developerMessage).toContain('recent_outcomes may be null and that is expected');
@@ -281,6 +291,7 @@ describe('ScannerAgent LLM prioritization', () => {
 
     const decisions: Array<{ decision?: { output?: { rationale?: string }; clamp?: { violations?: string[] } } }> =
       [];
+    const messageBus = createMessageBus();
     const handler = (payload: unknown) => {
       decisions.push(payload as { decision?: { output?: { rationale?: string }; clamp?: { violations?: string[] } } });
     };
@@ -288,6 +299,7 @@ describe('ScannerAgent LLM prioritization', () => {
 
     const agent = new ScannerAgent(DEFAULT_TRADE_POLICY, new MarketAllowlist({ autoResume: true }), {
       tradingMode: 'paper',
+      messageBus,
       llm: {
         config: llmConfig,
         client: llmClient,
@@ -346,6 +358,7 @@ describe('ScannerAgent LLM prioritization', () => {
 
     const decisions: Array<{ decision?: { output?: { rationale?: string }; clamp?: { violations?: string[] } } }> =
       [];
+    const messageBus = createMessageBus();
     const handler = (payload: unknown) => {
       decisions.push(payload as { decision?: { output?: { rationale?: string }; clamp?: { violations?: string[] } } });
     };
@@ -353,6 +366,7 @@ describe('ScannerAgent LLM prioritization', () => {
 
     const agent = new ScannerAgent(DEFAULT_TRADE_POLICY, new MarketAllowlist({ autoResume: true }), {
       tradingMode: 'paper',
+      messageBus,
       llm: {
         config: llmConfig,
         client: llmClient,

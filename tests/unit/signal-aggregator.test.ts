@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SignalAggregatorAgent } from '../../src/agents/signal/SignalAggregatorAgent.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import type { MarketPair } from '../../src/domain/market.js';
 import type { PolymarketClob } from '../../src/services/PolymarketClob.js';
 import type { WebSearchClient, WebSearchContent, WebSearchResult } from '../../src/services/websearch/WebSearchClient.js';
@@ -17,6 +17,12 @@ class StubWebSearchClient implements WebSearchClient {
     private contents: WebSearchContent[]
   ) {}
 }
+
+let messageBus = createMessageBus();
+
+beforeEach(() => {
+  messageBus = createMessageBus();
+});
 
 const waitForIdle = async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -56,6 +62,7 @@ async function captureSignal({
   const agent = new SignalAggregatorAgent({
     policy,
     marketPairs: [pair],
+    messageBus,
     clob,
     exa
   });
@@ -100,6 +107,7 @@ describe('SignalAggregatorAgent', () => {
     const agent = new SignalAggregatorAgent({
       policy,
       marketPairs: [pair],
+      messageBus,
       clob,
       exa
     });
@@ -153,6 +161,7 @@ describe('SignalAggregatorAgent', () => {
     const agent = new SignalAggregatorAgent({
       policy,
       marketPairs: [pair],
+      messageBus,
       clob,
       exa
     });
@@ -222,6 +231,7 @@ describe('SignalAggregatorAgent', () => {
     const agent = new SignalAggregatorAgent({
       policy,
       marketPairs: [pair],
+      messageBus,
       clob,
       exa
     });
@@ -303,6 +313,7 @@ describe('SignalAggregatorAgent', () => {
     const agent = new SignalAggregatorAgent({
       policy,
       marketPairs: [pair],
+      messageBus,
       clob,
       exa
     });
@@ -440,6 +451,7 @@ describe('SignalAggregatorAgent', () => {
     const agent = new SignalAggregatorAgent({
       policy,
       marketPairs: [pair],
+      messageBus,
       clob,
       exa
     });

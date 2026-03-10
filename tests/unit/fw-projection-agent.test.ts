@@ -7,7 +7,7 @@ import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { FwProjectionAgent } from '../../src/agents/projection/FwProjectionAgent.js';
 import { IpOracleClient } from '../../src/services/ip-oracle/IpOracleClient.js';
 
-function makeBook(tokenId: string, ask: number, bid: number, nowMs: number): OrderBookState {
+function makeProjectionBook(tokenId: string, ask: number, bid: number, nowMs: number): OrderBookState {
   return {
     tokenId,
     bids: [{ price: bid, size: 100 }],
@@ -61,12 +61,12 @@ function buildUniverse(now: number): {
 } {
   return {
     orderbooks: new Map<string, OrderBookState>([
-      ['yes-1', makeBook('yes-1', 0.48, 0.47, now)],
-      ['no-1', makeBook('no-1', 0.48, 0.47, now)],
-      ['yes-2', makeBook('yes-2', 0.479, 0.469, now)],
-      ['no-2', makeBook('no-2', 0.479, 0.469, now)],
-      ['yes-3', makeBook('yes-3', 0.478, 0.468, now)],
-      ['no-3', makeBook('no-3', 0.478, 0.468, now)]
+      ['yes-1', makeProjectionBook('yes-1', 0.48, 0.47, now)],
+      ['no-1', makeProjectionBook('no-1', 0.48, 0.47, now)],
+      ['yes-2', makeProjectionBook('yes-2', 0.479, 0.469, now)],
+      ['no-2', makeProjectionBook('no-2', 0.479, 0.469, now)],
+      ['yes-3', makeProjectionBook('yes-3', 0.478, 0.468, now)],
+      ['no-3', makeProjectionBook('no-3', 0.478, 0.468, now)]
     ]),
     marketUniverse: [
       {
@@ -156,8 +156,8 @@ describe('FwProjectionAgent', () => {
         yesTokenId: 'yes-fw',
         noTokenId: 'no-fw'
       },
-      yesBook: makeBook('yes-fw', 0.75, 0.74, now),
-      noBook: makeBook('no-fw', 0.31, 0.3, now),
+      yesBook: makeProjectionBook('yes-fw', 0.75, 0.74, now),
+      noBook: makeProjectionBook('no-fw', 0.31, 0.3, now),
       policy: {
         ...DEFAULT_TRADE_POLICY,
         fwSelectionTopK: 0,
@@ -211,10 +211,10 @@ describe('FwProjectionAgent', () => {
 
     const stale = now - (DEFAULT_TRADE_POLICY.maxBookStalenessMs + 5000);
     const orderbooks = new Map<string, OrderBookState>([
-      ['yes-1', makeBook('yes-1', 0.7, 0.69, stale)],
-      ['no-1', makeBook('no-1', 0.29, 0.28, stale)],
-      ['yes-2', makeBook('yes-2', 0.69, 0.68, stale)],
-      ['no-2', makeBook('no-2', 0.3, 0.29, stale)]
+      ['yes-1', makeProjectionBook('yes-1', 0.7, 0.69, stale)],
+      ['no-1', makeProjectionBook('no-1', 0.29, 0.28, stale)],
+      ['yes-2', makeProjectionBook('yes-2', 0.69, 0.68, stale)],
+      ['no-2', makeProjectionBook('no-2', 0.3, 0.29, stale)]
     ]);
 
     const result = await agent.projectUniverse({

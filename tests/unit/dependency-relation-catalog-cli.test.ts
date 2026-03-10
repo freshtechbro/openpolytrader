@@ -22,31 +22,31 @@ describe('dependency relation catalog CLI wrapper', () => {
 
   it('sets exit code on main error', async () => {
     mainMock.mockRejectedValueOnce(new Error('boom'));
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await import('../../src/tools/dependencyRelationCatalogCli.js');
     await flushMicrotasks();
 
     expect(mainMock).toHaveBeenCalledWith(process.argv);
     expect(process.exitCode).toBe(1);
-    expect(consoleSpy).toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalled();
 
-    consoleSpy.mockRestore();
+    stderrSpy.mockRestore();
     process.exitCode = originalExitCode;
   });
 
   it('leaves exit code unset on success', async () => {
     mainMock.mockResolvedValueOnce(undefined);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await import('../../src/tools/dependencyRelationCatalogCli.js');
     await flushMicrotasks();
 
     expect(mainMock).toHaveBeenCalledWith(process.argv);
     expect(process.exitCode).toBeUndefined();
-    expect(consoleSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).not.toHaveBeenCalled();
 
-    consoleSpy.mockRestore();
+    stderrSpy.mockRestore();
     process.exitCode = originalExitCode;
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
+import { resolveFwOracleBaseUrl } from '../../src/boot/fwOracle.js';
 import { loadEnv, resolveRiskProfileEnvFlags } from '../../src/config/env.js';
 import { DEFAULT_RISK_CONFIG } from '../../src/config/risk.js';
 import { DEFAULT_TRADE_POLICY, isNearZeroRiskMode } from '../../src/config/policy.js';
@@ -66,7 +67,8 @@ describe('config env + store', () => {
   it('loads FW oracle env defaults', () => {
     const env = loadEnv({});
 
-    expect(env.FW_ORACLE_BASE_URL).toBe('http://127.0.0.1:7071');
+    expect(env.FW_ORACLE_BASE_URL).toBeUndefined();
+    expect(resolveFwOracleBaseUrl(env.FW_ORACLE_BASE_URL)).toBe('http://127.0.0.1:7071');
     expect(env.FW_ORACLE_TIMEOUT_MS).toBe(120);
     expect(env.FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD).toBe(3);
     expect(env.FW_ORACLE_CIRCUIT_COOLDOWN_MS).toBe(30000);
@@ -82,6 +84,7 @@ describe('config env + store', () => {
     });
 
     expect(env.FW_ORACLE_BASE_URL).toBe('http://oracle.internal:9999');
+    expect(resolveFwOracleBaseUrl(env.FW_ORACLE_BASE_URL)).toBe('http://oracle.internal:9999');
     expect(env.FW_ORACLE_TIMEOUT_MS).toBe(250);
     expect(env.FW_ORACLE_API_KEY).toBe('secret');
     expect(env.FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD).toBe(5);
@@ -147,10 +150,7 @@ describe('config env + store', () => {
   });
 
   it('normalizes LLM endpoint overrides', () => {
-    expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: 'chat' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBe(
-      'chat.completions'
-    );
-    expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: 'completions' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBe(
+    expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: 'chat.completions' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBe(
       'chat.completions'
     );
     expect(loadEnv({ LLM_EXECUTION_ENDPOINT_BACKUP: 'messages' }).LLM_EXECUTION_ENDPOINT_BACKUP).toBe(
@@ -163,11 +163,8 @@ describe('config env + store', () => {
   });
 
   it('normalizes catalog order aliases and rejects non-string catalog order values', () => {
-    expect(loadEnv({ MARKET_CATALOG_ORDER: 'volume' }).MARKET_CATALOG_ORDER).toBe('volume24hr');
     expect(loadEnv({ MARKET_CATALOG_ORDER: 'volume24hr' }).MARKET_CATALOG_ORDER).toBe('volume24hr');
     expect(loadEnv({ MARKET_CATALOG_ORDER: 'newest' }).MARKET_CATALOG_ORDER).toBe('newest');
-    expect(loadEnv({ MARKET_CATALOG_ORDER: 'recent' }).MARKET_CATALOG_ORDER).toBe('newest');
-    expect(loadEnv({ MARKET_CATALOG_ORDER: 'latest' }).MARKET_CATALOG_ORDER).toBe('newest');
     expect(loadEnv({ MARKET_CATALOG_ORDER: '   ' }).MARKET_CATALOG_ORDER).toBe('volume24hr');
 
     expect(() =>
@@ -239,9 +236,13 @@ describe('config env + store', () => {
   });
 
   it('normalizes risk profile env values', () => {
-    expect(loadEnv({ RISK_PROFILE: 'default' }).RISK_PROFILE).toBe('extra_high');
-    expect(loadEnv({ RISK_PROFILE: 'Extra-High' }).RISK_PROFILE).toBe('extra_high');
+    expect(loadEnv({ RISK_PROFILE: 'extra_high' }).RISK_PROFILE).toBe('extra_high');
     expect(loadEnv({ RISK_PROFILE: '   ' }).RISK_PROFILE).toBe('extra_high');
+  });
+
+  it('rejects legacy risk profile aliases', () => {
+    expect(() => loadEnv({ RISK_PROFILE: 'default' })).toThrow(/Invalid environment configuration/);
+    expect(() => loadEnv({ RISK_PROFILE: 'near-zero' })).toThrow(/Invalid environment configuration/);
   });
 
   it('extra_high profile explicitly sets Frank-Wolfe runtime defaults', () => {
@@ -439,6 +440,15 @@ describe('config validation + schema helpers', () => {
     const badTopK = { ...DEFAULT_TRADE_POLICY, fwSelectionTopK: -1 };
     expect(() => validateP0Config(badTopK, DEFAULT_RISK_CONFIG)).toThrow(/fwSelectionTopK/);
 
+    const badRelationCandidates = {
+      ...DEFAULT_TRADE_POLICY,
+      fwRelationCandidatesPerMarketMax: 5,
+      fwRelationCandidatesTotalMax: 4
+    };
+    expect(() => validateP0Config(badRelationCandidates, DEFAULT_RISK_CONFIG)).toThrow(
+      /fwRelationCandidatesPerMarketMax/
+    );
+
     const badCacheGrace = {
       ...DEFAULT_TRADE_POLICY,
       fwDependencyCacheTtlMs: 1_000,
@@ -461,6 +471,16 @@ describe('config validation + schema helpers', () => {
       fwDependencyHybridMerge: 'union' as const
     };
     expect(() => validateP0Config(invalidMerge, DEFAULT_RISK_CONFIG)).toThrow(/fwDependencyHybridMerge/);
+  });
+
+  it('allows FW per-market notional when it stays within the portfolio cap', () => {
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      fwMaxPerMarketNotional: 100,
+      fwMaxPortfolioNotional: 500
+    };
+
+    expect(() => validateP0Config(policy, DEFAULT_RISK_CONFIG)).not.toThrow();
   });
 
   it('rejects invalid FW loop contraction and basket bounds', () => {

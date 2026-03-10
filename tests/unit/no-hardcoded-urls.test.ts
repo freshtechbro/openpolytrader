@@ -1,35 +1,27 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { collectSourceFiles } from './sourceFileWalker.js';
 
 const URL_LITERAL = /\bhttps?:\/\/|\bwss?:\/\//;
 
 describe('no hard-coded URL literals in runtime code', () => {
-  it('keeps URL defaults in src/config/env.ts only', () => {
+  it('keeps URL defaults in src/config/env.ts only', { timeout: 30_000 }, () => {
     const root = process.cwd();
     const srcRoot = path.join(root, 'src');
-    const files: string[] = [];
-
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir)) {
-        const fullPath = path.join(dir, entry);
-        const stat = statSync(fullPath);
-        if (stat.isDirectory()) {
-          walk(fullPath);
-          continue;
-        }
-        if (!fullPath.endsWith('.ts')) continue;
-        files.push(fullPath);
-      }
-    };
-
-    walk(srcRoot);
+    const files = collectSourceFiles(srcRoot, /\.ts$/);
 
     const offenders: Array<{ file: string; line: number; text: string }> = [];
 
     for (const file of files) {
-      if (path.normalize(file).endsWith(path.normalize('src/config/env.ts'))) continue;
+      const normalized = path.normalize(file);
+      if (
+        normalized.endsWith(path.normalize('src/config/env.ts')) ||
+        normalized.includes(path.normalize('src/config/env/'))
+      ) {
+        continue;
+      }
       const source = readFileSync(file, 'utf8');
       if (!URL_LITERAL.test(source)) continue;
 

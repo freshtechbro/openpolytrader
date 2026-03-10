@@ -1,16 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import { ExecutionAgent } from '../../src/agents/execution/ExecutionAgent.js';
 import { ExecutionAdvisor } from '../../src/agents/execution/ExecutionAdvisor.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { loadEnv } from '../../src/config/env.js';
 import type { PolymarketClob } from '../../src/services/PolymarketClob.js';
 
+let messageBus = createMessageBus();
+
+beforeEach(() => {
+  messageBus = createMessageBus();
+});
+
 describe('ExecutionAgent advisory hints', () => {
   it('does not subscribe when disabled', () => {
-    const advisor = new ExecutionAdvisor({ enabled: false });
+    const advisor = new ExecutionAdvisor({ enabled: false, messageBus });
 
     messageBus.emit('learning:insight', {
       insights: [{ market_id: 'm1', signal: 'high_confidence', value: 1, ttl_ms: 60000, confidence: 0.9 }],
@@ -25,7 +31,7 @@ describe('ExecutionAgent advisory hints', () => {
   it('applies conservative timeout multiplier in advisory mode', () => {
     const env = loadEnv({});
     const metrics = new MetricsStore(env.METRICS_MAX_EVENTS);
-    const advisor = new ExecutionAdvisor({ enabled: true });
+    const advisor = new ExecutionAdvisor({ enabled: true, messageBus });
 
     messageBus.emit('learning:insight', {
       insights: [{ market_id: 'm1', signal: 'high_confidence', value: 1, ttl_ms: 60000, confidence: 0.9 }],
@@ -37,15 +43,22 @@ describe('ExecutionAgent advisory hints', () => {
     const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, metrics, {
       tradingEnabled: false,
       tradingMode: 'paper',
+      messageBus,
       executionAdvisor: advisor,
       executionAdvisorMode: 'advisory'
     });
 
-    const timeouts = (agent as unknown as { getEffectiveTimeouts: (marketId: string, opportunityId: string, nowMs: number) => { submitTimeoutMs: number; ackTimeoutMs: number } }).getEffectiveTimeouts(
-      'm1',
-      'opp-1',
-      Date.now()
-    );
+    const timeouts = (
+      agent as unknown as {
+        modeSupport: {
+          getEffectiveTimeouts: (
+            marketId: string,
+            opportunityId: string,
+            nowMs: number
+          ) => { submitTimeoutMs: number; ackTimeoutMs: number };
+        };
+      }
+    ).modeSupport.getEffectiveTimeouts('m1', 'opp-1', Date.now());
     expect(timeouts.submitTimeoutMs).toBeLessThanOrEqual(DEFAULT_TRADE_POLICY.submitTimeoutMs);
     expect(timeouts.ackTimeoutMs).toBeLessThanOrEqual(DEFAULT_TRADE_POLICY.ackTimeoutMs);
     expect(metrics.snapshot().counts.shadow_decision).toBeGreaterThan(0);
@@ -54,7 +67,7 @@ describe('ExecutionAgent advisory hints', () => {
   });
 
   it('expires cached hints after ttl', () => {
-    const advisor = new ExecutionAdvisor({ enabled: true });
+    const advisor = new ExecutionAdvisor({ enabled: true, messageBus });
 
     messageBus.emit('learning:insight', {
       insights: [{ market_id: 'm1', signal: 'high_confidence', value: 0.5, ttl_ms: 10_000, confidence: 0.9 }],
@@ -69,7 +82,7 @@ describe('ExecutionAgent advisory hints', () => {
   });
 
   it('ignores malformed insight payloads and handles all value tiers', () => {
-    const advisor = new ExecutionAdvisor({ enabled: true });
+    const advisor = new ExecutionAdvisor({ enabled: true, messageBus });
 
     messageBus.emit('learning:insight', { generatedAtMs: Date.now() });
 

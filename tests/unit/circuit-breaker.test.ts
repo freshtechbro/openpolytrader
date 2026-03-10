@@ -12,7 +12,7 @@ describe('CircuitBreaker', () => {
     );
 
     breaker.recordSuccess();
-    expect(breaker.getState()).toBe('closed');
+    expect(breaker.refreshAndGetState()).toBe('closed');
 
     await expect(breaker.execute(async () => {
       throw new Error('fail-1');
@@ -22,7 +22,7 @@ describe('CircuitBreaker', () => {
       throw new Error('fail-2');
     })).rejects.toThrow('fail-2');
 
-    expect(breaker.getState()).toBe('open');
+    expect(breaker.refreshAndGetState()).toBe('open');
     expect(breaker.getFailureCount()).toBe(2);
 
     await expect(breaker.execute(async () => 'ok')).rejects.toThrow(
@@ -35,7 +35,7 @@ describe('CircuitBreaker', () => {
     await vi.runAllTimersAsync();
     await expect(resultPromise).resolves.toBe('ok');
 
-    expect(breaker.getState()).toBe('closed');
+    expect(breaker.refreshAndGetState()).toBe('closed');
 
     breaker.recordFailure();
     expect(breaker.getFailureCount()).toBe(1);
@@ -54,16 +54,16 @@ describe('CircuitBreaker', () => {
     );
 
     breaker.recordFailure();
-    expect(breaker.getState()).toBe('open');
+    expect(breaker.refreshAndGetState()).toBe('open');
 
     vi.advanceTimersByTime(1000);
-    expect(breaker.getState()).toBe('half-open');
+    expect(breaker.refreshAndGetState()).toBe('half-open');
 
     breaker.recordSuccess();
-    expect(breaker.getState()).toBe('half-open');
+    expect(breaker.refreshAndGetState()).toBe('half-open');
 
     breaker.recordSuccess();
-    expect(breaker.getState()).toBe('closed');
+    expect(breaker.refreshAndGetState()).toBe('closed');
 
     vi.useRealTimers();
   });
@@ -90,7 +90,7 @@ describe('CircuitBreakerRegistry', () => {
     expect(registry.isOpen('market-1')).toBe(false);
 
     registry.recordSuccess('market-1');
-    expect(registry.get('market-1').getState()).toBe('closed');
+    expect(registry.get('market-1').refreshAndGetState()).toBe('closed');
 
     vi.useRealTimers();
   });
