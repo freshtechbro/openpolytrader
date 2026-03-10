@@ -201,6 +201,7 @@ export class SignalAggregatorAgent {
 
     let results: WebSearchResult[] = [];
     let contents: WebSearchContent[] = [];
+    let contentClient = primary ?? secondary;
 
     const maxConcurrency = Math.max(1, Math.floor(this.policy.evWebSearchMaxConcurrency));
 
@@ -209,6 +210,9 @@ export class SignalAggregatorAgent {
         primary.search(query, options)
       );
       results = searchResults.flat();
+      if (results.length > 0) {
+        contentClient = primary;
+      }
     }
 
     if (results.length === 0 && secondary) {
@@ -216,13 +220,15 @@ export class SignalAggregatorAgent {
         secondary.search(query, options)
       );
       results = searchResults.flat();
+      if (results.length > 0) {
+        contentClient = secondary;
+      }
     }
 
     const urls = Array.from(new Set(results.map((result) => result.url).filter(Boolean)));
     const urlsForContent = urls.slice(0, MAX_CONTENT_URLS);
     if (urlsForContent.length > 0) {
-      const client = primary ?? secondary;
-      contents = client ? await client.fetchContents(urlsForContent, options.cacheTtlSeconds) : [];
+      contents = contentClient ? await contentClient.fetchContents(urlsForContent, options.cacheTtlSeconds) : [];
     }
 
     return { results, contents };

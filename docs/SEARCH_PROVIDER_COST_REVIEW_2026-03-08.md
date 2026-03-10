@@ -2,6 +2,13 @@
 
 This report reviews OpenPolyTrader's current EV web-search path, critiques the proposed `GDELT -> Exa|Serper` idea, compares current provider facts as of March 8, 2026, and recommends the lowest-cost deployment shape that preserves decision quality and speed.
 
+Audit refresh on March 10, 2026:
+
+- corrected "current repo behavior" to distinguish policy defaults from runtime activation;
+- corrected the provider fallback path so content fetch now follows the provider that produced the result URLs;
+- removed an unsupported assumption that Exa inline contents are free by default under current pricing docs;
+- noted the spend controls that are already landed in code.
+
 ---
 
 ## Executive summary
@@ -33,7 +40,7 @@ The immediate low-risk savings move is to reduce the current Exa cost before any
 
 ### What the code does today
 
-Current EV web search is `Exa` primary and `Firecrawl` optional:
+Policy defaults still make `Exa` primary and `Firecrawl` optional:
 
 - `evWebSearchExaEnabled=true`
 - `evWebSearchFirecrawlEnabled=false`
@@ -41,11 +48,18 @@ Current EV web search is `Exa` primary and `Firecrawl` optional:
 - `evWebSearchMaxResults=10`
 - `evWebSearchCacheTtlSeconds=7200`
 - `evWebSearchMaxConcurrency=3`
+- `evWebSearchFirecrawlMaxDepth=2`
+- `evWebSearchFirecrawlMaxPages=10`
 
 Source:
 
 - [`src/config/policy.ts`](/Users/bishopdotun/Documents/DevProjects/openpolytrader/src/config/policy.ts)
 - [`src/boot/runtimeServices.ts`](/Users/bishopdotun/Documents/DevProjects/openpolytrader/src/boot/runtimeServices.ts)
+
+Runtime activation is narrower than those defaults imply:
+
+- `SignalAggregatorAgent` is only constructed when at least one enabled provider also has an API key at runtime.
+- Missing provider credentials are recorded as `web_search` metrics instead of silently enabling a half-configured client.
 
 The per-market search path is:
 
@@ -56,7 +70,7 @@ The per-market search path is:
 2. Run those searches against the primary provider.
 3. If the primary returns zero results, run the same searches against the secondary provider.
 4. Deduplicate URLs.
-5. Fetch contents for up to 8 URLs.
+5. Fetch contents for up to 8 URLs using the provider that produced the surviving result set.
 6. Emit one `learning:insight` event with a TTL.
 
 Source:
@@ -66,17 +80,25 @@ Source:
 
 ### Why the current Exa path is expensive
 
-The repo already applied three good spend controls:
+The repo already applied several good spend and safety controls:
 
 - Exa is forced to `type: 'neural'`
 - content fanout is capped to 8 URLs
 - insight TTL is 2 hours
+- shared web-search cache is bounded to 1000 entries by default
+- search and content cache keys are provider-isolated
+- Firecrawl crawl fallback is capped by policy depth/page limits
+- Exa enters cooldown after repeated auth/billing failures instead of hammering a broken paid path
 
 Source:
 
 - [`src/services/websearch/ExaClient.ts`](/Users/bishopdotun/Documents/DevProjects/openpolytrader/src/services/websearch/ExaClient.ts)
+- [`src/services/websearch/FirecrawlClient.ts`](/Users/bishopdotun/Documents/DevProjects/openpolytrader/src/services/websearch/FirecrawlClient.ts)
 - [`src/agents/signal/SignalAggregatorAgent.ts`](/Users/bishopdotun/Documents/DevProjects/openpolytrader/src/agents/signal/SignalAggregatorAgent.ts)
 - [`src/config/policy.ts`](/Users/bishopdotun/Documents/DevProjects/openpolytrader/src/config/policy.ts)
+- [`src/services/websearch/WebSearchCache.ts`](/Users/bishopdotun/Documents/DevProjects/openpolytrader/src/services/websearch/WebSearchCache.ts)
+- [`src/services/websearch/WebSearchProviderCache.ts`](/Users/bishopdotun/Documents/DevProjects/openpolytrader/src/services/websearch/WebSearchProviderCache.ts)
+- [`tests/unit/websearch_cache.test.ts`](/Users/bishopdotun/Documents/DevProjects/openpolytrader/tests/unit/websearch_cache.test.ts)
 
 The remaining spend driver is structural:
 
@@ -97,7 +119,7 @@ So the cost problem is not just "Exa is expensive." It is also "the current repo
 
 - no cheap trigger layer before paid search
 - fallback is only `zero results`, not `low confidence` or `ambiguous evidence`
-- content fetch is unconditional once URLs exist
+- the agent still attempts content resolution whenever URLs exist; cache hits suppress network spend, but uncached hits still trigger content fetch immediately
 - docs do not explain the true query fanout or current spend levers
 
 ---
@@ -168,21 +190,21 @@ Relevant current official docs:
 
 - Search endpoint: [docs.exa.ai/reference/search](https://docs.exa.ai/reference/search)
 - Pricing page: [exa.ai/pricing](https://exa.ai/pricing)
-- March 3, 2026 pricing change: [exa.ai/docs/changelog/pricing-update](https://exa.ai/docs/changelog/pricing-update)
 - Fast search: [docs.exa.ai/changelog/new-fast-search-type](https://docs.exa.ai/changelog/new-fast-search-type)
 - Instant search: [exa.ai/docs/changelog/instant-search-launch](https://exa.ai/docs/changelog/instant-search-launch)
 
 Important current facts:
 
 - Exa search can return contents directly in search responses.
-- Exa's March 3, 2026 pricing update says contents for 10 search results per request are included for free in the search endpoint pricing.
-- The dedicated `/contents` endpoint still exists and is still billed separately.
+- Exa's current pricing page still lists `Search` and `Contents` as separate billable products.
+- Exa's current search reference exposes inline-content pricing metadata (`costDollars.perPagePrices`) when `contents` is requested, so inline contents should not be assumed free by default.
+- The dedicated `/contents` endpoint still exists, so the repo should compare "search with inline contents" versus "search then `/contents`" using current pricing before changing the client.
 - Exa Fast is documented with p50 latency below 425ms.
 - Exa Instant is documented as sub-200ms.
 
 Implication for this repo:
 
-The repo's current separate `/contents` call is now a stronger optimization target than before. Even if Exa remains in the stack, the current implementation is probably not using Exa in its cheapest practical shape.
+The repo's current separate `/contents` call is still a strong optimization target, but the economics are less one-sided than the first draft implied. Even if Exa remains in the stack, the next change should be driven by current pricing validation, not by the stale assumption that 10 inline contents are free.
 
 ### Serper
 
@@ -416,10 +438,10 @@ Only summarize the top 2-3 documents after routing, not the full result set.
 
 Do this first even if you later add Serper/GDELT:
 
-1. Stop unconditional Exa `/contents` fetch for every hit.
+1. Stop immediate content fetch for every uncached hit unless the result set crosses a confidence or market-priority threshold.
 2. Reduce fixed query fanout from 3 to 2 for standard Yes/No markets.
 3. Make content fanout configurable and lower the default.
-4. Revisit forced `neural` mode against current Exa `fast` or bundled-content search behavior.
+4. Revisit forced `neural` mode against current Exa `fast` or inline-content search behavior using current pricing docs, not the older "10 free contents" assumption.
 
 These are the lowest-risk savings moves.
 
@@ -486,7 +508,6 @@ If you want the safest migration path, use:
 
 - Exa Search reference: [https://docs.exa.ai/reference/search](https://docs.exa.ai/reference/search)
 - Exa pricing: [https://exa.ai/pricing](https://exa.ai/pricing)
-- Exa March 3, 2026 pricing update: [https://exa.ai/docs/changelog/pricing-update](https://exa.ai/docs/changelog/pricing-update)
 - Exa Fast search: [https://docs.exa.ai/changelog/new-fast-search-type](https://docs.exa.ai/changelog/new-fast-search-type)
 - Exa Instant search: [https://exa.ai/docs/changelog/instant-search-launch](https://exa.ai/docs/changelog/instant-search-launch)
 - Serper pricing: [https://serper.dev/pricing](https://serper.dev/pricing)

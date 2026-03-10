@@ -211,6 +211,42 @@ describe('SignalAggregatorAgent', () => {
     agent.stop();
   });
 
+  it('fetches contents from the provider that returned fallback results', async () => {
+    const pair: MarketPair = { marketId: 'm2', yesTokenId: 'y2', noTokenId: 'n2' };
+    const clob = {
+      getMarket: vi.fn().mockResolvedValue({ question: 'Will it snow?', tokens: [{ outcome: 'Yes' }, { outcome: 'No' }] })
+    } as unknown as PolymarketClob;
+
+    const exa = new StubWebSearchClient([], []);
+    const firecrawl = new StubWebSearchClient(
+      [{ url: 'https://example.org', title: 'Example', publishedAt: new Date().toISOString() }],
+      [{ url: 'https://example.org', text: 'yes yes no' }]
+    );
+
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      signalMode: 'ev' as const,
+      evWebSearchPrimary: 'exa' as const,
+      evWebSearchExaEnabled: true,
+      evWebSearchFirecrawlEnabled: true,
+      evWebSearchMaxConcurrency: 2
+    };
+
+    const agent = new SignalAggregatorAgent({
+      policy,
+      marketPairs: [pair],
+      clob,
+      exa,
+      firecrawl
+    });
+
+    await (agent as unknown as { runOnce: () => Promise<void> }).runOnce();
+
+    expect(exa.fetchContents).not.toHaveBeenCalled();
+    expect(firecrawl.fetchContents).toHaveBeenCalledTimes(1);
+    expect(firecrawl.fetchContents).toHaveBeenCalledWith(['https://example.org'], policy.evWebSearchCacheTtlSeconds);
+  });
+
   it('does not run when signalMode is near_zero', async () => {
     const pair: MarketPair = { marketId: 'm3', yesTokenId: 'y3', noTokenId: 'n3' };
     const clob = {
@@ -994,6 +1030,44 @@ describe('SignalAggregatorAgent', () => {
 
     expect(exa.search).toHaveBeenCalled();
     expect(exa.search.mock.calls[0]?.[0]).toBe(pair.marketId);
+  });
+
+  it('emits insights with default outcomes when market metadata is unavailable', async () => {
+    const pair: MarketPair = { marketId: 'missing-meta', yesTokenId: 'y1', noTokenId: 'n1' };
+    const clob = {
+      getMarket: vi.fn().mockResolvedValue(null)
+    } as unknown as PolymarketClob;
+
+    const exa = new StubWebSearchClient(
+      [{ url: 'https://example.net', title: 'Example', publishedAt: new Date().toISOString() }],
+      [{ url: 'https://example.net', text: 'yes yes no' }]
+    );
+    const policy = {
+      ...DEFAULT_TRADE_POLICY,
+      signalMode: 'ev' as const,
+      evWebSearchExaEnabled: true,
+      evWebSearchFirecrawlEnabled: false,
+      evWebSearchMaxConcurrency: 1
+    };
+
+    const agent = new SignalAggregatorAgent({
+      policy,
+      marketPairs: [pair],
+      messageBus,
+      clob,
+      exa
+    });
+
+    const handler = vi.fn();
+    messageBus.on('learning:insight', handler);
+
+    await (agent as unknown as { runOnce: () => Promise<void> }).runOnce();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]?.[0]?.insights?.[0]?.market_id).toBe(pair.marketId);
+    expect(exa.search.mock.calls[0]?.[0]).toBe(pair.marketId);
+
+    messageBus.off('learning:insight', handler);
   });
 
   it('fetches contents with the primary client when urls are present', async () => {
