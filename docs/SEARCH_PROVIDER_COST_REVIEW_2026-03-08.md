@@ -8,7 +8,7 @@ Audit refresh on March 10, 2026:
 
 - corrected "current repo behavior" to distinguish policy defaults from runtime activation;
 - corrected the provider fallback path so content fetch now follows the provider that produced the result URLs;
-- removed an unsupported assumption that Exa inline contents are free by default under current pricing docs;
+- refreshed Exa pricing facts after Exa's March 3, 2026 pricing update, which now includes contents for 10 search results per request at no additional cost on search requests;
 - noted the spend controls that are already landed in code.
 
 ---
@@ -26,7 +26,7 @@ The best fit is a tiered router:
 This is the best cost-quality tradeoff for OpenPolyTrader because:
 
 - the current repo already has a clean `search()` then `fetchContents()` abstraction and a primary/fallback pattern;
-- `Serper` is materially cheaper than `Exa` for Google-grounded confirmation;
+- `Serper` still presents the clearest low-cost Google-grounded confirmation path from its live homepage pricing/profile;
 - `GDELT` is useful for cheap broad monitoring, but its 15-minute cadence and noisy event/tone signals make it a bad sole live-decision layer;
 - `Exa` is still useful when you need richer semantic retrieval or bundled content, but it should stop being the default polling surface for every eligible market.
 
@@ -34,6 +34,7 @@ The immediate low-risk savings move is to reduce the current Exa cost before any
 
 - stop fetching full contents for every market by default;
 - reduce the fixed three-query fanout;
+- separate web-search cadence from `evModelRefreshMinutes` before adding a router or heartbeat layer;
 - only escalate to a paid confirmer after a cheap trigger.
 
 ---
@@ -44,6 +45,7 @@ The immediate low-risk savings move is to reduce the current Exa cost before any
 
 Policy defaults still make `Exa` primary and `Firecrawl` optional:
 
+- `signalMode='both'`
 - `evWebSearchExaEnabled=true`
 - `evWebSearchFirecrawlEnabled=false`
 - `evWebSearchPrimary='exa'`
@@ -74,6 +76,13 @@ The per-market search path is:
 4. Deduplicate URLs.
 5. Fetch contents for up to 8 URLs using the provider that produced the surviving result set.
 6. Emit one `learning:insight` event with a TTL.
+
+Scheduling is still coupled to the EV model refresh surface:
+
+- `SignalAggregatorAgent.applySchedule()` uses `evModelRefreshMinutes` for polling cadence.
+- Market metadata cache TTL also reuses `evModelRefreshMinutes`.
+
+That coupling is workable today, but it becomes a rollout constraint for router/GDELT work. Search polling needs its own config surface instead of silently inheriting model-refresh timing.
 
 Source:
 
@@ -122,7 +131,7 @@ So the cost problem is not just "Exa is expensive." It is also "the current repo
 - no cheap trigger layer before paid search
 - fallback is only `zero results`, not `low confidence` or `ambiguous evidence`
 - the agent still attempts content resolution whenever URLs exist; cache hits suppress network spend, but uncached hits still trigger content fetch immediately
-- docs do not explain the true query fanout or current spend levers
+- search cadence and market-metadata TTL still ride `evModelRefreshMinutes`, which is the wrong control surface for router or heartbeat rollout
 
 ---
 
@@ -192,27 +201,27 @@ Relevant current official docs:
 
 - Search endpoint: [docs.exa.ai/reference/search](https://docs.exa.ai/reference/search)
 - Pricing page: [exa.ai/pricing](https://exa.ai/pricing)
+- Pricing update: [exa.ai/docs/changelog/pricing-update](https://exa.ai/docs/changelog/pricing-update)
 - Fast search: [docs.exa.ai/changelog/new-fast-search-type](https://docs.exa.ai/changelog/new-fast-search-type)
 - Instant search: [exa.ai/docs/changelog/instant-search-launch](https://exa.ai/docs/changelog/instant-search-launch)
 
 Important current facts:
 
 - Exa search can return contents directly in search responses.
-- Exa's current pricing page still lists `Search` and `Contents` as separate billable products.
-- Exa's current search reference exposes inline-content pricing metadata (`costDollars.perPagePrices`) when `contents` is requested, so inline contents should not be assumed free by default.
-- The dedicated `/contents` endpoint still exists, so the repo should compare "search with inline contents" versus "search then `/contents`" using current pricing before changing the client.
+- Exa's March 3, 2026 pricing update says search requests now include contents for up to 10 search results at no additional cost, and extra results beyond 10 remain incremental.
+- Exa's pricing page still lists `Search` and `Contents` as separate billable products, so the "included contents" rule should be treated as a search-path bundle, not a global removal of content pricing.
+- The dedicated `/contents` endpoint still exists at separate per-page pricing, which makes the repo's current `search` then `/contents` shape a clearer optimization target than the previous audit stated.
 - Exa Fast is documented with p50 latency below 425ms.
 - Exa Instant is documented as sub-200ms.
 
 Implication for this repo:
 
-The repo's current separate `/contents` call is still a strong optimization target, but the economics are less one-sided than the first draft implied. Even if Exa remains in the stack, the next change should be driven by current pricing validation, not by the stale assumption that 10 inline contents are free.
+The repo's current separate `/contents` call is now a stronger optimization target than before. If Exa remains in the stack, Phase 0 should explicitly compare the current `search` plus `/contents` flow against bounded `search with contents` requests capped at 10 results, then choose based on payload size, latency, and signal quality rather than the older pricing model.
 
 ### Serper
 
 Relevant official docs:
 
-- Pricing: [serper.dev/pricing](https://serper.dev/pricing)
 - Product homepage: [serper.dev](https://serper.dev)
 
 Important current facts:
@@ -221,11 +230,12 @@ Important current facts:
 - Pricing currently starts at $50 for 50k credits.
 - Higher tiers go down to $0.30 per 1k credits.
 - Credits are deducted on successful responses.
-- Serper advertises roughly 1-2 second response time on its pricing page.
+- Serper advertises roughly 1-2 second response time on its live homepage.
+- The previously cited `/pricing` page now returns 404, so homepage pricing is the live official source.
 
 Implication for this repo:
 
-Serper is the obvious default replacement for "cheap paid confirmation" if you want Google-grounded results and can accept a thinner retrieval layer than Exa.
+Serper remains the cleanest default for "cheap paid confirmation" if you want Google-grounded results and can accept a thinner retrieval layer than Exa.
 
 ### GDELT
 
@@ -312,7 +322,7 @@ Worth doing immediately as a tactical savings step, but not the final answer if 
 
 Pros:
 
-- much cheaper
+- lower-cost in the current repo shape
 - fast
 - simple mental model
 - strong for live Google-grounded confirmation
@@ -352,7 +362,7 @@ Pros:
 - best cost-quality balance
 - preserves speed
 - limits Exa to the small set of cases where it is actually valuable
-- fits the repo's existing primary/fallback abstractions
+- reuses parts of the existing provider abstraction, but still requires a new router and trigger service
 
 Cons:
 
@@ -378,6 +388,8 @@ Deploy:
 Do not run all three on every market.
 
 ### Recommended routing policy
+
+This is a target-state policy, not something the current repo can switch on immediately. It requires new router inputs and config for market priority, near-resolution thresholds, unexplained move triggers, and GDELT heartbeat state.
 
 #### Stage 0 - Market eligibility
 
@@ -427,7 +439,7 @@ Only summarize the top 2-3 documents after routing, not the full result set.
 
 ### Why this is best for this repo
 
-- It preserves the current `search -> fetchContents -> insight` shape.
+- It preserves the current provider abstraction and normalized `learning:insight` output shape, while leaving room to replace some separate Exa `/contents` calls with bundled inline contents.
 - It moves spend from always-on premium search to event-triggered confirmation.
 - It keeps a quality escape hatch for hard markets.
 - It does not bet trade quality on GDELT tone alone.
@@ -440,10 +452,11 @@ Only summarize the top 2-3 documents after routing, not the full result set.
 
 Do this first even if you later add Serper/GDELT:
 
-1. Stop immediate content fetch for every uncached hit unless the result set crosses a confidence or market-priority threshold.
+1. Stop immediate separate `/contents` fetches for every uncached hit unless the result set crosses a confidence or market-priority threshold; if Exa stays in the path, benchmark bounded inline contents on `search` first.
 2. Reduce fixed query fanout from 3 to 2 for standard Yes/No markets.
-3. Make content fanout configurable and lower the default.
-4. Revisit forced `neural` mode against current Exa `fast` or inline-content search behavior using current pricing docs, not the older "10 free contents" assumption.
+3. Add a dedicated `evWebSearchRefreshMinutes` control so polling cadence and market-metadata TTL stop piggybacking on `evModelRefreshMinutes`.
+4. Make content fanout configurable and lower the default.
+5. Revisit forced `neural` mode against current Exa `fast`, `instant`, or inline-content search behavior using the March 3, 2026 pricing update and current latency docs.
 
 These are the lowest-risk savings moves.
 
@@ -510,9 +523,9 @@ If you want the safest migration path, use:
 
 - Exa Search reference: [https://docs.exa.ai/reference/search](https://docs.exa.ai/reference/search)
 - Exa pricing: [https://exa.ai/pricing](https://exa.ai/pricing)
+- Exa pricing update: [https://exa.ai/docs/changelog/pricing-update](https://exa.ai/docs/changelog/pricing-update)
 - Exa Fast search: [https://docs.exa.ai/changelog/new-fast-search-type](https://docs.exa.ai/changelog/new-fast-search-type)
 - Exa Instant search: [https://exa.ai/docs/changelog/instant-search-launch](https://exa.ai/docs/changelog/instant-search-launch)
-- Serper pricing: [https://serper.dev/pricing](https://serper.dev/pricing)
 - Serper homepage: [https://serper.dev](https://serper.dev)
 - GDELT about: [https://www.gdeltproject.org/about.html](https://www.gdeltproject.org/about.html)
 - GDELT DOC API: [https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/](https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/)

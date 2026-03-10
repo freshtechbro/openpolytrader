@@ -38,7 +38,7 @@ The repo now has better cost controls than the original review assumed, but it s
 ## Goals
 
 1. Reduce recurring EV web-search cost without weakening advisory-signal quality.
-2. Preserve the existing `search -> fetchContents -> learning:insight` downstream contract.
+2. Preserve the existing normalized `learning:insight` contract and provider abstraction, even if some routes satisfy content via inline search results instead of a separate fetch call.
 3. Route cheap monitoring, confirmation, and premium fallback through explicit policy instead of implicit provider order.
 4. Keep failures advisory and fail-open.
 5. Make spend, latency, routing, and disagreement observable through first-class telemetry.
@@ -58,6 +58,7 @@ The repo now has better cost controls than the original review assumed, but it s
 
 From `src/config/policy.ts`:
 
+- `signalMode='both'`
 - `evWebSearchExaEnabled=true`
 - `evWebSearchFirecrawlEnabled=false`
 - `evWebSearchPrimary='exa'`
@@ -89,6 +90,14 @@ From `src/agents/signal/SignalAggregatorAgent.ts`:
 7. Fetch contents for up to eight URLs from the provider that produced the final results.
 8. Normalize into one `learning:insight` payload.
 
+### Current limitations that matter to this spec
+
+- `SignalAggregatorAgent.shouldRun()` returns false when `signalMode='near_zero'` or when no enabled provider has live credentials.
+- `SignalAggregatorAgent.applySchedule()` currently uses `evModelRefreshMinutes` for polling cadence.
+- Market metadata cache TTL also reuses `evModelRefreshMinutes`.
+- Query fanout and the eight-URL content cap are currently hardcoded in `SignalAggregatorAgent`, not policy-driven.
+- `src/config/schema.ts` and `src/config/validate.ts` currently only know the `exa|firecrawl` web-search surface; there is no Serper, GDELT, route enum, or router-specific validation today.
+
 ### Current landed controls
 
 - Exa search forced to `type: 'neural'`
@@ -98,6 +107,11 @@ From `src/agents/signal/SignalAggregatorAgent.ts`:
 - Exa auth/billing cooldown
 - domain allowlist/denylist support
 - advisory fail-open behavior
+
+### Current telemetry baseline
+
+- `web_search` metrics already emit cache-hit events, provider cooldown events, and `insight_emitted` / `insight_failed`.
+- There is no first-class route-decision, heartbeat, spend-budget, or provider-disagreement metric contract yet.
 
 ---
 
@@ -248,7 +262,7 @@ Content fetch budget must be route-dependent:
 
 - `skip`: 0
 - `serper`: top 2-3 URLs by authority/recency
-- `exa`: top 2-3 inline or post-search content fetches, subject to current pricing
+- `exa`: prefer bounded inline contents on the search request when the result set stays within Exa's current 10-result bundled-content limit; only fall back to a separate `/contents` expansion when the route explicitly needs more than the inline payload provides
 - `serper_then_exa`: only expand Exa if Serper ended ambiguous
 
 The current unconditional eight-URL cap becomes an upper bound, not the default operating budget.
@@ -298,7 +312,6 @@ Selection rules:
 
 - `evWebSearchExaEnabled`
 - `evWebSearchFirecrawlEnabled`
-- `evWebSearchPrimary`
 - `evWebSearchLookbackDays`
 - `evWebSearchMaxResults`
 - `evWebSearchCacheTtlSeconds`
@@ -309,9 +322,12 @@ Selection rules:
 
 ### Proposed new policy keys
 
+None of these keys exist today. Implementation starts by extending `TradePolicy`, defaults, schema, env parsing, validation, and docs so the router can be configured before it is wired.
+
 | Key | Type | Purpose |
 | --- | --- | --- |
-| `evWebSearchRoutingEnabled` | boolean | master switch for router path |
+| `evWebSearchProviderPolicy` | enum | canonical router policy; replaces `evWebSearchPrimary` once router ships |
+| `evWebSearchRefreshMinutes` | number | dedicated SignalAggregator polling cadence and market-metadata TTL anchor |
 | `evWebSearchDefaultContentBudget` | number | default max expanded documents |
 | `evWebSearchHighPriorityContentBudget` | number | expanded budget for premium cases |
 | `evWebSearchDefaultQueryMode` | enum | default query mode |
@@ -323,8 +339,24 @@ Selection rules:
 | `evWebSearchGdeltTriggerThreshold` | number | minimum trigger score |
 | `evWebSearchSerperEnabled` | boolean | enable default confirmer |
 | `evWebSearchExaFallbackEnabled` | boolean | premium fallback switch |
+| `evWebSearchExaInlineContentsEnabled` | boolean | prefer Exa search responses with bundled inline contents |
+| `evWebSearchExaInlineContentsMaxResults` | number | max Exa results eligible for inline-content path |
 
-The router should validate invalid combinations the same way `validateP0Config` currently validates `evWebSearchPrimary`.
+`evWebSearchPrimary` should remain only long enough to finish Phase 0 savings inside the current direct-provider path. Once the router lands, provider choice should be owned by `evWebSearchProviderPolicy`, not a feature-flagged side path.
+
+### Proposed env surface
+
+The router rollout must extend `src/config/env/webSearchEnv.ts`, `.env.example`, and `docs/Operations/environment-reference.md`, not just policy validation. Current runtime wiring is credential-gated, so new providers need explicit env-backed assembly.
+
+| Env key | Purpose |
+| --- | --- |
+| `SERPER_API_KEY` | Serper credential for paid confirmation |
+| `SERPER_BASE_URL` | Serper API base URL |
+| `SERPER_SEARCH_PATH` | Serper web search path |
+| `SERPER_NEWS_PATH` | Serper news search path |
+| `GDELT_BASE_URL` | GDELT DOC/Context API base URL |
+
+The router rollout must also extend `src/config/schema.ts` and `src/config/validate.ts`. Current validation only understands `exa|firecrawl` and the current primary-provider rules.
 
 ---
 
@@ -333,7 +365,6 @@ The router should validate invalid combinations the same way `validateP0Config` 
 ### Existing metrics to preserve
 
 - `web_search` event stream
-- provider request metrics
 - cache hit metrics
 - cooldown metrics
 - `learning:insight` emissions
@@ -368,7 +399,7 @@ Required behavior:
 
 - router failures must fail open and not block EV runtime;
 - provider failures remain advisory and emit `web_search` metrics;
-- missing GDELT or Serper credentials must degrade cleanly to the remaining configured path;
+- once Serper/GDELT runtime assembly exists, missing credentials must degrade cleanly to the remaining configured path;
 - content fetch must always use the provider that produced the result set for the current route;
 - cooldown and cache behavior must remain provider-isolated.
 
@@ -419,15 +450,22 @@ Keep the existing regression cases for:
 
 ### Phase 0
 
-Land router scaffolding behind deterministic config without changing provider defaults.
+Land the no-provider-swap savings inside the current Exa-first path:
+
+- extract the current hardcoded query fanout and eight-URL content expansion into config-backed helpers first
+- add `evWebSearchRefreshMinutes` so polling cadence and market-metadata TTL stop reusing `evModelRefreshMinutes`
+- benchmark Exa `search with contents` versus `search + /contents` within the current bundled <=10-result window
+- reduce default query/content budgets without changing provider order
 
 ### Phase 1
 
-Reduce query/content budgets within the current Exa-first path:
+Land router scaffolding and replace the current direct-provider selector:
 
-- default query mode from `base_plus_two` to `base_plus_one`
-- default content budget below 8
-- keep current fallback semantics
+- extend schema + validation for router, Serper, and GDELT config
+- replace `evWebSearchPrimary` with `evWebSearchProviderPolicy`
+- extend env parsing + docs for Serper/GDELT runtime assembly
+- introduce route enums and route-decision telemetry
+- remove the need for a router feature flag or alternate runtime path
 
 ### Phase 2
 
@@ -445,6 +483,8 @@ Restrict Exa to premium fallback after telemetry proves parity or better cost-qu
 - [ ] Provider selection is explicit, measurable, and config-driven.
 - [ ] Cheap trigger state exists before default paid confirmation.
 - [ ] Exa is no longer the unconditional first paid retrieval step for every eligible market.
+- [ ] Search cadence and market-metadata TTL are no longer implicitly tied to `evModelRefreshMinutes`.
+- [ ] The Exa route explicitly documents whether it is using bundled inline contents or a separate `/contents` expansion.
 - [ ] Route, latency, spend, and disagreement telemetry are queryable through existing metrics surfaces.
 - [ ] Unit and integration tests keep repo coverage above enforced thresholds.
 - [ ] Dashboard and backend build/test gates remain green after adoption.
@@ -456,4 +496,4 @@ Restrict Exa to premium fallback after telemetry proves parity or better cost-qu
 - Should `SerperClient` live under `src/services/websearch/` beside Exa/Firecrawl or behind a more generic router package?
 - Should official-domain matching be deterministic config, market metadata, or both?
 - Should GDELT heartbeat state be persisted across restarts or remain in-memory with short TTL only?
-- How much Exa inline-content evaluation should be done before deciding between inline and `/contents` retrieval?
+- After Phase 0 benchmarking, should bundled Exa inline contents become the default Exa path whenever the result count is <=10?
