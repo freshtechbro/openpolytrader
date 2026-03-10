@@ -1,0 +1,130 @@
+@media (max-width: 1080px) {
+  .ops-shell {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+    padding: var(--space-5) 24px var(--space-8);
+  }
+
+  .ops-shell__nav {
+    position: static;
+  }
+
+  .ops-nav {
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  }
+
+  .ops-shell__actions {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .public-header {
+    flex-wrap: wrap;
+    gap: var(--space-3);
+  }
+
+  .public-header__nav {
+    order: 3;
+    width: 100%;
+  }
+
+  .ops-cta {
+    margin-left: 0;
+  }
+
+  .landing-hero,
+  .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .trust-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .topnav {
+    padding: 20px 24px;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .topnav__status {
+    justify-content: flex-start;
+  }
+
+  .risk-toolbar,
+  .risk-section-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .decisions-filter-field--date input[type='datetime-local'] {
+    min-width: 0;
+  }
+
+  .risk-field-row {
+    grid-template-columns: 1fr;
+  }
+
+  .decisions-table th.decisions-col-time,
+  .decisions-table td.decisions-col-time,
+  .decisions-table th.decisions-col-agent,
+  .decisions-table td.decisions-col-agent {
+    position: static;
+  }
+}
+
+@media (max-width: 700px) {
+  .page-container {
+    width: min(1160px, calc(100vw - 32px));
+    padding-top: var(--space-6);
+  }
+
+  .trust-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .decisions-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .decisions-filter-actions {
+    align-items: stretch;
+  }
+
+  .intents-table .intents-col-time,
+  .intents-table .intents-col-opportunity,
+  .intents-table .intents-col-market,
+  .intents-table .intents-col-strategy,
+  .intents-table .intents-col-status,
+  .intents-table .intents-col-outcome,
+  .markets-table .markets-col-id,
+  .markets-table .markets-col-question,
+  .markets-table .markets-col-status,
+  .markets-table .markets-col-until,
+  .markets-table .markets-col-reason,
+  .incidents-table .incidents-col-time,
+  .incidents-table .incidents-col-check,
+  .decisions-table .decisions-col-time,
+  .decisions-table .decisions-col-agent,
+  .decisions-table .decisions-col-subject,
+  .decisions-table .decisions-col-source,
+  .decisions-table .decisions-col-decision,
+  .decisions-table .decisions-col-reasoning,
+  .decisions-table .decisions-col-action {
+    width: auto;
+    min-width: 0;
+    position: static;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

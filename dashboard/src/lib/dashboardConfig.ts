@@ -9,20 +9,20 @@ const DEFAULTS = {
   publicRepoUrl: 'https' + '://github.com/freshtechbro/openpolytrader'
 };
 
-function parsePositiveInt(value: string | undefined, fallback: number): number {
+export function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number(value);
   if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
   return fallback;
 }
 
-function normalizeString(value: string | undefined, fallback: string): string {
+export function normalizeString(value: string | undefined, fallback: string): string {
   if (!value) return fallback;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : fallback;
 }
 
-function normalizeBaseUrl(value: string | undefined, fallback: string): string {
+export function normalizeBaseUrl(value: string | undefined, fallback: string): string {
   const normalized = normalizeString(value, fallback);
   if (normalized === '') return '';
   return normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;

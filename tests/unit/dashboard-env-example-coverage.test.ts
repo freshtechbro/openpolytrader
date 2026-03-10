@@ -19,7 +19,9 @@ describe('dashboard/.env.example coverage', () => {
   it('includes all VITE_* keys referenced by dashboard config', () => {
     const configPath = path.resolve(process.cwd(), 'dashboard/src/lib/dashboardConfig.ts');
     const configSource = readFileSync(configPath, 'utf8');
-    const viteKeys = [...new Set(configSource.match(/VITE_[A-Z0-9_]+/g) ?? [])].sort();
+    const viteKeys = [...new Set(configSource.match(/VITE_[A-Z0-9_]+/g) ?? [])].sort((left, right) =>
+      left.localeCompare(right)
+    );
 
     const envPath = path.resolve(process.cwd(), 'dashboard/.env.example');
     const envSource = readFileSync(envPath, 'utf8');

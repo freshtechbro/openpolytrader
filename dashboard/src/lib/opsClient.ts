@@ -1,14 +1,15 @@
 import { OPS_BASE_URL } from './dashboardConfig';
+import type { OpsErrorResponse } from '../../../src/api/contracts.js';
 
 export const OPS_BASE = OPS_BASE_URL;
 export const OPS_STREAM_URL = buildOpsUrl('/stream');
 
 const OPS_SESSION_PATH = '/ops/session';
-const OPS_TOKEN_HEADER = 'x-ops-token';
+const OPS_SESSION_HEADER = 'x-ops-token';
 
 let opsAuthToken: string | null = null;
 
-export interface OpsSessionStatus {
+interface OpsSessionStatus {
   authenticated: boolean;
   authRequired: boolean;
   expiresAt?: number;
@@ -18,15 +19,21 @@ export interface OpsSessionStatus {
 export class OpsRequestError extends Error {
   readonly path: string;
   readonly status: number;
-  readonly reason: string;
+  readonly code: string;
+  readonly details?: unknown;
 
-  constructor(path: string, status: number, reason: string) {
-    super(`${path}:${reason}`);
+  constructor(path: string, status: number, code: string, message?: string, details?: unknown) {
+    super(message ?? code);
     this.name = 'OpsRequestError';
     this.path = path;
     this.status = status;
-    this.reason = reason;
+    this.code = code;
+    this.details = details;
   }
+}
+
+function invalidJsonError(path: string, status: number): OpsRequestError {
+  return new OpsRequestError(path, status, 'invalid_json', `Invalid JSON response for ${path}`);
 }
 
 export function buildOpsUrl(path: string): string {
@@ -42,10 +49,10 @@ export function getOpsStreamUrl(): string {
   return `${base}${separator}token=${encodeURIComponent(opsAuthToken)}`;
 }
 
-export function opsFetch(path: string, init?: RequestInit): Promise<Response> {
+function opsFetchResponse(path: string, init?: RequestInit): Promise<Response> {
   const headers = toHeaders(init?.headers);
-  if (opsAuthToken && !headers.has('authorization') && !headers.has(OPS_TOKEN_HEADER)) {
-    headers.set(OPS_TOKEN_HEADER, opsAuthToken);
+  if (opsAuthToken && !headers.has('authorization') && !headers.has(OPS_SESSION_HEADER)) {
+    headers.set(OPS_SESSION_HEADER, opsAuthToken);
   }
   const hasHeaders = Array.from(headers.keys()).length > 0;
   return fetch(buildOpsUrl(path), {
@@ -56,19 +63,18 @@ export function opsFetch(path: string, init?: RequestInit): Promise<Response> {
 }
 
 export async function opsFetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await opsFetch(path, init);
+  const response = await opsFetchResponse(path, init);
   const text = await response.text();
-  const parsed = text.trim().length > 0 ? safeParseJSON(text) : null;
+  const trimmed = text.trim();
+  const parsed = trimmed.length > 0 ? safeParseJSON(text) : undefined;
 
   if (!response.ok) {
-    const message =
-      parsed &&
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      typeof (parsed as Record<string, unknown>).error === 'string'
-        ? String((parsed as Record<string, unknown>).error)
-        : `http_${response.status}`;
-    throw new OpsRequestError(path, response.status, message);
+    const error = parseOpsError(parsed, response.status);
+    throw new OpsRequestError(path, response.status, error.code, error.message, error.details);
+  }
+
+  if (trimmed.length === 0 || parsed === null) {
+    throw invalidJsonError(path, response.status);
   }
 
   return parsed as T;
@@ -76,10 +82,7 @@ export async function opsFetchJson<T>(path: string, init?: RequestInit): Promise
 
 export function isOpsUnauthorizedError(error: unknown): boolean {
   if (error instanceof OpsRequestError) {
-    return error.status === 401;
-  }
-  if (error instanceof Error) {
-    return error.message.endsWith(':unauthorized') || error.message.endsWith(':http_401');
+    return error.status === 401 || error.code === 'unauthorized';
   }
   return false;
 }
@@ -98,7 +101,7 @@ export function createOpsSession(token: string): Promise<OpsSessionStatus> {
 }
 
 export async function clearOpsSession(): Promise<void> {
-  await opsFetch(OPS_SESSION_PATH, { method: 'DELETE' });
+  await opsFetchJson<OpsSessionStatus>(OPS_SESSION_PATH, { method: 'DELETE' });
 }
 
 export function setOpsAuthToken(token: string | undefined | null): void {
@@ -116,6 +119,21 @@ function safeParseJSON(value: string): unknown {
   } catch {
     return null;
   }
+}
+
+function parseOpsError(parsed: unknown, status: number): { code: string; message?: string; details?: unknown } {
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const response = parsed as Partial<OpsErrorResponse>;
+    const error = response.error;
+    if (error && typeof error === 'object' && !Array.isArray(error)) {
+      const record = error as Record<string, unknown>;
+      const code = typeof record.code === 'string' ? record.code : `http_${status}`;
+      const message = typeof record.message === 'string' ? record.message : undefined;
+      const details = 'details' in record ? record.details : undefined;
+      return { code, message, details };
+    }
+  }
+  return { code: `http_${status}` };
 }
 
 function toHeaders(input: HeadersInit | undefined): Headers {
