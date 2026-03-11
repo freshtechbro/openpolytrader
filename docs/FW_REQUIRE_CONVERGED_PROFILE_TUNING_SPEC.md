@@ -29,7 +29,11 @@ Add a profile-tunable FW convergence policy field so non-converged iterate accep
 - Use existing loop diagnostics as the convergence source of truth.
   Rationale: `FwProjectionMetadata.loop` and `FwBasketMetadata.loop` already carry `converged`, so no new duplicate state is needed if all gate paths receive that data.
 - Emit explicit rejection reasons for the policy.
-  Recommended runtime reason names: `projection_requires_converged`, `fw_requires_converged`.
+  Recommended runtime reason names: `projection_requires_converged` for pre-emission rejection, `fw_requires_converged` for single-market gate rejection, `fw_basket_requires_converged` for whole-basket rejection, and `fw_basket:<marketId>:fw_requires_converged` for per-market basket failures.
+- Do not edit `settings/risk-gates/active.json` as part of the implementation.
+  Rationale: preset definition and active-profile selection are separate concerns; activation should continue to flow through normal runtime profile application.
+- Treat `src/api/contracts.ts`, `src/config/schemaTypes.ts`, and most dashboard risk-gates components as generic consumers unless implementation proves otherwise.
+  Rationale: the config snapshot and schema contracts are already record-driven, so unnecessary edits here would widen the change set without adding behavior.
 
 ---
 
@@ -48,6 +52,8 @@ Add `fwRequireConverged` to the policy model, defaults, and schema surface.
 4. Bump `CONFIG_SCHEMA.version` because the runtime-editable contract changed.
 5. Keep `validateP0Config` minimal for this field.
    No inter-field numeric constraint is required because it is a standalone boolean.
+6. Do not pre-emptively edit `src/api/contracts.ts` or `src/config/schemaTypes.ts`.
+   The existing `OpsConfigSnapshot` and `ConfigSchema` shapes are already generic enough to carry the new field once the schema is updated.
 
 ### Files impacted
 - `src/config/policy.ts`
@@ -78,7 +84,8 @@ Add `fwRequireConverged` explicitly to every risk-profile JSON and validate that
 3. Keep `extra_high` explicit with `false` if the intent is to preserve a permissive exploratory profile.
 4. Confirm no loader changes are required in `src/config/riskProfile.ts`; it already supports arbitrary `Partial<TradePolicy>` fields.
 5. Confirm no runtime profile-apply code changes are required in `src/boot/runtimeCatalog.ts` beyond the new field being present in the loaded overlay.
-6. Add tests that load/apply presets and assert the resulting policy value.
+6. Do not edit `settings/risk-gates/active.json`; profile activation should remain an operator action.
+7. Add tests that load/apply presets and assert the resulting policy value.
 
 ### Files impacted
 - `settings/risk-gates/near_zero.json`
@@ -149,19 +156,20 @@ Make downstream FW gates convergence-aware and thread loop diagnostics through e
    - If `policy.fwRequireConverged` is `true` and `projection.loop?.converged !== true`, add `fw_requires_converged`.
    - Keep the existing `solverStatus` checks for infeasible/timeout/error cases.
 2. Update basket candidate filtering in `src/agents/projection/FwProjectionUniverseSupport.ts`:
-   - Pass the actual loop diagnostics into the synthetic projection metadata used by `evaluateFwProjectionGates`.
+   - Pass the same loop diagnostics object used by `buildBasketOpportunity` into the synthetic projection metadata used by `evaluateFwProjectionGates`.
    - Stop hardcoding `solverStatus='feasible'` without the corresponding loop state.
 3. Update basket re-gating:
    - Extend `FwBasketGateInputs` so `evaluateFwBasketGates` receives the basket loop diagnostics or a `converged` boolean.
-   - If `policy.fwRequireConverged` is `true` and the basket loop is not converged, reject before per-market evaluation with `fw_basket_requires_converged` or compose `fw_requires_converged` into basket reasons consistently.
+   - If `policy.fwRequireConverged` is `true` and the basket loop is not converged, reject before per-market evaluation with `fw_basket_requires_converged`.
+   - If per-market basket evaluation reaches `evaluateFwProjectionGates` and finds a non-converged leg under a strict profile, emit the prefixed reason `fw_basket:<marketId>:fw_requires_converged`.
 4. Update `Supervisor` call sites to pass the basket loop data into `evaluateFwBasketGates`.
-5. Keep the reason naming consistent across single-market and basket paths so ops/runbooks remain readable.
+5. Do not add new fields to `src/domain/opportunity.ts` unless implementation proves the existing `fw.loop` and `fwBasket.loop` diagnostics are insufficient.
+6. Keep the reason naming consistent across single-market and basket paths so ops/runbooks remain readable.
 
 ### Files impacted
 - `src/domain/gates.ts`
 - `src/agents/projection/FwProjectionUniverseSupport.ts`
 - `src/core/Supervisor.ts`
-- `src/domain/opportunity.ts`
 - `tests/unit/gates.test.ts`
 - `tests/unit/supervisor-reconciliation.test.ts`
 - `tests/unit/risk.test.ts`
@@ -191,18 +199,20 @@ Document the new field and correct the current stale claims about FW non-converg
 3. Update operator docs to describe the actual behavior:
    - Strict profiles reject non-converged FW iterates and baskets.
    - Permissive profiles may still allow approximate iterates if positive weights exist.
-4. Correct stale wording that currently says all non-converged FW outputs are rejected unconditionally.
-5. Update any profile guidance docs that describe preset intent so `extra_high` permissiveness versus `high` strictness is explicit.
+4. Correct stale wording that currently says all non-converged FW outputs are rejected unconditionally, and align runbook reason names with the actual `mapNonConvergedReason` outputs plus the new convergence-specific reasons.
+5. Touch dashboard risk-gates components only if copy changes are actually needed.
+   The schema-driven form should render the new field without structural component work.
+6. Update any profile guidance docs that describe preset intent so `extra_high` permissiveness versus `high` strictness is explicit.
 
 ### Files impacted
 - `src/config/schema.ts`
-- `dashboard/src/pages/risk-gates/RiskConfigSettingsSection.tsx`
-- `dashboard/src/pages/risk-gates/RiskProfilePanels.tsx`
 - `README.md`
 - `docs/ARCHITECTURE.md`
 - `docs/Operations/runbook.md`
 - `docs/Operations/config-knobs.md`
 - `agents.md`
+- `dashboard/src/pages/risk-gates/RiskConfigSettingsSection.tsx` (optional copy only)
+- `dashboard/src/pages/risk-gates/RiskProfilePanels.tsx` (optional copy only)
 
 ### End goal
 Operators and future agents see the same convergence behavior in the UI, docs, and runtime.
@@ -231,7 +241,9 @@ Add focused regression tests that prove the switch works across strict and permi
    - strict rejection when `projection.loop?.converged=false`
    - strict basket rejection when `fwBasket.loop.converged=false`
 4. Add API/config tests for live policy updates carrying the new field.
-5. If needed, add a dashboard controller test that confirms schema-driven rendering and save payloads include the new boolean.
+5. Add dashboard unit coverage in the schema-backed tests first.
+   Prefer `tests/unit/dashboard-risk-sections.test.ts` for rendered field coverage and keep controller tests for save/apply wiring only if needed.
+6. Add or extend Playwright coverage in `dashboard/tests/e2e/risk-profile.spec.ts` if you want end-to-end proof that strict and permissive presets apply the expected runtime behavior without stale carryover.
 
 ### Files impacted
 - `tests/unit/config.test.ts`
@@ -239,8 +251,9 @@ Add focused regression tests that prove the switch works across strict and permi
 - `tests/unit/fw-projection-agent.test.ts`
 - `tests/unit/fw-projection-support-direct.test.ts`
 - `tests/unit/gates.test.ts`
+- `tests/unit/dashboard-risk-sections.test.ts`
 - `tests/unit/dashboard-controller-direct.test.ts`
-- `tests/unit/dashboard-pages.test.ts`
+- `dashboard/tests/e2e/risk-profile.spec.ts` (optional end-to-end guard)
 
 ### End goal
 The new switch is protected by fast tests at every layer that can regress it.
@@ -262,6 +275,13 @@ The new switch is protected by fast tests at every layer that can regress it.
 6. `tests/unit/*.test.ts` — add regression coverage for config, API, gates, and projection behavior.
 7. `README.md`, `docs/ARCHITECTURE.md`, `docs/Operations/*.md`, `agents.md` — align operator docs and repo guidance with runtime.
 
+## Files with no direct change expected
+
+- `src/api/contracts.ts` — config payloads are already record-based.
+- `src/config/schemaTypes.ts` — the schema type system already supports new boolean fields.
+- `src/domain/opportunity.ts` — existing FW loop diagnostics should be reused unless implementation proves they are insufficient.
+- `settings/risk-gates/active.json` — active profile state should remain operator-controlled.
+
 ---
 
 ## Dependencies to add
@@ -282,3 +302,4 @@ No new dependencies are required.
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-03-11 | Initial spec covering config, profile overlays, projection/gate enforcement, telemetry, docs, and regression coverage |
+| 1.1 | 2026-03-11 | Audit pass resolved reason-name ambiguity, clarified optional versus mandatory files, and added missing dashboard regression targets |
