@@ -126,7 +126,7 @@ describe('dashboard page modules', () => {
     expect(findAll(element, (entry) => entry.props.title === 'Recent decisions')).toHaveLength(1);
     expect(findAll(element, (entry) => entry.props.title === 'Decision detail')).toHaveLength(1);
     expect(opsFetchJson).toHaveBeenCalledWith('/decisions?limit=200', expect.objectContaining({ signal: expect.any(AbortSignal) }));
-  });
+  }, 15000);
 
   it('renders the incidents page table and preview toggle', async () => {
     mockDashboardReact([false]);

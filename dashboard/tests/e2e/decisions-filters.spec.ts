@@ -1,22 +1,10 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
-import { startDashboardServer, type DashboardTestServer } from './server';
-
-let serverHandle: DashboardTestServer;
-
-test.beforeAll(async () => {
-  serverHandle = await startDashboardServer();
-});
-
-test.afterAll(async () => {
-  await serverHandle.close();
-});
-
-test('decisions filters apply and clear correctly', async ({ page }) => {
+test('decisions filters apply and clear correctly', async ({ page, dashboardServer }) => {
   await page.setViewportSize({ width: 1366, height: 920 });
   const rows = page.locator('.decisions-table tbody tr');
 
-  await page.goto(`${serverHandle.baseUrl}/ops/decisions`);
+  await page.goto(`${dashboardServer.baseUrl}/ops/decisions`);
   await expect(page.getByRole('heading', { name: 'Decisions', exact: true })).toBeVisible();
   await expect(rows).toHaveCount(3);
   await expect(page.locator('th.decisions-col-time')).toBeVisible();

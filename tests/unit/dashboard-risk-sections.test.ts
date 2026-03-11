@@ -78,8 +78,8 @@ describe('RiskConfigSettingsSection', () => {
               label: 'Policy',
               description: 'Trade thresholds.',
               fields: Array.from({ length: 14 }, (_, index) => ({
-                key: `policyField${index}`,
-                label: `Policy Field ${index}`,
+                key: index === 0 ? 'fwRequireConverged' : `policyField${index}`,
+                label: index === 0 ? 'FW Require Converged' : `Policy Field ${index}`,
                 description: `Description ${index}`,
                 type: index === 0 ? 'boolean' : index === 1 ? 'enum' : 'number',
                 options: index === 1 ? ['shadow', 'live'] : [],
@@ -92,7 +92,7 @@ describe('RiskConfigSettingsSection', () => {
         },
         draft: {
           policy: {
-            policyField0: true,
+            fwRequireConverged: true,
             policyField1: 'shadow',
             policyField2: 1.5
           },
@@ -133,7 +133,11 @@ describe('RiskConfigSettingsSection', () => {
 
     expect(onToggleSectionExpansion).toHaveBeenCalledWith('policy');
     expect(onSave).toHaveBeenCalledWith('policy');
-    expect(onFieldChange).toHaveBeenCalledWith('policy', expect.objectContaining({ key: 'policyField0' }), false);
+    expect(onFieldChange).toHaveBeenCalledWith(
+      'policy',
+      expect.objectContaining({ key: 'fwRequireConverged' }),
+      false
+    );
     expect(onFieldChange).toHaveBeenCalledWith('policy', expect.objectContaining({ key: 'policyField1' }), 'live');
     expect(onFieldChange).toHaveBeenCalledWith('policy', expect.objectContaining({ key: 'policyField2' }), 2.5);
     expect(textContent(element)).toContain('Saved');

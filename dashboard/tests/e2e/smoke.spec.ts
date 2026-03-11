@@ -1,19 +1,7 @@
-import { test, expect } from '@playwright/test';
+import { expect, test } from './fixtures';
 
-import { startDashboardServer, type DashboardTestServer } from './server';
-
-let serverHandle: DashboardTestServer;
-
-test.beforeAll(async () => {
-  serverHandle = await startDashboardServer();
-});
-
-test.afterAll(async () => {
-  await serverHandle.close();
-});
-
-test('dashboard loads', async ({ page }) => {
-  await page.goto(serverHandle.baseUrl);
+test('dashboard loads', async ({ page, dashboardServer }) => {
+  await page.goto(dashboardServer.baseUrl);
   await expect(page.getByRole('heading', { name: 'Operate a disciplined trading pipeline, not a blind bot.' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open OpenPolyTrader GitHub repository' })).toBeVisible();
   await page.locator('a.ops-cta').click();

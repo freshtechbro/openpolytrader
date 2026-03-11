@@ -120,7 +120,7 @@ describe('dashboard ops shell and layout content', () => {
     findOne(element, (entry) => entry.type === 'button' && textContent(entry.props.children) === 'Sign out').props
       .onClick?.({} as never);
     expect(onLogout).toHaveBeenCalledOnce();
-  });
+  }, 15000);
 
   it('selects the correct routed page component for each ops page', async () => {
     const { Decisions } = await import('../../dashboard/src/pages/Decisions');

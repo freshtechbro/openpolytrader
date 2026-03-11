@@ -49,7 +49,10 @@ describe('useRiskGatesController', () => {
             key: 'policy',
             label: 'Policy',
             description: 'Policy fields',
-            fields: [{ key: 'edgeRequired', label: 'Edge Required', type: 'number', integer: false }]
+            fields: [
+              { key: 'edgeRequired', label: 'Edge Required', type: 'number', integer: false },
+              { key: 'fwRequireConverged', label: 'FW Require Converged', type: 'boolean' }
+            ]
           },
           {
             key: 'risk',
@@ -64,7 +67,7 @@ describe('useRiskGatesController', () => {
         tradingMode: 'shadow',
         riskProfile: 'near_zero',
         riskProfileSource: 'persisted',
-        policy: { edgeRequired: 0.03 },
+        policy: { edgeRequired: 0.03, fwRequireConverged: true },
         risk: { marketCooldownSeconds: 60 }
       },
       {
@@ -72,7 +75,7 @@ describe('useRiskGatesController', () => {
         tradingMode: 'shadow',
         riskProfile: 'near_zero',
         riskProfileSource: 'persisted',
-        policy: { edgeRequired: 0.04 },
+        policy: { edgeRequired: 0.04, fwRequireConverged: false },
         risk: { marketCooldownSeconds: 60 }
       },
       { ops: {}, polymarket: {}, rpc: {} },
@@ -93,15 +96,15 @@ describe('useRiskGatesController', () => {
         tradingMode: 'shadow',
         riskProfile: 'near_zero',
         riskProfileSource: 'persisted',
-        policy: { edgeRequired: 0.03 },
+        policy: { edgeRequired: 0.03, fwRequireConverged: true },
         risk: { marketCooldownSeconds: 60 }
       })
       .mockResolvedValueOnce({ ops: {}, polymarket: {}, rpc: {} })
       .mockResolvedValueOnce({ activeProfile: 'near_zero', activeProfileSource: 'persisted', availableProfiles: ['near_zero', 'high'] })
-      .mockResolvedValueOnce({ policy: { edgeRequired: 0.04 } })
+      .mockResolvedValueOnce({ policy: { edgeRequired: 0.04, fwRequireConverged: false } })
       .mockResolvedValueOnce({
         profile: { id: 'high', source: 'persisted' },
-        policy: { edgeRequired: 0.05 },
+        policy: { edgeRequired: 0.05, fwRequireConverged: false },
         risk: { marketCooldownSeconds: 90 },
         persisted: true
       });
@@ -125,7 +128,7 @@ describe('useRiskGatesController', () => {
       '/config/policy',
       expect.objectContaining({
         method: 'PATCH',
-        body: JSON.stringify({ edgeRequired: 0.04 })
+        body: JSON.stringify({ edgeRequired: 0.04, fwRequireConverged: false })
       })
     );
 
@@ -136,6 +139,36 @@ describe('useRiskGatesController', () => {
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ profile: 'high' })
+      })
+    );
+    expect(setters[1]).toHaveBeenCalledWith(
+      expect.objectContaining({
+        riskProfile: 'high',
+        riskProfileSource: 'persisted',
+        policy: { edgeRequired: 0.05, fwRequireConverged: false },
+        risk: { marketCooldownSeconds: 90 }
+      })
+    );
+    expect(setters[2]).toHaveBeenCalledWith(
+      expect.objectContaining({
+        riskProfile: 'high',
+        riskProfileSource: 'persisted',
+        policy: { edgeRequired: 0.05, fwRequireConverged: false },
+        risk: { marketCooldownSeconds: 90 }
+      })
+    );
+    expect(setters[6]).toHaveBeenCalledWith('high');
+    const riskProfilesUpdater = setters[4].mock.calls.at(-1)?.[0] as
+      | ((value: { activeProfile: string; activeProfileSource: string; availableProfiles: string[] }) => unknown)
+      | undefined;
+    expect(riskProfilesUpdater?.({ activeProfile: 'near_zero', activeProfileSource: 'persisted', availableProfiles: ['near_zero', 'high'] })).toMatchObject({
+      activeProfile: 'high',
+      activeProfileSource: 'persisted',
+      availableProfiles: ['near_zero', 'high']
+    });
+    expect(setters[7]).toHaveBeenCalledWith(
+      expect.objectContaining({
+        saving: false
       })
     );
 
@@ -316,6 +349,32 @@ describe('ops layout controller support helpers', () => {
     });
     expect(shouldRefreshMetrics({ type: 'fill' })).toBe(true);
     expect(shouldRefreshMetrics({ type: 'health' })).toBe(false);
+
+    const basketOrder = syncOrderIntent(
+      [],
+      {
+        type: 'order',
+        timestamp: 1_700_000_000_200,
+        data: {
+          opportunityId: 'fw-basket:basket-1:1700000000',
+          status: 'submitted',
+          basket: {
+            legs: [
+              {
+                marketId: '0xabc123456789012345678901234567890123456'
+              }
+            ]
+          }
+        }
+      },
+      allowlist
+    );
+    expect(basketOrder[0]).toMatchObject({
+      marketId: '0xabc123456789012345678901234567890123456',
+      marketQuestion: 'Will it happen?',
+      strategy: 'fw_basket',
+      orderStatus: 'submitted'
+    });
   });
 });
 

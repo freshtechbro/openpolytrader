@@ -69,6 +69,7 @@ describe('dashboard route/risk helper modules', () => {
     expect(getMarketQuestion([{ key: 'market-1', question: ' Question 1 ' } as never], 'market-1')).toBe('Question 1');
     expect(normalizeIntentStrategy('ev_single_side')).toBe('ev');
     expect(inferIntentStrategy('market:fw:0.1:0.1:1700')).toBe('fw_projection');
+    expect(inferIntentStrategy('fw-basket:basket-1:1700')).toBe('fw_basket');
     expect(resolveOpsPage('/ops/risk-gates')).toBe('risk');
     expect(canonicalOpsPath('/ops/unknown')).toBe('/ops/overview');
     expect(

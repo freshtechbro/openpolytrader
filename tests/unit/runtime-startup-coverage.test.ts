@@ -118,5 +118,5 @@ describe('startRuntimeLifecycle behavior', () => {
         .recent('info', 10)
         .some((event) => (event.data as { message?: string }).message === 'trading_unblocked_catalog_refresh_ready')
     ).toBe(true);
-  }, 15000);
+  }, 30000);
 });

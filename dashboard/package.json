@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "VITE_OPS_BASE_URL= npm run build && playwright test && node scripts/e2e-smoke.mjs"
+    "test:e2e": "VITE_OPS_BASE_URL= npm run build && node ./node_modules/@playwright/test/cli.js test && node scripts/e2e-smoke.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

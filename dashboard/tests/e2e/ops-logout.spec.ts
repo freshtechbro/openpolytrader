@@ -1,19 +1,7 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
-import { startDashboardServer, type DashboardTestServer } from './server';
-
-let serverHandle: DashboardTestServer;
-
-test.beforeAll(async () => {
-  serverHandle = await startDashboardServer();
-});
-
-test.afterAll(async () => {
-  await serverHandle.close();
-});
-
-test('shows an explicit error when server logout fails', async ({ page }) => {
-  await page.goto(`${serverHandle.baseUrl}/ops/overview`);
+test('shows an explicit error when server logout fails', async ({ page, dashboardServer }) => {
+  await page.goto(`${dashboardServer.baseUrl}/ops/overview`);
   await expect(page.getByText('System Overview')).toBeVisible();
 
   await page.route('**/ops/session', async (route) => {

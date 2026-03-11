@@ -17,6 +17,16 @@ import {
   upsertIntent
 } from './opsLayoutUtils';
 
+function getBasketLegMarketId(source: JsonRecord | null): string | undefined {
+  const basket = asRecord(source?.basket);
+  const legs = Array.isArray(basket?.legs) ? basket.legs : [];
+  for (const leg of legs) {
+    const marketId = asString(asRecord(leg)?.marketId);
+    if (marketId) return marketId;
+  }
+  return undefined;
+}
+
 export function asAllowlist(data: unknown): AllowlistEntry[] {
   return Array.isArray(data) ? (data as AllowlistEntry[]) : [];
 }
@@ -96,17 +106,21 @@ export function syncOrderIntent(
   if (!opportunityId) return intents;
 
   const existing = intents.find((intent) => intent.opportunityId === opportunityId);
-  const marketId = inferMarketId(opportunityId, asString(data?.marketId) ?? asString(state?.marketId));
+  const strategy = inferIntentStrategy(
+    opportunityId,
+    normalizeIntentStrategy(data?.strategy) ?? normalizeIntentStrategy(state?.strategy)
+  );
+  const marketId = inferMarketId(
+    opportunityId,
+    asString(data?.marketId) ?? asString(state?.marketId) ?? getBasketLegMarketId(data)
+  );
   const resolvedMarketId = marketId ?? existing?.marketId;
 
   return upsertIntent(intents, {
     opportunityId,
     marketId: resolvedMarketId,
     marketQuestion: getMarketQuestion(allowlist, resolvedMarketId) ?? existing?.marketQuestion,
-    strategy: inferIntentStrategy(
-      opportunityId,
-      normalizeIntentStrategy(data?.strategy) ?? normalizeIntentStrategy(state?.strategy)
-    ),
+    strategy,
     gatedAt: existing?.gatedAt ?? event.timestamp,
     executedAt: asString(data?.status) === 'submitted' ? event.timestamp : existing?.executedAt,
     orderStatus: asString(data?.status) ?? existing?.orderStatus,

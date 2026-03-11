@@ -73,8 +73,9 @@ export function inferIntentStrategy(
   if (strategy && strategy !== 'unknown') return strategy;
   if (!opportunityId) return strategy ?? 'unknown';
   const parts = opportunityId.split(':');
+  if (parts[0] === 'fw-basket' || parts[0] === 'fw_basket') return 'fw_basket';
   if (parts[1] === 'fw') return 'fw_projection';
-  if (parts[1] === 'fwb') return 'fw_basket';
+  if (parts[1] === 'fwb' || parts[1] === 'fw_basket') return 'fw_basket';
   if (parts[1] === 'yes' || parts[1] === 'no') return 'ev';
   if (Number.isFinite(Number(parts[1])) && Number.isFinite(Number(parts[2]))) return 'near_zero';
   return strategy ?? 'unknown';
