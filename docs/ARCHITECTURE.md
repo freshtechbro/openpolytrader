@@ -17,7 +17,7 @@ Runtime strategy labels and their distinguishing execution traits:
 | --- | --- | --- | --- |
 | `near_zero` | `Scanner -> Risk -> Execution` | Paired YES/NO arbitrage with strict two-leg safety gates and near-zero-risk defaults | `strategyMode`, `signalMode`, `edgeRequired`, `minPairedFillRate`, `maxLegSkewMs` |
 | `ev` | `SignalAggregator/Scanner -> Risk -> Execution` | Single-sided directional execution (`side=yes|no`) with confidence, cooldown, and EV notional limits | `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evCooldownSeconds`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional` |
-| `fw_projection` | `Scanner -> FwProjectionAgent -> Risk -> Execution` | Dependency-aware FW solver output; non-converged or non-feasible projection results are rejected | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
+| `fw_projection` | `Scanner -> FwProjectionAgent -> Risk -> Execution` | Dependency-aware FW solver output; strict profiles require converged loops, while permissive profiles may still accept approximate positive iterates | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwRequireConverged`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
 | `fw_basket` | `Scanner -> FwProjectionAgent -> Risk -> Execution` | Multi-market FW basket intents with configurable execution mode and basket size bounds | `fwBasketExecutionMode`, `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional` |
 
 Operator-facing normalization:

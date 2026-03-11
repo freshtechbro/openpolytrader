@@ -59,6 +59,7 @@ Set local-safe defaults before first run:
 ```bash
 # .env
 TRADING_MODE=paper
+RISK_PROFILE=high
 TRADING_ENABLED=true
 OPS_API_TOKEN=replace-with-secure-token
 # Optional dev convenience: prefill token field on /ops/* login from localhost

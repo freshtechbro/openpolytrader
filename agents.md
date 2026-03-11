@@ -1,8 +1,8 @@
 # OpenPolyTrader Knowledge Base
 
 **Generated:** 2026-03-10
-**Commit:** edd21e2
-**Branch:** codex/deslopify
+**Commit:** 4a9c24c
+**Branch:** codex/search_provider&risk_config
 **Version:** 0.1.0
 
 ---
@@ -31,7 +31,9 @@
 Near-zero-risk Polymarket CLOB arbitrage bot. TypeScript + Fastify backend, React dashboard. Agent-based architecture with event-sourced state.
 
 **Current Snapshot:**
-- 185 backend TypeScript source files under `src/`
+- 186 backend TypeScript source files under `src/`
+- 398 total TypeScript files across the project
+- 145 backend unit suites under `tests/unit/`
 - 52 dashboard TypeScript/TSX source files under `dashboard/src/`
 - 144 backend unit suites under `tests/unit/`
 - 5 Playwright specs under `dashboard/tests/e2e/`
@@ -47,7 +49,7 @@ Core runtime strategies and their unique characteristics:
 |------|----------|-------|
 | `near_zero` | Paired YES/NO arbitrage with the strictest two-leg safety posture. | `strategyMode`, `signalMode`, `edgeRequired`, `minPairedFillRate`, `maxLegSkewMs` |
 | `ev` | Single-sided directional execution with confidence thresholds, cooldown, and EV notional caps. | `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evCooldownSeconds`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional` |
-| `fw_projection` | Dependency-aware Frank-Wolfe projection; non-converged or non-feasible outputs are rejected. | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
+| `fw_projection` | Dependency-aware Frank-Wolfe projection; strict profiles require converged loops, while permissive profiles may accept approximate positive iterates. | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwRequireConverged`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
 | `fw_basket` | Multi-market FW basket intents with bounded basket size and configurable execution mode. | `fwBasketExecutionMode`, `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional` |
 
 Ops labels normalize strategy output to: `near_zero`, `ev`, `fw_projection`, `fw_basket`.
@@ -236,7 +238,6 @@ flowchart TD
 |----------|---------|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture, agent details, data flow |
 | [`docs/ARCHITECTURE_EVENT_FLOW.asc`](docs/ARCHITECTURE_EVENT_FLOW.asc) | ASCII end-to-end event flow diagram |
-| [`docs/SEARCH_PROVIDER_ROUTING_TECHNICAL_SPEC.md`](docs/SEARCH_PROVIDER_ROUTING_TECHNICAL_SPEC.md) | Detailed EV web-search routing and provider-selection contract |
 | [`docs/Development/architecture-decisions.md`](docs/Development/architecture-decisions.md) | ADRs for key architectural choices |
 
 ### 💻 Development
@@ -496,7 +497,7 @@ Auth: `Authorization: Bearer $OPS_API_TOKEN`
 ### Configuration
 
 - Dashboard auth: use runtime `/ops/*` session login with `OPS_API_TOKEN` (no build-time token)
-- Defaults in `.env.example`: `TRADING_ENABLED=true`, `TRADING_MODE=shadow`, `RISK_PROFILE=extra_high`
+- Defaults in `.env.example`: `TRADING_ENABLED=true`, `TRADING_MODE=shadow`, `RISK_PROFILE=high`
 - To hard-disable trading: set `TRADING_ENABLED=false` or `TRADING_MODE=off`
 - Market catalog: Optional `MARKET_CATALOG_PATH` JSON array
 

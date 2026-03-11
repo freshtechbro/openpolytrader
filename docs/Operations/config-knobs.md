@@ -26,9 +26,13 @@ These are edited via `PATCH /config/policy` and `PATCH /config/risk` and rendere
 - Edge + spread + book quality: `edgeRequired`, `maxEdge`, `maxSpread`, `requireFreshBook`, `orderbookFreshnessMs`, `maxBookStalenessMs`, `topOfBookStabilityMs`, `maxLegSkewMs`
   - `orderbookFreshnessMs` is a legacy alias; it must match `maxBookStalenessMs` and validation fails if they differ.
 - Inventory + strategy: `strategyMode`, `maxOpenInventorySeconds`
-- Signals + EV: `signalMode`, `nearZeroFeeBps`, `evEdgeRequired`, `evFeeBps`, `evMaxEdge`, `evConfidenceMin`, `evConfidenceMinFloor`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional`, `evCooldownSeconds`, `evModelMode`, `evModelRefreshMinutes`, `evCalibrationMethod`, `evModelConfidenceFloor`, `evWebSearchExaEnabled`, `evWebSearchFirecrawlEnabled`, `evWebSearchPrimary`, `evWebSearchLookbackDays`, `evWebSearchMaxResults`, `evWebSearchCacheTtlSeconds`, `evWebSearchMaxConcurrency`, `evWebSearchFirecrawlMaxDepth`, `evWebSearchFirecrawlMaxPages`
+- Signals + EV: `signalMode`, `nearZeroFeeBps`, `evEdgeRequired`, `evFeeBps`, `evMaxEdge`, `evConfidenceMin`, `evConfidenceMinFloor`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional`, `evCooldownSeconds`, `evModelMode`, `evModelRefreshMinutes`, `evCalibrationMethod`, `evModelConfidenceFloor`, `evWebSearchProviderPolicy`, `evWebSearchRefreshMinutes`, `evWebSearchExaEnabled`, `evWebSearchFirecrawlEnabled`, `evWebSearchSerperEnabled`, `evWebSearchGdeltEnabled`, `evWebSearchExaFallbackEnabled`, `evWebSearchLookbackDays`, `evWebSearchMaxResults`, `evWebSearchCacheTtlSeconds`, `evWebSearchMaxConcurrency`, `evWebSearchDefaultContentBudget`, `evWebSearchHighPriorityContentBudget`, `evWebSearchDefaultQueryMode`, `evWebSearchNearResolutionMinutes`, `evWebSearchPriceMoveTriggerBps`, `evWebSearchOfficialDomainRequired`, `evWebSearchGdeltRefreshMinutes`, `evWebSearchGdeltTriggerThreshold`, `evWebSearchExaInlineContentsEnabled`, `evWebSearchExaInlineContentsMaxResults`, `evWebSearchFirecrawlMaxDepth`, `evWebSearchFirecrawlMaxPages`
   - `signalMode=near_zero` disables EV signals; `signalMode=ev` disables near-zero arbitrage.
   - `nearZeroFeeBps` is used by near-zero runtime gating (`evaluateGatesWithFees`) to enforce net-edge profitability after taker fees.
+  - `evWebSearchProviderPolicy` is the router ownership point. `gdelt_serper_exa` is the full tiered path, while `exa_only`, `serper_only`, and `serper_exa` are direct fallbacks.
+  - `evWebSearchRefreshMinutes` controls `SignalAggregatorAgent` polling cadence and market-metadata cache TTL; it no longer reuses `evModelRefreshMinutes`.
+  - `evWebSearchDefaultContentBudget` and `evWebSearchHighPriorityContentBudget` replace the old hardcoded content expansion cap with route-specific limits.
+  - `evWebSearchExaInlineContentsEnabled` and `evWebSearchExaInlineContentsMaxResults` control when Exa search responses seed content directly, avoiding a separate `/contents` call inside the bundled-result window.
 - Execution safety gates: `rejectDelayed`, `maxDecisionLatencyMs`, `maxDelayedAckRate`, `minPairedFillRate`, `minEdgeTicks`
 - Depth/slippage gates: `depthHeadroomFraction`, `depthBufferMultiplier`, `minDepthLevels`, `entrySlippageToleranceBps`, `priceBandBps`
   - `depthBufferMultiplier=0` disables the extra depth buffer requirement.
@@ -41,7 +45,10 @@ These are edited via `PATCH /config/policy` and `PATCH /config/risk` and rendere
     - `fwDependencyMode=deterministic` removes LLM dependency extraction from the FW hot path and is the safest low-latency default for paper/live rollout.
     - `fwDependencyMode=hybrid` should be used only when dependency extractor cache/backoff controls are enabled and monitored.
     - `fwDependencyHybridMerge` is only meaningful in `hybrid`; validation requires `consensus` for non-hybrid modes.
-  - Fully-corrective loop: `fwMaxIterations`, `fwMaxLoopRuntimeMs`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwContractionInitialEpsilon`, `fwContractionDecay`, `fwContractionMinEpsilon`, `fwStallIterationLimit`, `fwActiveSetMaxVertices`, `fwHullSolveMaxIterations`, `fwHullSolveTolerance`
+  - Fully-corrective loop: `fwMaxIterations`, `fwMaxLoopRuntimeMs`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwRequireConverged`, `fwContractionInitialEpsilon`, `fwContractionDecay`, `fwContractionMinEpsilon`, `fwStallIterationLimit`, `fwActiveSetMaxVertices`, `fwHullSolveMaxIterations`, `fwHullSolveTolerance`
+    - `fwRequireConverged=true` forces both single-market and basket FW intents to carry converged loop diagnostics through emission and downstream re-gating.
+    - `fwRequireConverged=false` keeps the approximate-iterate fallback available for exploratory profiles such as `extra_high`.
+    - Preset intent: `near_zero`, `moderate`, and `high` set `fwRequireConverged=true`; `extra_high` sets `fwRequireConverged=false`.
   - Projection/risk bounds: `fwMaxProjectionAgeMs`, `fwSlippageToleranceBps`, `fwExecutionRiskBufferBps`, `fwMinEdgeThreshold`, `fwSelectionWeightFloor`, `fwSelectionTopK`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional`
   - Basket execution: `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwBasketExecutionMode`
   - Basket validation notes:
@@ -79,7 +86,7 @@ Use `.env.example` for the full list; the most operationally relevant groups are
 - Polymarket endpoints + rate limiting: `POLYMARKET_CLOB_*`, `POLYMARKET_WS_*`, `POLYMARKET_USER_WS_URL`
 - Polymarket auth derivation: `POLYMARKET_L1_PRIVATE_KEY`, `POLYMARKET_L1_NONCE` (optional; derive API creds at boot)
 - Market catalog filters: `MARKET_CATALOG_PATH`, `MARKET_CATALOG_BOOTSTRAP_MAX_PAIRS`, `MARKET_CATALOG_MIN_VOLUME_24H`, `MARKET_CATALOG_MAX_SPREAD`, `MARKET_CATALOG_PAGE_SIZE`, `MARKET_CATALOG_MAX_PAGES`, `MARKET_CATALOG_ORDER`, `MARKET_CATALOG_EXCLUDE_ENDED_MARKETS`, `MARKET_CATALOG_EXPLORATION_*`, `MARKET_CATALOG_PRESTART_MAX_AGE_MS`
-- EV web search (direct API): `EXA_*` (including `EXA_COOLDOWN_MS`, `EXA_COOLDOWN_FAILURE_THRESHOLD`), `FIRECRAWL_*`, `EV_WEBSEARCH_*`
+- EV web search (router providers + utility clients): `EXA_*` (including `EXA_COOLDOWN_MS`, `EXA_COOLDOWN_FAILURE_THRESHOLD`), `SERPER_*`, `GDELT_BASE_URL`, `FIRECRAWL_*`, `EV_WEBSEARCH_*`
 - FW oracle sidecar connectivity: `FW_ORACLE_BASE_URL`, `FW_ORACLE_TIMEOUT_MS`, `FW_ORACLE_API_KEY`, `FW_ORACLE_CIRCUIT_FAILURE_THRESHOLD`, `FW_ORACLE_CIRCUIT_COOLDOWN_MS`
   - Paper-mode startup contract: when `TRADING_MODE=paper` and `TRADING_ENABLED=true`, backend startup fails fast if `${FW_ORACLE_BASE_URL}/health` is unavailable.
   - Preferred paper orchestration commands: `npm run paper:up`, `npm run paper:status`, `npm run paper:down` (aliases of `dev:ops` commands).

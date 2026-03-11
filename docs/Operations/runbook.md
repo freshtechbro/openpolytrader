@@ -12,7 +12,7 @@ Know the active strategy class before making operational decisions:
 | --- | --- | --- | --- |
 | `near_zero` | Paired YES/NO arbitrage | Strongest two-leg safety posture; strict spread/depth/staleness/fill discipline | `strategyMode`, `signalMode`, `edgeRequired`, `minPairedFillRate`, `maxLegSkewMs` |
 | `ev` | Single-sided directional | Confidence-thresholded intent, cooldown throttling, EV-specific notional caps | `signalMode`, `evEdgeRequired`, `evConfidenceMin`, `evCooldownSeconds`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional` |
-| `fw_projection` | Dependency-aware projected intent | Frank-Wolfe solver constraints; non-converged/non-feasible outputs are rejected | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
+| `fw_projection` | Dependency-aware projected intent | Frank-Wolfe solver constraints; strict profiles require converged loops, while permissive profiles may allow approximate positive iterates | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwRequireConverged`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
 | `fw_basket` | Multi-market projected basket | Basket-level sizing and execution mode constraints | `fwBasketExecutionMode`, `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional` |
 
 ## Minimum Requirements
@@ -212,6 +212,12 @@ Normalization details:
 
 - `ev_single_side` is displayed as `ev`.
 - Opportunity IDs can infer strategy when explicit strategy metadata is missing (`:fw:`, `:fwb:`, `:yes:`, `:no:`).
+
+FW convergence notes:
+
+- `fwRequireConverged=true` rejects non-converged FW intents with `projection_requires_converged`, `fw_requires_converged`, or `fw_basket_requires_converged` depending on the rejection stage.
+- `fwRequireConverged=false` keeps the approximate-iterate fallback enabled; non-converged loop terminal reasons still surface as `projection_runtime_budget`, `projection_max_iterations`, `projection_contraction_floor`, or `projection_not_converged`.
+- Preset split: `near_zero`, `moderate`, and `high` are strict (`fwRequireConverged=true`), while `extra_high` stays permissive (`fwRequireConverged=false`).
 
 ## Incident Response
 

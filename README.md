@@ -43,13 +43,14 @@ The runtime surfaces four strategy labels. Each has different risk shape, execut
 | --- | --- | --- | --- |
 | `near_zero` | Paired YES+NO arbitrage on one market | Symmetric two-leg execution, strict gate checks on spread/depth/staleness, strongest fill-discipline posture | `strategyMode=near_zero_risk`, `signalMode=near_zero|both`, `edgeRequired`, `minPairedFillRate`, `maxLegSkewMs` |
 | `ev` | Single-sided directional execution from calibrated probability/insight | One-leg intent (`side=yes|no`), confidence/edge thresholding, cooldown + per-market/portfolio EV notional caps | `signalMode=ev|both`, `evEdgeRequired`, `evConfidenceMin`, `evCooldownSeconds`, `evMaxPerMarketNotional`, `evMaxPortfolioNotional` |
-| `fw_projection` | Frank-Wolfe optimized projection for dependency-aware opportunity selection | Solver-driven lower-bound checks, only converged/feasible opportunities proceed, dependency graph quality affects candidate set | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
+| `fw_projection` | Frank-Wolfe optimized projection for dependency-aware opportunity selection | Solver-driven lower-bound checks; strict profiles require converged loops, while permissive profiles may accept approximate positive iterates | `fwDependency*`, `fwGapAbsTolerance`, `fwGapRelTolerance`, `fwRequireConverged`, `fwMaxLoopRuntimeMs`, `fwMinEdgeThreshold` |
 | `fw_basket` | Multi-market FW basket execution | Basket-level selection/ranking, market count bounds, configurable basket execution mode (`sequential_failfast` or `batch_best_effort`) | `fwBasketMinMarkets`, `fwBasketMaxMarkets`, `fwBasketExecutionMode`, `fwMaxPerMarketNotional`, `fwMaxPortfolioNotional` |
 
 Operator notes:
 - Dashboard intent labels are normalized to `near_zero`, `ev`, `fw_projection`, and `fw_basket`.
 - `ev_single_side` is displayed as `ev`.
 - If explicit strategy metadata is missing, IDs can infer strategy (`:fw:`, `:fwb:`, `:yes:`, `:no:`).
+- Preset split: `near_zero`, `moderate`, and `high` keep FW convergence strict, while `extra_high` leaves `fwRequireConverged=false` for exploratory approximate-iterate operation.
 
 ## Minimum Requirements
 
@@ -134,6 +135,7 @@ In `.env`:
 
 ```bash
 TRADING_MODE=paper
+RISK_PROFILE=high
 TRADING_ENABLED=true
 OPS_API_TOKEN=replace-with-secure-token
 # Optional dev-only localhost token prefill for /ops/* login
@@ -366,7 +368,7 @@ Set up OpenPolyTrader locally in safe paper mode.
 Requirements:
 1) Install backend and dashboard dependencies.
 2) Create .env and dashboard/.env from examples.
-3) Set TRADING_MODE=paper, TRADING_ENABLED=true.
+3) Set `TRADING_MODE=paper`, `TRADING_ENABLED=true`, and `RISK_PROFILE=high`.
 4) Set OPS_API_TOKEN and use runtime ops session login on /ops/*.
 5) Start with `npm run paper:up` (alias: `npm run dev:ops`).
 6) Verify:
@@ -409,8 +411,6 @@ curl -H "Authorization: Bearer $OPS_API_TOKEN" http://localhost:3000/health
 
 - API reference: `docs/API.md`
 - Architecture (with end-to-end event flow diagrams): `docs/ARCHITECTURE.md`
-- Search-provider routing technical spec: `docs/SEARCH_PROVIDER_ROUTING_TECHNICAL_SPEC.md`
-- Operator strategy report: `docs/Operations/operator-strategy-report.md`
 - Local setup spec and quickstart details: `docs/Development/setup.md`
 - Full command reference (start/help/stop/kill + diagnostics): `docs/Development/commands.md`
 - Environment variable descriptions and defaults: `docs/Operations/environment-reference.md`
