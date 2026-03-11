@@ -35,6 +35,7 @@
     "fallbackTickSize": 0.001,
     "fallbackMinOrderSize": 0.001,
     "fwMaxLoopRuntimeMs": 350,
+    "fwRequireConverged": false,
     "fwOracleMaxConcurrency": 4,
     "fwSlippageToleranceBps": 50,
     "fwExecutionRiskBufferBps": 5,

@@ -82,7 +82,7 @@ function handleConfigSnapshot(
 
 function handleRiskProfilesSnapshot(context: DecisionAndConfigRouteContext) {
   const snapshot: OpsRiskProfilesSnapshot = {
-    activeProfile: context.riskProfileStateRef.current?.id ?? 'extra_high',
+    activeProfile: context.riskProfileStateRef.current?.id ?? 'high',
     activeProfileSource: context.riskProfileStateRef.current?.source ?? 'defaults',
     availableProfiles: RISK_PROFILE_IDS
   };
@@ -239,7 +239,7 @@ function buildConfigSnapshot(
 
 function resolveRiskProfileSnapshot(context: DecisionAndConfigRouteContext) {
   return {
-    riskProfile: context.riskProfileStateRef.current?.id ?? 'extra_high',
+    riskProfile: context.riskProfileStateRef.current?.id ?? 'high',
     riskProfileSource: context.riskProfileStateRef.current?.source ?? 'defaults'
   };
 }

@@ -47,6 +47,16 @@ const GATE_REJECTION_EMISSION_COOLDOWN_MS = 3000;
 const FW_COHORT_MIN_MARKETS = 2;
 const FW_COHORT_MIN_DENSITY = 0.25;
 const FW_COHORT_FRESHNESS_WINDOW_MS = 120_000;
+const NON_LIVE_EXECUTION_FAILURE_REASONS = new Set([
+  'trading_disabled',
+  'shadow_mode',
+  'paper_mode',
+  'trading_mode_off'
+]);
+
+function shouldCountFailureForCircuitBreaker(status: 'submitted' | 'failed' | 'blocked', reason?: string): boolean {
+  return status === 'failed' && !NON_LIVE_EXECUTION_FAILURE_REASONS.has(reason ?? '');
+}
 
 interface FwCohortComponent {
   marketIds: string[];
@@ -680,7 +690,8 @@ export class Supervisor {
             projectionAgeMs: payload.opportunity.fw?.projectionAgeMs ?? 0,
             aggregateEdgeLowerBound: payload.opportunity.edge,
             markets: payload.opportunity.fwBasket!.markets,
-            orderbooks: this.getOrderbookMap()
+            orderbooks: this.getOrderbookMap(),
+            loop: payload.opportunity.fwBasket!.loop
           })
         : isFw
           ? evaluateFwProjectionGates({
@@ -753,7 +764,7 @@ export class Supervisor {
         const beforeState = this.marketCircuitBreakers.get(affectedMarket).refreshAndGetState();
         if (result.status === 'submitted') {
           this.marketCircuitBreakers.recordSuccess(affectedMarket);
-        } else if (result.status === 'failed') {
+        } else if (shouldCountFailureForCircuitBreaker(result.status, result.reason)) {
           this.marketCircuitBreakers.recordFailure(affectedMarket);
         }
         const afterState = this.marketCircuitBreakers.get(affectedMarket).refreshAndGetState();

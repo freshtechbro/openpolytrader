@@ -37,6 +37,33 @@ function makeBook(
   };
 }
 
+function makeFwLoop(
+  overrides: Partial<{
+    loopId: string;
+    iterationCount: number;
+    activeSetSize: number;
+    contractionSteps: number;
+    terminalGapAbs: number;
+    terminalGapRel: number;
+    terminalReason: 'gap_converged' | 'runtime_budget' | 'max_iterations' | 'contraction_floor' | 'oracle_unavailable';
+    converged: boolean;
+    runtimeMs: number;
+  }> = {}
+) {
+  return {
+    loopId: 'loop-1',
+    iterationCount: 3,
+    activeSetSize: 2,
+    contractionSteps: 0,
+    terminalGapAbs: 0.001,
+    terminalGapRel: 0.01,
+    terminalReason: 'gap_converged' as const,
+    converged: true,
+    runtimeMs: 12,
+    ...overrides
+  };
+}
+
 describe('evaluateGates', () => {
   it('passes when books are fresh, stable, and edge clears threshold', () => {
     const now = Date.now();
@@ -607,6 +634,7 @@ describe('evaluateFwBasketGates', () => {
         }
       ],
       orderbooks,
+      loop: makeFwLoop(),
       aggregateEdgeLowerBound: 0.04,
       projectionAgeMs: 10,
       desiredSize: 1
@@ -639,12 +667,51 @@ describe('evaluateFwBasketGates', () => {
         }
       ],
       orderbooks,
+      loop: makeFwLoop(),
       aggregateEdgeLowerBound: 0.02,
       projectionAgeMs: 10
     });
 
     expect(result.passed).toBe(false);
     expect(result.reasons.some((reason) => reason.includes('missing_orderbook'))).toBe(true);
+  });
+
+  it('rejects non-converged baskets in strict mode before per-market re-gating', () => {
+    const now = Date.now();
+    const yesBook = makeBook('yes-1', { price: 0.47, size: 200 }, { price: 0.48, size: 200 }, now);
+    const noBook = makeBook('no-1', { price: 0.48, size: 200 }, { price: 0.49, size: 200 }, now);
+    const orderbooks = new Map<string, OrderBookState>([
+      ['yes-1', yesBook],
+      ['no-1', noBook]
+    ]);
+
+    const result = evaluateFwBasketGates({
+      policy: { ...DEFAULT_TRADE_POLICY, fwRequireConverged: true },
+      nowMs: now,
+      markets: [
+        {
+          marketId: 'm1',
+          yesTokenId: 'yes-1',
+          noTokenId: 'no-1',
+          yesPrice: 0.48,
+          noPrice: 0.49,
+          costPerSet: 0.97,
+          projectedEdge: 0.03,
+          edgeLowerBound: 0.02,
+          maxSizeByDepth: 100,
+          minOrderSize: 0.001,
+          tickSize: 0.01
+        }
+      ],
+      orderbooks,
+      loop: makeFwLoop({ converged: false, terminalReason: 'runtime_budget' }),
+      aggregateEdgeLowerBound: 0.02,
+      projectionAgeMs: 10
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.reasons).toContain('fw_basket_requires_converged');
+    expect(result.reasons.some((reason) => reason.startsWith('fw_basket:m1:'))).toBe(false);
   });
 });
 
@@ -874,7 +941,8 @@ describe('evaluateFwProjectionGates', () => {
         edgeLowerBound: 0.02,
         solverRuntimeMs: 20,
         solverStatus: 'feasible',
-        projectionAgeMs: 50
+        projectionAgeMs: 50,
+        loop: makeFwLoop()
       }
     });
 
@@ -905,7 +973,8 @@ describe('evaluateFwProjectionGates', () => {
         edgeLowerBound: 0.005,
         solverRuntimeMs: 5,
         solverStatus: 'optimal',
-        projectionAgeMs: 10
+        projectionAgeMs: 10,
+        loop: makeFwLoop()
       }
     });
 
@@ -936,7 +1005,8 @@ describe('evaluateFwProjectionGates', () => {
         edgeLowerBound: 0.005,
         solverRuntimeMs: 7,
         solverStatus: 'optimal',
-        projectionAgeMs: 5
+        projectionAgeMs: 5,
+        loop: makeFwLoop()
       }
     });
 
@@ -970,7 +1040,8 @@ describe('evaluateFwProjectionGates', () => {
         edgeLowerBound: 0.001,
         solverRuntimeMs: 120,
         solverStatus: 'timeout',
-        projectionAgeMs: 500
+        projectionAgeMs: 500,
+        loop: makeFwLoop({ converged: false, terminalReason: 'runtime_budget' })
       }
     });
 
@@ -1014,12 +1085,66 @@ describe('evaluateFwProjectionGates', () => {
         edgeLowerBound: 0.005,
         solverRuntimeMs: 10,
         solverStatus: 'optimal',
-        projectionAgeMs: 10
+        projectionAgeMs: 10,
+        loop: makeFwLoop()
       },
       tickSize: 0.01
     });
 
     expect(result.passed).toBe(true);
     expect(result.reasons).not.toContain('edge_below_min_ticks');
+  });
+
+  it('rejects missing loop diagnostics in strict mode', () => {
+    const now = Date.now();
+    const yesBook = makeBook('yes', { price: 0.47, size: 500 }, { price: 0.48, size: 500 }, now);
+    const noBook = makeBook('no', { price: 0.48, size: 500 }, { price: 0.49, size: 500 }, now);
+
+    const result = evaluateFwProjectionGates({
+      yesBook,
+      noBook,
+      policy: { ...DEFAULT_TRADE_POLICY, fwRequireConverged: true },
+      nowMs: now,
+      projection: {
+        projectionId: 'proj-missing-loop',
+        dependencyMode: 'deterministic',
+        dependencyConfidence: 1,
+        projectedEdge: 0.03,
+        edgeLowerBound: 0.02,
+        solverRuntimeMs: 10,
+        solverStatus: 'feasible',
+        projectionAgeMs: 10
+      }
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.reasons).toContain('fw_requires_converged');
+  });
+
+  it('allows feasible non-converged metadata in permissive mode', () => {
+    const now = Date.now();
+    const yesBook = makeBook('yes', { price: 0.47, size: 500 }, { price: 0.48, size: 500 }, now);
+    const noBook = makeBook('no', { price: 0.48, size: 500 }, { price: 0.49, size: 500 }, now);
+
+    const result = evaluateFwProjectionGates({
+      yesBook,
+      noBook,
+      policy: { ...DEFAULT_TRADE_POLICY, fwRequireConverged: false },
+      nowMs: now,
+      projection: {
+        projectionId: 'proj-permissive',
+        dependencyMode: 'deterministic',
+        dependencyConfidence: 1,
+        projectedEdge: 0.03,
+        edgeLowerBound: 0.02,
+        solverRuntimeMs: 10,
+        solverStatus: 'feasible',
+        projectionAgeMs: 10,
+        loop: makeFwLoop({ converged: false, terminalReason: 'runtime_budget' })
+      }
+    });
+
+    expect(result.passed).toBe(true);
+    expect(result.reasons).not.toContain('fw_requires_converged');
   });
 });

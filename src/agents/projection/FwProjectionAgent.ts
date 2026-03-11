@@ -194,20 +194,43 @@ export class FwProjectionAgent {
     emitLoopDiagnostics(this.metrics, loop.diagnostics, nowMs, projectionUniverse.length);
     if (!loop.iterate) return { opportunities: [], reason: loop.reason ?? 'oracle_unavailable' };
 
-    if (!loop.diagnostics.converged && !canProceedWithApproximateLoopIterate(loop)) {
-      const reason = mapNonConvergedReason(loop.diagnostics);
-      this.metrics?.record({
-        type: 'fw_projection',
-        timestamp: nowMs,
-        data: {
-          event: 'projection_rejected',
-          marketId: projectionUniverse[0]?.marketId ?? 'unknown',
-          reason
-        }
-      });
-      return { opportunities: [], reason };
-    }
     if (!loop.diagnostics.converged) {
+      if (policy.fwRequireConverged) {
+        const reason = 'projection_requires_converged';
+        this.metrics?.record({
+          type: 'fw_projection',
+          timestamp: nowMs,
+          data: {
+            event: 'projection_rejected',
+            marketId: projectionUniverse[0]?.marketId ?? 'unknown',
+            reason,
+            loopId: loop.diagnostics.loopId,
+            terminalReason: loop.diagnostics.terminalReason,
+            runtimeMs: loop.diagnostics.runtimeMs,
+            iterationCount: loop.diagnostics.iterationCount
+          }
+        });
+        return { opportunities: [], reason };
+      }
+
+      if (!canProceedWithApproximateLoopIterate(loop)) {
+        const reason = mapNonConvergedReason(loop.diagnostics);
+        this.metrics?.record({
+          type: 'fw_projection',
+          timestamp: nowMs,
+          data: {
+            event: 'projection_rejected',
+            marketId: projectionUniverse[0]?.marketId ?? 'unknown',
+            reason,
+            loopId: loop.diagnostics.loopId,
+            terminalReason: loop.diagnostics.terminalReason,
+            runtimeMs: loop.diagnostics.runtimeMs,
+            iterationCount: loop.diagnostics.iterationCount
+          }
+        });
+        return { opportunities: [], reason };
+      }
+
       this.metrics?.record({
         type: 'fw_projection',
         timestamp: nowMs,
@@ -260,7 +283,7 @@ export class FwProjectionAgent {
     }
 
     const basketCandidates = allowBasket
-      ? this.filterBasketCandidates(candidateSelection.candidates, orderbooks, policy, nowMs)
+      ? this.filterBasketCandidates(candidateSelection.candidates, orderbooks, policy, nowMs, loop.diagnostics)
       : candidateSelection.candidates;
     const basket = allowBasket ? buildBasketOpportunity(basketCandidates, policy, nowMs, loop.diagnostics) : null;
     if (basket) {
@@ -314,9 +337,10 @@ export class FwProjectionAgent {
     candidates: Awaited<ReturnType<typeof buildCandidatesFromIterate>>['candidates'],
     orderbooks: Map<string, OrderBookState>,
     policy: TradePolicy,
-    nowMs: number
+    nowMs: number,
+    loop: FwLoopDiagnostics
   ) {
-    const basketLegFilter = filterExecutableBasketCandidates(candidates, orderbooks, policy, nowMs);
+    const basketLegFilter = filterExecutableBasketCandidates(candidates, orderbooks, policy, nowMs, loop);
     this.metrics?.record({
       type: 'fw_projection',
       timestamp: nowMs,

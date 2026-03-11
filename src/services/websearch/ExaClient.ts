@@ -31,6 +31,8 @@ interface ExaClientConfig {
   contentsPath: string;
   cooldownMs: number;
   cooldownFailureThreshold: number;
+  inlineContentsEnabled?: boolean;
+  inlineContentsMaxResults?: number;
   cache: WebSearchCache;
   metrics?: MetricsStore;
 }
@@ -47,6 +49,8 @@ export class ExaClient implements WebSearchClient {
   private readonly contentsPath: string;
   private readonly cooldownMs: number;
   private readonly cooldownFailureThreshold: number;
+  private readonly inlineContentsEnabled: boolean;
+  private readonly inlineContentsMaxResults: number;
   private readonly cache: WebSearchCache;
   private readonly metrics?: MetricsStore;
   private cooldownUntilMs = 0;
@@ -68,6 +72,8 @@ export class ExaClient implements WebSearchClient {
     this.contentsPath = config.contentsPath;
     this.cooldownMs = Math.max(0, Math.floor(config.cooldownMs));
     this.cooldownFailureThreshold = Math.max(1, Math.floor(config.cooldownFailureThreshold));
+    this.inlineContentsEnabled = config.inlineContentsEnabled === true;
+    this.inlineContentsMaxResults = Math.max(1, Math.floor(config.inlineContentsMaxResults ?? 10));
     this.cache = runtime.cache;
     this.metrics = runtime.metrics;
   }
@@ -103,12 +109,25 @@ export class ExaClient implements WebSearchClient {
       startPublishedDate: start,
       endPublishedDate: end
     };
+    if (this.inlineContentsEnabled && maxResults <= this.inlineContentsMaxResults) {
+      payload.text = true;
+    }
     if (allowlist.length > 0) payload.includeDomains = allowlist;
     if (denylist.length > 0) payload.excludeDomains = denylist;
 
     const response = await this.request('POST', this.searchPath, payload, 'search');
     const results = normalizeSearchResults(response);
     cacheSearchResults(this.cache, cacheKey, results, cacheTtlMs, nowMs);
+    if (this.inlineContentsEnabled && maxResults <= this.inlineContentsMaxResults) {
+      const inlineContents = normalizeInlineContents(response, this.maxContentBytes);
+      cacheContents(this.cache, ExaClient.provider, inlineContents, cacheTtlMs, nowMs);
+      if (inlineContents.length > 0) {
+        recordWebSearchMetric(this.metrics, 'inline_contents_used', {
+          provider: ExaClient.provider,
+          count: inlineContents.length
+        });
+      }
+    }
     return results;
   }
 
@@ -261,6 +280,28 @@ function normalizeContentResults(response: unknown, maxContentBytes: number): We
       const content: WebSearchContent = { url, source: extractDomain(url), text };
       if (title) content.title = title;
       if (publishedAt) content.publishedAt = publishedAt;
+      return content;
+    })
+    .filter((entry): entry is WebSearchContent => entry !== null);
+}
+
+function normalizeInlineContents(response: unknown, maxContentBytes: number): WebSearchContent[] {
+  return getResponseResults(response)
+    .map((entry) => {
+      const url = typeof entry.url === 'string' ? entry.url : '';
+      const rawText = typeof entry.text === 'string' ? entry.text : '';
+      if (!url || !rawText) return null;
+      const content: WebSearchContent = {
+        url,
+        source: extractDomain(url),
+        text: trimToBytes(rawText, maxContentBytes)
+      };
+      if (typeof entry.title === 'string') {
+        content.title = entry.title;
+      }
+      if (typeof entry.publishedDate === 'string') {
+        content.publishedAt = entry.publishedDate;
+      }
       return content;
     })
     .filter((entry): entry is WebSearchContent => entry !== null);

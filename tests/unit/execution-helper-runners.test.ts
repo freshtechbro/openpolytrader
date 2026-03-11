@@ -71,7 +71,11 @@ function makeEvParams(overrides: Partial<ExecutionEvParams> = {}): ExecutionEvPa
 }
 
 type BasketRunnerDeps = ConstructorParameters<typeof ExecutionBasketRunner>[0];
-type LegacyBasketRunnerDeps = Omit<BasketRunnerDeps, 'idempotency' | 'fills' | 'unwind' | 'paired'> & {
+type LegacyBasketRunnerDeps = Omit<
+  BasketRunnerDeps,
+  'idempotency' | 'fills' | 'unwind' | 'paired' | 'tradingEnabled' | 'tradingMode'
+> &
+  Partial<Pick<BasketRunnerDeps, 'tradingEnabled' | 'tradingMode'>> & {
   ensureIdempotencyRecord: ExecutionIdempotencyServices['ensureRecord'];
   getIdempotencyRecord: ExecutionIdempotencyServices['getRecord'];
   saveIdempotencyRecord: ExecutionIdempotencyServices['saveRecord'];
@@ -91,6 +95,8 @@ type LegacyEvRunnerDeps = Omit<EvRunnerDeps, 'idempotency' | 'fills'> & {
 };
 
 function makeBasketRunner({
+  tradingEnabled = true,
+  tradingMode = 'live',
   ensureIdempotencyRecord,
   getIdempotencyRecord,
   saveIdempotencyRecord,
@@ -103,6 +109,8 @@ function makeBasketRunner({
   ...deps
 }: LegacyBasketRunnerDeps): ExecutionBasketRunner {
   return new ExecutionBasketRunner({
+    tradingEnabled,
+    tradingMode,
     ...deps,
     idempotency: {
       ensureRecord: ensureIdempotencyRecord,
@@ -227,7 +235,9 @@ describe('ExecutionModeSupport', () => {
             expiresAtMs: 9_999
           })
         }) as unknown as never,
-        getExecutionAdvisorMode: () => 'advisory'
+        getExecutionAdvisorMode: () => 'advisory',
+        getTradingEnabled: () => true,
+        getTradingMode: () => 'live'
       },
       idempotency: {
         ensureRecord: () => makeRecord('unused', '1'),
@@ -279,7 +289,9 @@ describe('ExecutionModeSupport', () => {
           ({
             getHint: () => undefined
           }) as unknown as never,
-        getExecutionAdvisorMode: () => 'advisory'
+        getExecutionAdvisorMode: () => 'advisory',
+        getTradingEnabled: () => true,
+        getTradingMode: () => 'live'
       },
       idempotency: {
         ensureRecord: () => makeRecord('unused', '1'),
@@ -1756,6 +1768,37 @@ describe('ExecutionBasketRunner', () => {
     });
     expect(unwindBasketLegs).not.toHaveBeenCalled();
   });
+
+  it('blocks basket execution in paper mode before attempting any legs', async () => {
+    const executeArbitrage = vi.fn();
+    const runner = makeBasketRunner({
+      tradingMode: 'paper',
+      defaultExecutionMode: 'batch_best_effort',
+      clob: {} as never,
+      timeouts: { submitTimeoutMs: 10, fillTimeoutMs: 10, cancelTimeoutMs: 10 },
+      ensureIdempotencyRecord: vi.fn().mockReturnValue(makeRecord('basket-key', '21')),
+      getIdempotencyRecord: vi.fn(),
+      saveIdempotencyRecord: vi.fn(),
+      markIdempotencyFailed: vi.fn(),
+      executeArbitrage,
+      waitForBatchFillOutcomes: vi.fn(),
+      cancelOutstandingBatchOrders: vi.fn(),
+      unwindBasketLegs: vi.fn(),
+      calculateUnwindPrice: vi.fn(),
+      withTimeout,
+      coerceNonceValue: (nonce) => Number(nonce),
+      extractOrderId: (order) => order?.orderID
+    });
+
+    const result = await runner.executeBasketArbitrage(makeBasketOpportunity(), 2, { nowMs: 1_200 });
+
+    expect(result).toMatchObject({
+      status: 'blocked',
+      reason: 'paper_mode',
+      state: 'idle'
+    });
+    expect(executeArbitrage).not.toHaveBeenCalled();
+  });
 });
 
 describe('ExecutionPairedRunner', () => {
@@ -1940,6 +1983,8 @@ describe('ExecutionPairedRunner', () => {
   });
 
   it('routes single-leg fills through partial-fill recovery', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_300);
+
     const handleObservedPartialFill = vi.fn().mockResolvedValue({
       status: 'failed',
       reason: 'order_failed',
@@ -2362,6 +2407,8 @@ describe('ExecutionPairedRunner', () => {
   });
 
   it('routes no-leg partial fills through partial-fill recovery', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_300);
+
     const handleObservedPartialFill = vi.fn().mockResolvedValue({
       status: 'failed',
       reason: 'order_timeout',

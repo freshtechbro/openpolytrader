@@ -6,6 +6,7 @@ import {
   transitionBasketExecutionState,
   type BasketExecutionLegState
 } from '../../domain/execution.js';
+import type { TradingMode } from '../../config/env.js';
 import { createIdempotencyKey } from '../../domain/idempotency.js';
 import type { ArbitrageOpportunity } from '../../domain/opportunity.js';
 import type { OrderResponse } from '../../domain/types.js';
@@ -30,6 +31,8 @@ type BasketBatchAcceptedOrder = Array<Parameters<ExecutionFillServices['waitForB
 
 interface ExecutionBasketDeps {
   defaultExecutionMode: 'batch_best_effort' | 'sequential_failfast';
+  tradingEnabled: boolean;
+  tradingMode: TradingMode;
   clob: PolymarketClob;
   incidentTracker?: IncidentTracker;
   metrics?: MetricsStore;
@@ -63,6 +66,18 @@ export class ExecutionBasketRunner {
         kind: 'basket',
         status: 'blocked',
         reason: 'fw_basket_missing',
+        idempotencyKey,
+        executionId,
+        state: 'idle'
+      };
+    }
+
+    const nonLiveReason = getNonLiveBasketReason(this.deps.tradingEnabled, this.deps.tradingMode);
+    if (nonLiveReason) {
+      return {
+        kind: 'basket',
+        status: 'blocked',
+        reason: nonLiveReason,
         idempotencyKey,
         executionId,
         state: 'idle'
@@ -433,4 +448,20 @@ export class ExecutionBasketRunner {
     }
   }
 
+}
+
+function getNonLiveBasketReason(tradingEnabled: boolean, tradingMode: TradingMode): string | null {
+  if (!tradingEnabled) {
+    return 'trading_disabled';
+  }
+  if (tradingMode === 'live') {
+    return null;
+  }
+  if (tradingMode === 'shadow') {
+    return 'shadow_mode';
+  }
+  if (tradingMode === 'paper') {
+    return 'paper_mode';
+  }
+  return 'trading_mode_off';
 }

@@ -5,7 +5,7 @@ import { RetryPolicy } from '../RetryPolicy.js';
 import { WebSearchCache } from './WebSearchCache.js';
 import { recordWebSearchMetric } from './WebSearchProviderMetrics.js';
 
-type WebSearchRequestKind = 'search' | 'contents' | 'scrape' | 'crawl';
+type WebSearchRequestKind = 'search' | 'news' | 'contents' | 'scrape' | 'crawl' | 'heartbeat';
 
 interface WebSearchRequestOptions<TError extends Error> {
   provider: string;

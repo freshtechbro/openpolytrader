@@ -48,12 +48,19 @@ interface _EvSignalEvent {
 
 interface _WebSearchMetricEvent {
   event: string;
-  provider?: 'exa' | 'firecrawl';
+  provider?: 'exa' | 'firecrawl' | 'serper' | 'gdelt';
   kind?: string;
   marketId?: string;
   confidence?: number;
   count?: number;
   error?: string;
+  route?: 'skip' | 'serper' | 'exa' | 'serper_then_exa' | 'firecrawl' | 'unknown';
+  reason?: string;
+  triggerScore?: number;
+  queryMode?: 'base_only' | 'base_plus_one' | 'base_plus_two';
+  requestedUrls?: number;
+  expandedUrls?: number;
+  providers?: string[];
 }
 
 interface _FwDependencyMetricEvent {

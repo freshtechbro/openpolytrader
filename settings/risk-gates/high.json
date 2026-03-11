@@ -29,7 +29,8 @@
     "fillTimeoutMs": 8000,
     "cancelTimeoutMs": 3000,
     "fallbackTickSize": 0.01,
-    "fallbackMinOrderSize": 0.001
+    "fallbackMinOrderSize": 0.001,
+    "fwRequireConverged": true
   },
   "risk": {
     "targetTradeFraction": 0.15,

@@ -107,11 +107,15 @@ describe('direct env shape coverage', () => {
 
     const parsed = z.object(webSearchEnvShape).parse({
       FIRECRAWL_CRAWL_ENABLED: 'true',
-      EV_WEBSEARCH_REQUESTS_PER_MINUTE: '45'
+      EV_WEBSEARCH_REQUESTS_PER_MINUTE: '45',
+      SERPER_BASE_URL: 'https://serper.example.com'
     });
 
     expect(parsed.FIRECRAWL_CRAWL_ENABLED).toBe(true);
     expect(parsed.EXA_SEARCH_PATH).toBe('/search');
+    expect(parsed.SERPER_BASE_URL).toBe('https://serper.example.com');
+    expect(parsed.SERPER_NEWS_PATH).toBe('/news');
+    expect(parsed.GDELT_BASE_URL).toBe('https://api.gdeltproject.org/api/v2/doc/doc');
     expect(parsed.EV_WEBSEARCH_REQUESTS_PER_MINUTE).toBe(45);
     expect(parsed.FW_ORACLE_TIMEOUT_MS).toBe(120);
   });

@@ -88,7 +88,10 @@ describe('ops config endpoints', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.policy).toBeDefined();
+    expect(body.policy.fwRequireConverged).toBe(true);
     expect(body.risk).toBeDefined();
+    expect(body.riskProfile).toBe('high');
+    expect(body.riskProfileSource).toBe('defaults');
     expect(body.tradingMode).toBe('shadow');
     expect(body.tradingEnabled).toBe(false);
 
@@ -127,6 +130,11 @@ describe('ops config endpoints', () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.sections?.length).toBeGreaterThan(0);
+    expect(
+      body.sections
+        ?.find((section: { key: string }) => section.key === 'policy')
+        ?.fields?.some((field: { key: string; type: string }) => field.key === 'fwRequireConverged' && field.type === 'boolean')
+    ).toBe(true);
 
     await app.close();
   });
@@ -202,7 +210,7 @@ describe('ops config endpoints', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      activeProfile: 'extra_high',
+      activeProfile: 'high',
       activeProfileSource: 'defaults'
     });
 
@@ -714,10 +722,11 @@ describe('ops config endpoints', () => {
     const policyResponse = await app.inject({
       method: 'PATCH',
       url: '/config/policy',
-      payload: { maxDecisionLatencyMs: 300 }
+      payload: { maxDecisionLatencyMs: 300, fwRequireConverged: false }
     });
     expect(policyResponse.statusCode).toBe(200);
     expect(policyResponse.json().policy.maxDecisionLatencyMs).toBe(300);
+    expect(policyResponse.json().policy.fwRequireConverged).toBe(false);
 
     const riskResponse = await app.inject({
       method: 'PATCH',
@@ -730,7 +739,7 @@ describe('ops config endpoints', () => {
       expect.objectContaining({
         message: 'privileged_mutation_applied',
         action: 'policy_updated',
-        fields: ['maxDecisionLatencyMs']
+        fields: ['fwRequireConverged', 'maxDecisionLatencyMs']
       }),
       expect.objectContaining({
         message: 'privileged_mutation_applied',

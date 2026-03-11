@@ -22,7 +22,7 @@ export const riskProfileSchema = z.preprocess((value) => {
     return normalized;
   }
   return value;
-}, z.enum(['near_zero', 'moderate', 'high', 'extra_high']).default('extra_high'));
+}, z.enum(['near_zero', 'moderate', 'high', 'extra_high']).default('high'));
 
 export const llmEndpointSchema = z.preprocess((value) => {
   if (typeof value !== 'string') return value;

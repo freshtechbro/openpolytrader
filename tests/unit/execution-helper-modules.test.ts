@@ -322,7 +322,9 @@ describe('execution helper modules', () => {
           ({
             getHint: () => ({ timeoutMultiplier: 0.5, unwindHint: 'neutral', confidence: 0.8 })
           }) as never,
-        getExecutionAdvisorMode: () => 'advisory'
+        getExecutionAdvisorMode: () => 'advisory',
+        getTradingEnabled: () => true,
+        getTradingMode: () => 'live'
       },
       idempotency: {
         ensureRecord: vi.fn(() => ({ ...record })),

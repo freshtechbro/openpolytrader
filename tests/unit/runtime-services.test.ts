@@ -78,6 +78,20 @@ function mockRuntimeDependencies(options: { resolvedCreds?: ResolvedCreds; resol
     this.kind = 'firecrawl';
     this.options = options;
   });
+  const serperClientCtor = vi.fn(function MockSerperClient(
+    this: { kind: string; options: Record<string, unknown> },
+    options: Record<string, unknown>
+  ) {
+    this.kind = 'serper';
+    this.options = options;
+  });
+  const gdeltHeartbeatCtor = vi.fn(function MockGdeltHeartbeatService(
+    this: { kind: string; options: Record<string, unknown> },
+    options: Record<string, unknown>
+  ) {
+    this.kind = 'gdeltHeartbeat';
+    this.options = options;
+  });
   const signalAggregatorCtor = vi.fn(function MockSignalAggregatorAgent(
     this: { kind: string; options: Record<string, unknown> },
     options: Record<string, unknown>
@@ -125,6 +139,12 @@ function mockRuntimeDependencies(options: { resolvedCreds?: ResolvedCreds; resol
   vi.doMock('../../src/services/websearch/FirecrawlClient.js', () => ({
     FirecrawlClient: firecrawlClientCtor
   }));
+  vi.doMock('../../src/services/websearch/SerperClient.js', () => ({
+    SerperClient: serperClientCtor
+  }));
+  vi.doMock('../../src/services/websearch/GdeltHeartbeatService.js', () => ({
+    GdeltHeartbeatService: gdeltHeartbeatCtor
+  }));
   vi.doMock('../../src/agents/signal/SignalAggregatorAgent.js', () => ({
     SignalAggregatorAgent: signalAggregatorCtor
   }));
@@ -147,6 +167,8 @@ function mockRuntimeDependencies(options: { resolvedCreds?: ResolvedCreds; resol
     webSearchCacheCtor,
     exaClientCtor,
     firecrawlClientCtor,
+    serperClientCtor,
+    gdeltHeartbeatCtor,
     signalAggregatorCtor,
     ipOracleClientCtor,
     parseDomainList,
@@ -175,6 +197,7 @@ describe('createRuntimeServices', () => {
     const env = loadEnv({
       POLYMARKET_POSITIONS_USER: '0xdef',
       EXA_API_KEY: 'exa-key',
+      SERPER_API_KEY: 'serper-key',
       FIRECRAWL_API_KEY: 'firecrawl-key',
       EV_WEBSEARCH_DOMAIN_ALLOWLIST: 'Example.com, markets.example.com example.com',
       EV_WEBSEARCH_DOMAIN_DENYLIST: 'blocked.example.com'
@@ -183,6 +206,8 @@ describe('createRuntimeServices', () => {
       ...DEFAULT_TRADE_POLICY,
       evWebSearchExaEnabled: true,
       evWebSearchFirecrawlEnabled: true,
+      evWebSearchSerperEnabled: true,
+      evWebSearchGdeltEnabled: true,
       evWebSearchFirecrawlMaxDepth: 4,
       evWebSearchFirecrawlMaxPages: 9
     };
@@ -238,12 +263,28 @@ describe('createRuntimeServices', () => {
         metrics
       })
     );
+    expect(deps.serperClientCtor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'serper-key',
+        cache: expect.objectContaining({ kind: 'cache' }),
+        metrics
+      })
+    );
+    expect(deps.gdeltHeartbeatCtor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        policy,
+        baseUrl: env.GDELT_BASE_URL,
+        metrics
+      })
+    );
     expect(deps.parseDomainList).toHaveBeenCalledWith('Example.com, markets.example.com example.com');
     expect(deps.parseDomainList).toHaveBeenCalledWith('blocked.example.com');
     expect(deps.signalAggregatorCtor).toHaveBeenCalledWith(
       expect.objectContaining({
         exa: expect.objectContaining({ kind: 'exa' }),
+        serper: expect.objectContaining({ kind: 'serper' }),
         firecrawl: expect.objectContaining({ kind: 'firecrawl' }),
+        gdeltHeartbeat: expect.objectContaining({ kind: 'gdeltHeartbeat' }),
         domainAllowlist: ['example.com', 'markets.example.com'],
         domainDenylist: ['blocked.example.com'],
         metrics
@@ -293,7 +334,9 @@ describe('createRuntimeServices', () => {
     const policy = {
       ...DEFAULT_TRADE_POLICY,
       evWebSearchExaEnabled: true,
-      evWebSearchFirecrawlEnabled: true
+      evWebSearchFirecrawlEnabled: true,
+      evWebSearchSerperEnabled: true,
+      evWebSearchGdeltEnabled: true
     };
 
     const services = await createRuntimeServices({
@@ -312,6 +355,8 @@ describe('createRuntimeServices', () => {
     expect(deps.polymarketRealtimeCtor).toHaveBeenCalledTimes(1);
     expect(deps.exaClientCtor).not.toHaveBeenCalled();
     expect(deps.firecrawlClientCtor).not.toHaveBeenCalled();
+    expect(deps.serperClientCtor).not.toHaveBeenCalled();
+    expect(deps.gdeltHeartbeatCtor).toHaveBeenCalledTimes(1);
     expect(deps.signalAggregatorCtor).not.toHaveBeenCalled();
     expect(deps.ipOracleClientCtor).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -341,6 +386,12 @@ describe('createRuntimeServices', () => {
         data: { event: 'firecrawl_missing_api_key' }
       })
     );
+    expect(recordSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'web_search',
+        data: { event: 'serper_missing_api_key' }
+      })
+    );
     expect(services.userRealtime).toBeUndefined();
     expect(services.signalAggregator).toBeUndefined();
     expect(services.fwOracleClient).toMatchObject({ kind: 'fwOracleClient' });
@@ -359,7 +410,9 @@ describe('createRuntimeServices', () => {
       policy: {
         ...DEFAULT_TRADE_POLICY,
         evWebSearchExaEnabled: false,
-        evWebSearchFirecrawlEnabled: false
+        evWebSearchFirecrawlEnabled: false,
+        evWebSearchSerperEnabled: false,
+        evWebSearchGdeltEnabled: false
       },
       marketPairs: createMarketPairs(),
       messageBus: createMessageBus(),
@@ -397,7 +450,9 @@ describe('createRuntimeServices', () => {
     const policy = {
       ...DEFAULT_TRADE_POLICY,
       evWebSearchExaEnabled: false,
-      evWebSearchFirecrawlEnabled: false
+      evWebSearchFirecrawlEnabled: false,
+      evWebSearchSerperEnabled: false,
+      evWebSearchGdeltEnabled: false
     };
 
     const services = await createRuntimeServices({
@@ -411,6 +466,8 @@ describe('createRuntimeServices', () => {
 
     expect(deps.exaClientCtor).not.toHaveBeenCalled();
     expect(deps.firecrawlClientCtor).not.toHaveBeenCalled();
+    expect(deps.serperClientCtor).not.toHaveBeenCalled();
+    expect(deps.gdeltHeartbeatCtor).not.toHaveBeenCalled();
     expect(deps.signalAggregatorCtor).not.toHaveBeenCalled();
     expect(recordSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({
@@ -420,6 +477,11 @@ describe('createRuntimeServices', () => {
     expect(recordSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ event: 'firecrawl_missing_api_key' })
+      })
+    );
+    expect(recordSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ event: 'serper_missing_api_key' })
       })
     );
     expect(recordSpy).not.toHaveBeenCalledWith(
@@ -444,7 +506,8 @@ describe('createRuntimeServices', () => {
     const { createRuntimeServices } = await importFreshRuntimeServices();
     const env = loadEnv({
       EXA_API_KEY: 'exa-key',
-      FIRECRAWL_API_KEY: 'firecrawl-key'
+      FIRECRAWL_API_KEY: 'firecrawl-key',
+      SERPER_API_KEY: 'serper-key'
     });
 
     await createRuntimeServices({
@@ -452,7 +515,9 @@ describe('createRuntimeServices', () => {
       policy: {
         ...DEFAULT_TRADE_POLICY,
         evWebSearchExaEnabled: true,
-        evWebSearchFirecrawlEnabled: false
+        evWebSearchFirecrawlEnabled: false,
+        evWebSearchSerperEnabled: false,
+        evWebSearchGdeltEnabled: false
       },
       marketPairs: createMarketPairs(),
       messageBus: createMessageBus(),
@@ -462,9 +527,11 @@ describe('createRuntimeServices', () => {
 
     expect(deps.exaClientCtor).toHaveBeenCalledTimes(1);
     expect(deps.firecrawlClientCtor).not.toHaveBeenCalled();
+    expect(deps.serperClientCtor).not.toHaveBeenCalled();
     expect(deps.signalAggregatorCtor).toHaveBeenCalledWith(
       expect.objectContaining({
         exa: expect.objectContaining({ kind: 'exa' }),
+        serper: undefined,
         firecrawl: undefined
       })
     );

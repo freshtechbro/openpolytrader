@@ -3,7 +3,7 @@ import type { OrderBookState } from './orderbook.js';
 import { sweepCost } from './orderbook.js';
 import type { VenueId } from '../config/venues.js';
 import type { FeeModel } from './feeModel.js';
-import type { FwBasketMarketLeg, FwProjectionMetadata } from './opportunity.js';
+import type { FwBasketMarketLeg, FwLoopDiagnostics, FwProjectionMetadata } from './opportunity.js';
 import {
   evaluateBaseGates,
   resolveTickSize
@@ -69,6 +69,7 @@ interface FwBasketGateInputs {
   nowMs: number;
   markets: FwBasketMarketLeg[];
   orderbooks: Map<string, OrderBookState>;
+  loop: FwLoopDiagnostics;
   aggregateEdgeLowerBound: number;
   projectionAgeMs: number;
   desiredSize?: number;
@@ -406,6 +407,9 @@ export function evaluateFwProjectionGates(inputs: FwProjectionGateInputs): GateD
   if (projection.edgeLowerBound < inputs.policy.fwMinEdgeThreshold) {
     reasons.push('fw_edge_lower_bound_fail');
   }
+  if (inputs.policy.fwRequireConverged && projection.loop?.converged !== true) {
+    reasons.push('fw_requires_converged');
+  }
   if (projection.solverStatus !== 'optimal' && projection.solverStatus !== 'feasible') {
     reasons.push('fw_solver_status');
   }
@@ -430,6 +434,9 @@ export function evaluateFwProjectionGates(inputs: FwProjectionGateInputs): GateD
 export function evaluateFwBasketGates(inputs: FwBasketGateInputs): GateDecision {
   const reasons: string[] = [];
   const { policy } = inputs;
+  const initialCostPerSet = inputs.markets.reduce((sum, market) => sum + market.costPerSet, 0);
+  const initialMaxSizeByDepth =
+    inputs.markets.length > 0 ? Math.min(...inputs.markets.map((market) => market.maxSizeByDepth)) : 0;
   if (inputs.markets.length < policy.fwBasketMinMarkets) {
     reasons.push('fw_basket_min_markets');
   }
@@ -443,6 +450,16 @@ export function evaluateFwBasketGates(inputs: FwBasketGateInputs): GateDecision 
 
   if (inputs.aggregateEdgeLowerBound < policy.fwMinEdgeThreshold) {
     reasons.push('fw_basket_edge_lower_bound_fail');
+  }
+  if (policy.fwRequireConverged && inputs.loop.converged !== true) {
+    reasons.push('fw_basket_requires_converged');
+    return {
+      passed: false,
+      reasons,
+      costPerSet: initialCostPerSet,
+      edge: inputs.aggregateEdgeLowerBound,
+      maxSizeByDepth: initialMaxSizeByDepth
+    };
   }
 
   const perMarketDepth: number[] = [];
@@ -460,9 +477,10 @@ export function evaluateFwBasketGates(inputs: FwBasketGateInputs): GateDecision 
       dependencyConfidence: 1,
       projectedEdge: market.projectedEdge,
       edgeLowerBound: market.edgeLowerBound,
-      solverRuntimeMs: 0,
-      solverStatus: 'optimal',
-      projectionAgeMs: inputs.projectionAgeMs
+      solverRuntimeMs: inputs.loop.runtimeMs,
+      solverStatus: inputs.loop.converged ? 'optimal' : 'feasible',
+      projectionAgeMs: inputs.projectionAgeMs,
+      loop: inputs.loop
     };
     const decision = evaluateFwProjectionGates({
       yesBook,

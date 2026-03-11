@@ -140,7 +140,9 @@ export class ExecutionAgent {
       getPolicy: () => this.policy,
       getTimeouts: () => this.timeouts,
       getExecutionAdvisor: () => this.executionAdvisor,
-      getExecutionAdvisorMode: () => this.executionAdvisorMode
+      getExecutionAdvisorMode: () => this.executionAdvisorMode,
+      getTradingEnabled: () => this.tradingEnabled,
+      getTradingMode: () => this.tradingMode
     };
     const idempotencyServices: ExecutionIdempotencyServices = {
       ensureRecord: (key, nowMs) => this.idempotency.ensureRecord(key, nowMs),

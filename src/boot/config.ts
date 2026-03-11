@@ -45,7 +45,7 @@ export function loadRuntimePolicyState(input: {
     console.warn(`Failed to load active risk profile: ${message}`);
   }
 
-  let profileId: RiskProfileId = input.envProfile ?? persistedProfile?.id ?? 'extra_high';
+  let profileId: RiskProfileId = input.envProfile ?? persistedProfile?.id ?? 'high';
   let profilePath = input.envProfile ? input.envProfilePath : persistedProfile?.source;
   let loadedProfile: ReturnType<typeof loadRiskProfile> = null;
 

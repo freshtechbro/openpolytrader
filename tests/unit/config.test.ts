@@ -38,6 +38,9 @@ describe('config env + store', () => {
     expect(env.MARKET_CATALOG_PRESTART_MAX_AGE_MS).toBe(21600000);
     expect(env.EXA_COOLDOWN_MS).toBe(300000);
     expect(env.EXA_COOLDOWN_FAILURE_THRESHOLD).toBe(1);
+    expect(env.SERPER_SEARCH_PATH).toBe('/search');
+    expect(env.SERPER_NEWS_PATH).toBe('/news');
+    expect(env.GDELT_BASE_URL).toBe('https://api.gdeltproject.org/api/v2/doc/doc');
   });
 
   it('parses catalog and Exa cooldown overrides', () => {
@@ -50,7 +53,9 @@ describe('config env + store', () => {
       MARKET_CATALOG_EXPLORATION_MAX_PAGES: '3',
       MARKET_CATALOG_PRESTART_MAX_AGE_MS: '3600000',
       EXA_COOLDOWN_MS: '45000',
-      EXA_COOLDOWN_FAILURE_THRESHOLD: '2'
+      EXA_COOLDOWN_FAILURE_THRESHOLD: '2',
+      SERPER_BASE_URL: 'https://serper.example.com',
+      GDELT_BASE_URL: 'https://gdelt.example.com/doc'
     });
 
     expect(env.MARKET_CATALOG_MAX_SPREAD).toBe(0.015);
@@ -62,6 +67,8 @@ describe('config env + store', () => {
     expect(env.MARKET_CATALOG_PRESTART_MAX_AGE_MS).toBe(3600000);
     expect(env.EXA_COOLDOWN_MS).toBe(45000);
     expect(env.EXA_COOLDOWN_FAILURE_THRESHOLD).toBe(2);
+    expect(env.SERPER_BASE_URL).toBe('https://serper.example.com');
+    expect(env.GDELT_BASE_URL).toBe('https://gdelt.example.com/doc');
   });
 
   it('loads FW oracle env defaults', () => {
@@ -237,7 +244,7 @@ describe('config env + store', () => {
 
   it('normalizes risk profile env values', () => {
     expect(loadEnv({ RISK_PROFILE: 'extra_high' }).RISK_PROFILE).toBe('extra_high');
-    expect(loadEnv({ RISK_PROFILE: '   ' }).RISK_PROFILE).toBe('extra_high');
+    expect(loadEnv({ RISK_PROFILE: '   ' }).RISK_PROFILE).toBe('high');
   });
 
   it('rejects legacy risk profile aliases', () => {
@@ -248,6 +255,7 @@ describe('config env + store', () => {
   it('extra_high profile explicitly sets Frank-Wolfe runtime defaults', () => {
     const profile = loadRiskProfile('extra_high', 'settings/risk-gates/extra_high.json');
     expect(profile?.policy.fwMaxLoopRuntimeMs).toBe(350);
+    expect(profile?.policy.fwRequireConverged).toBe(false);
     expect(profile?.policy.fwOracleMaxConcurrency).toBe(4);
     expect(profile?.policy.fwSlippageToleranceBps).toBe(50);
     expect(profile?.policy.fwExecutionRiskBufferBps).toBe(5);
@@ -256,6 +264,15 @@ describe('config env + store', () => {
     expect(profile?.policy.fwSelectionTopK).toBe(3);
     expect(profile?.policy.fwDependencyMode).toBe('deterministic');
     expect(profile?.policy.fwDependencyHybridMerge).toBe('consensus');
+  });
+
+  it('risk profiles explicitly set FW convergence requirements', () => {
+    expect(loadRiskProfile('near_zero', 'settings/risk-gates/near_zero.json')?.policy.fwRequireConverged).toBe(true);
+    expect(loadRiskProfile('moderate', 'settings/risk-gates/moderate.json')?.policy.fwRequireConverged).toBe(true);
+    expect(loadRiskProfile('high', 'settings/risk-gates/high.json')?.policy.fwRequireConverged).toBe(true);
+    expect(loadRiskProfile('extra_high', 'settings/risk-gates/extra_high.json')?.policy.fwRequireConverged).toBe(
+      false
+    );
   });
 
   it('rejects alchemy URLs that already include the API key', () => {
@@ -401,16 +418,64 @@ describe('config validation + schema helpers', () => {
     expect(() => validateP0Config(policy, DEFAULT_RISK_CONFIG)).not.toThrow();
   });
 
-  it('rejects invalid evWebSearchPrimary settings', () => {
-    const badExa = { ...DEFAULT_TRADE_POLICY, evWebSearchPrimary: 'exa' as const, evWebSearchExaEnabled: false };
-    expect(() => validateP0Config(badExa, DEFAULT_RISK_CONFIG)).toThrow(/evWebSearchPrimary=exa/);
-
-    const badFirecrawl = {
+  it('rejects invalid EV web-search provider policy settings', () => {
+    const badExaOnly = {
       ...DEFAULT_TRADE_POLICY,
-      evWebSearchPrimary: 'firecrawl' as const,
-      evWebSearchFirecrawlEnabled: false
+      evWebSearchProviderPolicy: 'exa_only' as const,
+      evWebSearchExaEnabled: false
     };
-    expect(() => validateP0Config(badFirecrawl, DEFAULT_RISK_CONFIG)).toThrow(/evWebSearchPrimary=firecrawl/);
+    expect(() => validateP0Config(badExaOnly, DEFAULT_RISK_CONFIG)).toThrow(/evWebSearchProviderPolicy=exa_only/);
+
+    const badSerperOnly = {
+      ...DEFAULT_TRADE_POLICY,
+      evWebSearchProviderPolicy: 'serper_only' as const,
+      evWebSearchSerperEnabled: false
+    };
+    expect(() => validateP0Config(badSerperOnly, DEFAULT_RISK_CONFIG)).toThrow(/evWebSearchProviderPolicy=serper_only/);
+
+    const badRouter = {
+      ...DEFAULT_TRADE_POLICY,
+      evWebSearchProviderPolicy: 'gdelt_serper_exa' as const,
+      evWebSearchGdeltEnabled: false
+    };
+    expect(() => validateP0Config(badRouter, DEFAULT_RISK_CONFIG)).toThrow(/evWebSearchProviderPolicy=gdelt_serper_exa/);
+
+    const badSerperExa = {
+      ...DEFAULT_TRADE_POLICY,
+      evWebSearchProviderPolicy: 'serper_exa' as const,
+      evWebSearchExaFallbackEnabled: false
+    };
+    expect(() => validateP0Config(badSerperExa, DEFAULT_RISK_CONFIG)).toThrow(/evWebSearchProviderPolicy=serper_exa/);
+
+    const badRouterSerper = {
+      ...DEFAULT_TRADE_POLICY,
+      evWebSearchProviderPolicy: 'gdelt_serper_exa' as const,
+      evWebSearchSerperEnabled: false
+    };
+    expect(() => validateP0Config(badRouterSerper, DEFAULT_RISK_CONFIG)).toThrow(/requires evWebSearchSerperEnabled/);
+
+    const badRouterExa = {
+      ...DEFAULT_TRADE_POLICY,
+      evWebSearchProviderPolicy: 'gdelt_serper_exa' as const,
+      evWebSearchExaEnabled: false
+    };
+    expect(() => validateP0Config(badRouterExa, DEFAULT_RISK_CONFIG)).toThrow(/requires evWebSearchExaEnabled/);
+  });
+
+  it('rejects invalid EV web-search budget combinations', () => {
+    const badBudget = {
+      ...DEFAULT_TRADE_POLICY,
+      evWebSearchDefaultContentBudget: 4,
+      evWebSearchHighPriorityContentBudget: 3
+    };
+    expect(() => validateP0Config(badBudget, DEFAULT_RISK_CONFIG)).toThrow(/HighPriorityContentBudget/);
+
+    const badInline = {
+      ...DEFAULT_TRADE_POLICY,
+      evWebSearchMaxResults: 5,
+      evWebSearchExaInlineContentsMaxResults: 6
+    };
+    expect(() => validateP0Config(badInline, DEFAULT_RISK_CONFIG)).toThrow(/InlineContentsMaxResults/);
   });
 
   it('accepts depth buffer disabled', () => {
@@ -557,6 +622,21 @@ describe('config validation + schema helpers', () => {
         maxDecisionLatencyMs: '250'
       })
     ).toThrow(/expected number/);
+  });
+
+  it('defaults fwRequireConverged and exposes it in the policy schema', () => {
+    expect(DEFAULT_TRADE_POLICY.fwRequireConverged).toBe(true);
+
+    const policySection = getConfigSection('policy');
+    const field = policySection?.fields.find((entry) => entry.key === 'fwRequireConverged');
+    expect(field).toMatchObject({
+      key: 'fwRequireConverged',
+      label: 'FW Require Converged',
+      type: 'boolean'
+    });
+
+    const schema = buildUpdateSchema(policySection!.fields);
+    expect(schema.partial().safeParse({ fwRequireConverged: false }).success).toBe(true);
   });
 
   it('buildUpdateSchema rejects enum fields without options', () => {

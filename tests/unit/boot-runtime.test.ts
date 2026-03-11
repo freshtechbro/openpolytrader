@@ -52,8 +52,8 @@ describe('boot config helpers', () => {
       riskProfileActivePath: activePath
     });
 
-    expect(state.activeRiskProfile.id).toBe('extra_high');
-    expect(state.activeRiskProfile.source).toMatch(/extra_high\.json$/);
+    expect(state.activeRiskProfile.id).toBe('high');
+    expect(state.activeRiskProfile.source).toMatch(/high\.json$/);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Failed to load active risk profile:')
     );

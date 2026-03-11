@@ -33,7 +33,7 @@ describe('boot config mocked fallbacks', () => {
       source: 'defaults'
     });
     expect(warnSpy).toHaveBeenCalledWith(
-      'Risk profile missing for extra_high; falling back to near_zero'
+      'Risk profile missing for high; falling back to near_zero'
     );
   });
 
@@ -43,8 +43,8 @@ describe('boot config mocked fallbacks', () => {
       throw 'broken-active-profile';
     });
     const loadRiskProfile = vi.fn().mockReturnValue({
-      id: 'extra_high',
-      source: 'mock-extra-high.json',
+      id: 'high',
+      source: 'mock-high.json',
       policy: {},
       risk: {}
     });
@@ -65,8 +65,8 @@ describe('boot config mocked fallbacks', () => {
     const state = loadRuntimePolicyState({ env: loadEnv({}), envProfile: null });
 
     expect(state.activeRiskProfile).toEqual({
-      id: 'extra_high',
-      source: 'mock-extra-high.json'
+      id: 'high',
+      source: 'mock-high.json'
     });
     expect(warnSpy).toHaveBeenCalledWith(
       'Failed to load active risk profile: broken-active-profile'

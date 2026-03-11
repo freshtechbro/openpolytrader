@@ -304,7 +304,8 @@ export function filterExecutableBasketCandidates(
   candidates: ProjectionCandidate[],
   orderbooks: Map<string, OrderBookState>,
   policy: TradePolicy,
-  nowMs: number
+  nowMs: number,
+  loop: FwLoopDiagnostics
 ): BasketLegFilterResult {
   const executableCandidates: ProjectionCandidate[] = [];
   const rejectedCandidates: BasketLegFilterRejection[] = [];
@@ -330,9 +331,10 @@ export function filterExecutableBasketCandidates(
               relationIds: candidate.relationIds,
               relationTypes: candidate.relationTypes,
               lowerBoundComponents: candidate.lowerBoundComponents,
-              solverRuntimeMs: 0,
-              solverStatus: 'feasible',
-              projectionAgeMs: candidate.projectionAgeMs
+              solverRuntimeMs: loop.runtimeMs,
+              solverStatus: loop.converged ? 'optimal' : 'feasible',
+              projectionAgeMs: candidate.projectionAgeMs,
+              loop
             }
           })
         : { passed: false, reasons: ['missing_books'] };

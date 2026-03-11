@@ -13,6 +13,8 @@ import { PolymarketRealtime } from '../services/PolymarketRealtime.js';
 import { SignalAggregatorAgent } from '../agents/signal/SignalAggregatorAgent.js';
 import { ExaClient } from '../services/websearch/ExaClient.js';
 import { FirecrawlClient } from '../services/websearch/FirecrawlClient.js';
+import { GdeltHeartbeatService } from '../services/websearch/GdeltHeartbeatService.js';
+import { SerperClient } from '../services/websearch/SerperClient.js';
 import { WebSearchCache } from '../services/websearch/WebSearchCache.js';
 import type { MetricsStore } from '../telemetry/metrics.js';
 import { parseDomainList } from './config.js';
@@ -149,6 +151,8 @@ export function createRuntimeServices(input: {
           contentsPath: input.env.EXA_CONTENTS_PATH,
           cooldownMs: input.env.EXA_COOLDOWN_MS,
           cooldownFailureThreshold: input.env.EXA_COOLDOWN_FAILURE_THRESHOLD,
+          inlineContentsEnabled: input.policy.evWebSearchExaInlineContentsEnabled,
+          inlineContentsMaxResults: input.policy.evWebSearchExaInlineContentsMaxResults,
           cache: webSearchCache,
           metrics: input.metrics
         });
@@ -157,6 +161,33 @@ export function createRuntimeServices(input: {
           type: 'web_search',
           timestamp: Date.now(),
           data: { event: 'exa_missing_api_key' }
+        });
+      }
+    }
+
+    let serperClient: SerperClient | undefined;
+    if (input.policy.evWebSearchSerperEnabled) {
+      if (input.env.SERPER_API_KEY) {
+        serperClient = new SerperClient({
+          baseUrl: input.env.SERPER_BASE_URL,
+          apiKey: input.env.SERPER_API_KEY,
+          timeoutMs: input.env.EV_WEBSEARCH_TIMEOUT_MS,
+          rateLimitPerWindow: webSearchRateLimit,
+          rateLimitWindowMs: webSearchRateLimitWindowMs,
+          retryMaxRetries: webSearchRetry.maxRetries,
+          retryBaseDelayMs: webSearchRetry.baseDelayMs,
+          retryMaxDelayMs: webSearchRetry.maxDelayMs,
+          maxContentBytes: input.env.EV_WEBSEARCH_MAX_CONTENT_BYTES,
+          searchPath: input.env.SERPER_SEARCH_PATH,
+          newsPath: input.env.SERPER_NEWS_PATH,
+          cache: webSearchCache,
+          metrics: input.metrics
+        });
+      } else {
+        input.metrics.record({
+          type: 'web_search',
+          timestamp: Date.now(),
+          data: { event: 'serper_missing_api_key' }
         });
       }
     }
@@ -192,8 +223,22 @@ export function createRuntimeServices(input: {
       }
     }
 
+    const gdeltHeartbeat = input.policy.evWebSearchGdeltEnabled
+      ? new GdeltHeartbeatService({
+          policy: input.policy,
+          baseUrl: input.env.GDELT_BASE_URL,
+          timeoutMs: input.env.EV_WEBSEARCH_TIMEOUT_MS,
+          rateLimitPerWindow: webSearchRateLimit,
+          rateLimitWindowMs: webSearchRateLimitWindowMs,
+          retryMaxRetries: webSearchRetry.maxRetries,
+          retryBaseDelayMs: webSearchRetry.baseDelayMs,
+          retryMaxDelayMs: webSearchRetry.maxDelayMs,
+          metrics: input.metrics
+        })
+      : undefined;
+
     const signalAggregator =
-      exaClient || firecrawlClient
+      exaClient || serperClient || firecrawlClient
         ? new SignalAggregatorAgent({
             policy: input.policy,
             marketPairs: input.marketPairs,
@@ -201,7 +246,9 @@ export function createRuntimeServices(input: {
             allowlist: input.allowlist,
             clob,
             exa: exaClient,
+            serper: serperClient,
             firecrawl: firecrawlClient,
+            gdeltHeartbeat,
             domainAllowlist: parseDomainList(input.env.EV_WEBSEARCH_DOMAIN_ALLOWLIST),
             domainDenylist: parseDomainList(input.env.EV_WEBSEARCH_DOMAIN_DENYLIST),
             metrics: input.metrics

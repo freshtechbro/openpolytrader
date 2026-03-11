@@ -11,6 +11,8 @@ type ServerResponse = {
   body: string;
 };
 
+const requestMeta = { timeoutMs: 5_000, maxRetries: 0, attempt: 1 } as const;
+
 async function startServer(handler: () => ServerResponse | Promise<ServerResponse>) {
   const server = http.createServer(async (_req, res) => {
     const response = await handler();
@@ -66,7 +68,7 @@ describe('ZenMessagesClient', () => {
         temperature: 0,
         max_tokens: 200
       },
-      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      requestMeta
     );
 
     expect(result.endpoint).toBe('messages');
@@ -92,7 +94,7 @@ describe('ZenMessagesClient', () => {
         temperature: 0,
         max_tokens: 1
       },
-      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      requestMeta
     );
 
     expect(result.outputText).toBe('oops');
@@ -116,7 +118,7 @@ describe('ZenMessagesClient', () => {
         temperature: 0,
         max_tokens: 1
       },
-      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      requestMeta
     );
 
     expect(result.outputText).toBe('pong');
@@ -149,7 +151,7 @@ describe('ZenMessagesClient', () => {
           temperature: 0,
           max_tokens: 1
         },
-        { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+        requestMeta
       )
     ).rejects.toMatchObject<Partial<ZenMessagesError>>({
       name: 'ZenMessagesError',
@@ -186,7 +188,7 @@ describe('ZenMessagesClient', () => {
           temperature: 0,
           max_tokens: 1
         },
-        { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+        requestMeta
       )
     ).rejects.toMatchObject<Partial<ZenMessagesError>>({
       name: 'ZenMessagesError',
@@ -217,7 +219,7 @@ describe('ZenMessagesClient', () => {
         temperature: 0,
         max_tokens: 1
       },
-      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      requestMeta
     );
 
     expect(result.outputText).toBe('hello\nworld');
@@ -243,7 +245,7 @@ describe('ZenMessagesClient', () => {
         temperature: 0,
         max_tokens: 1
       },
-      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      requestMeta
     );
 
     expect(result.outputText).toBe('alpha\nbeta');
@@ -268,7 +270,7 @@ describe('ZenMessagesClient', () => {
           temperature: 0,
           max_tokens: 1
         },
-        { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+        requestMeta
       )
     ).rejects.toMatchObject<Partial<ZenMessagesError>>({ name: 'ZenMessagesError', message: 'bad_request', status: 400 });
   });
@@ -292,7 +294,7 @@ describe('ZenMessagesClient', () => {
           temperature: 0,
           max_tokens: 1
         },
-        { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+        requestMeta
       )
     ).rejects.toMatchObject<Partial<ZenMessagesError>>({ name: 'ZenMessagesError', message: 'http_500', status: 500 });
   });
@@ -316,7 +318,7 @@ describe('ZenMessagesClient', () => {
           temperature: 0,
           max_tokens: 1
         },
-        { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+        requestMeta
       )
     ).rejects.toMatchObject<Partial<ZenMessagesError>>({ name: 'ZenMessagesError', message: 'http_418', status: 418 });
   });
@@ -339,7 +341,7 @@ describe('ZenMessagesClient', () => {
           temperature: 0,
           max_tokens: 1
         },
-        { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+        requestMeta
       )
     ).rejects.toMatchObject<Partial<ZenMessagesError>>({
       name: 'ZenMessagesError',
@@ -370,7 +372,7 @@ describe('ZenMessagesClient', () => {
         temperature: 0,
         max_tokens: 1
       },
-      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      requestMeta
     );
 
     expect(result.usage).toEqual({ inputTokens: undefined, outputTokens: 2, totalTokens: undefined });
@@ -397,7 +399,7 @@ describe('ZenMessagesClient', () => {
         temperature: 0,
         max_tokens: 1
       },
-      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      requestMeta
     );
 
     expect(result.usage).toEqual({ inputTokens: 1, outputTokens: undefined, totalTokens: undefined });
@@ -436,7 +438,7 @@ describe('ZenMessagesClient', () => {
         temperature: 0,
         max_tokens: 1
       },
-      { timeoutMs: 1000, maxRetries: 0, attempt: 1 }
+      requestMeta
     );
 
     const parts = result.outputText?.split('\n') ?? [];

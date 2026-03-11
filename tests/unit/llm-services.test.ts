@@ -125,7 +125,7 @@ function makeConfig(args: {
   fallbackEnabled?: boolean;
   primaryRetryCount?: number;
 } = {}): LLMConfig {
-  const timeoutMs = overrides.timeoutMs ?? args.timeoutMs ?? 250;
+  const timeoutMs = overrides.timeoutMs ?? args.timeoutMs ?? 1000;
   const circuitFailureThreshold = overrides.circuitFailureThreshold ?? args.circuitFailureThreshold ?? 2;
   const fallbackEnabled = overrides.fallbackEnabled ?? args.fallbackEnabled ?? true;
   const primaryRetryCount = overrides.primaryRetryCount ?? args.primaryRetryCount ?? 0;
@@ -1840,7 +1840,7 @@ describe('LLM services', () => {
 
     primaryServer.setChatHandler(() => ({
       status: 200,
-      delayMs: 200,
+      delayMs: 2000,
       body: { id: 'chatcmpl-delayed', choices: [{ message: { content: '{"ok":true}' } }] }
     }));
     fallbackServer.setChatHandler(() => ({
@@ -1855,13 +1855,13 @@ describe('LLM services', () => {
       enabled: true,
       primary: { id: 'opencode-zen', baseUrl: primaryServer.baseURL, apiKey: 'k' },
       fallback: { id: 'openrouter', baseUrl: fallbackServer.baseURL, apiKey: 'k' },
-      timeoutMs: 100,
+      timeoutMs: 500,
       circuitFailureThreshold: 1
     });
     config.circuitBreaker.cooldownMs = 10_000;
     config.agents.RiskAgent.mode = 'shadow';
     config.agents.RiskAgent.provider = 'opencode-zen';
-    config.agents.RiskAgent.timeoutMs = 100;
+    config.agents.RiskAgent.timeoutMs = 500;
 
     const client = new LLMClient(config, { metrics });
 

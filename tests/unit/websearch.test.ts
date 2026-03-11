@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ExaApiError, ExaClient } from '../../src/services/websearch/ExaClient.js';
 import { FirecrawlApiError, FirecrawlClient } from '../../src/services/websearch/FirecrawlClient.js';
+import { SerperClient, __serperTestUtils } from '../../src/services/websearch/SerperClient.js';
 import { WebSearchCache } from '../../src/services/websearch/WebSearchCache.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 
@@ -39,6 +40,20 @@ const BASE_FIRECRAWL = {
   crawlMaxPages: 10
 };
 
+const BASE_SERPER = {
+  baseUrl: 'https://google.serper.dev',
+  apiKey: 'serper-key',
+  timeoutMs: 1000,
+  rateLimitPerWindow: 1000,
+  rateLimitWindowMs: 1000,
+  retryMaxRetries: 0,
+  retryBaseDelayMs: 1,
+  retryMaxDelayMs: 1,
+  maxContentBytes: 1000,
+  searchPath: '/search',
+  newsPath: '/news'
+};
+
 function stubFetch(responseBody: unknown) {
   const fetchSpy = vi.fn().mockResolvedValue({
     ok: true,
@@ -50,6 +65,7 @@ function stubFetch(responseBody: unknown) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -1180,5 +1196,467 @@ describe('FirecrawlClient', () => {
       status: 502,
       body: { raw: 'not-json' }
     });
+  });
+});
+
+describe('SerperClient and Exa inline contents', () => {
+  it('prefers Serper news results and falls back to organic search when news is empty', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ news: [] })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            organic: [{ link: 'https://example.com/story', title: 'Story', snippet: 'alpha', date: '2024-01-01' }]
+          })
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new SerperClient({ ...BASE_SERPER, cache });
+    const results = await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 0
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(results[0]?.url).toBe('https://example.com/story');
+  });
+
+  it('fetches Serper page contents directly and caches them', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            news: [{ link: 'https://example.com/story', title: 'Story', snippet: 'alpha', date: '2024-01-01', source: 'Example' }]
+          })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => '<html><head><title>Example</title></head><body><p>yes yes</p></body></html>'
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new SerperClient({ ...BASE_SERPER, cache });
+
+    await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 60
+    });
+    const first = await client.fetchContents(['https://example.com/story'], 60);
+    const second = await client.fetchContents(['https://example.com/story'], 60);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(first[0]?.title).toBe('Example');
+    expect(second[0]?.text).toContain('yes yes');
+  });
+
+  it('caches Serper search responses and forwards allow/deny filters', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          news: [{ link: 'https://example.com/story', title: 'Story', snippet: 'alpha', date: '2024-01-01' }]
+        })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new SerperClient({ ...BASE_SERPER, cache });
+    const options = {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 60,
+      domainAllowlist: ['example.com'],
+      domainDenylist: ['spam.com']
+    };
+
+    await client.search('market news', options);
+    await client.search('market news', options);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [, request] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(request.body as string);
+    expect(body.site).toBe('example.com');
+    expect(body.excludeTerms).toBe('spam.com');
+  });
+
+  it('returns empty results for malformed Serper payloads', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ news: [{ title: 'missing link' }] })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ organic: [{ title: 'missing link' }] })
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new SerperClient({ ...BASE_SERPER, cache });
+    const results = await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 0
+    });
+
+    expect(results).toEqual([]);
+  });
+
+  it('returns cached Serper contents without refetching', async () => {
+    const metrics = new MetricsStore(100);
+    const cache = new WebSearchCache();
+    cache.setContent(
+      'serper:https://example.com/story',
+      { url: 'https://example.com/story', text: 'cached body', title: 'Cached' },
+      60_000,
+      Date.now()
+    );
+    const client = new SerperClient({ ...BASE_SERPER, cache, metrics });
+
+    const contents = await client.fetchContents(['https://example.com/story'], 60);
+
+    expect(contents).toEqual([{ url: 'https://example.com/story', text: 'cached body', title: 'Cached' }]);
+    expect(metrics.recent('web_search', 10).some((entry) => entry.data?.event === 'contents_cache_hit')).toBe(true);
+  });
+
+  it('swallows direct page-fetch failures and strips html output', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            news: [{ link: 'https://example.com/story', title: 'Story', snippet: 'alpha', date: '2024-01-01' }]
+          })
+      })
+      .mockRejectedValueOnce(new Error('network_down'));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const metrics = new MetricsStore(100);
+    const cache = new WebSearchCache();
+    const client = new SerperClient({ ...BASE_SERPER, cache, metrics });
+
+    await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 0
+    });
+    const contents = await client.fetchContents(['https://example.com/story'], 60);
+
+    expect(contents).toEqual([]);
+    expect(metrics.recent('web_search', 10).some((entry) => entry.data?.event === 'request_failed')).toBe(true);
+  });
+
+  it('extracts titles, strips markup, trims bytes, and handles blank content urls', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        '<html><head></head><body><script>bad()</script><style>.x{}</style><p>&nbsp;alpha &amp; beta</p></body></html>'
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new SerperClient({ ...BASE_SERPER, maxContentBytes: 10, cache });
+
+    const empty = await client.fetchContents(['', ''], 60);
+    const contents = await client.fetchContents(['https://example.com/story'], 60);
+
+    expect(empty).toEqual([]);
+    expect(contents[0]?.title).toBeUndefined();
+    expect(contents[0]?.source).toBe('example.com');
+    expect(contents[0]?.text).toBe('alpha & be');
+  });
+
+  it('throws SerperApiError on non-ok responses and retries retryable failures', async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: async () => JSON.stringify({ error: 'bad_gateway' })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            news: [{ link: 'https://example.com/story', title: 'Recovered', snippet: 'alpha', date: '2024-01-01' }]
+          })
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new SerperClient({
+      ...BASE_SERPER,
+      retryMaxRetries: 1,
+      retryBaseDelayMs: 1,
+      retryMaxDelayMs: 1,
+      cache
+    });
+
+    const promise = client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 0
+    });
+
+    await vi.runAllTimersAsync();
+    const results = await promise;
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(results[0]?.title).toBe('Recovered');
+  });
+
+  it('throws a typed SerperApiError when retries are exhausted', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: async () => JSON.stringify({ error: 'bad_request' })
+    }));
+
+    const cache = new WebSearchCache();
+    const client = new SerperClient({ ...BASE_SERPER, cache });
+
+    await expect(
+      client.search('market news', {
+        lookbackDays: 7,
+        maxResults: 3,
+        cacheTtlSeconds: 0
+      })
+    ).rejects.toMatchObject({
+      name: 'SerperApiError',
+      status: 400
+    });
+  });
+
+  it('seeds Exa inline contents into the content cache when enabled', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          results: [
+            {
+              url: 'https://example.com/story',
+              title: 'Story',
+              text: 'inline body',
+              publishedDate: '2024-01-01T00:00:00Z'
+            }
+          ]
+        })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new ExaClient({
+      ...BASE_EXA,
+      inlineContentsEnabled: true,
+      inlineContentsMaxResults: 10,
+      cache
+    });
+
+    await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 60
+    });
+    const contents = await client.fetchContents(['https://example.com/story'], 60);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(contents[0]?.text).toBe('inline body');
+  });
+
+  it('records inline-content usage metrics when search results include inline bodies', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          results: [
+            { url: 'https://example.com/1', title: 'One', text: 'inline one', publishedDate: '2024-01-01T00:00:00Z' },
+            { url: 'https://example.com/2', title: 'Two', text: 'inline two' },
+            { url: '', title: 'skip', text: 'missing url' }
+          ]
+        })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const metrics = new MetricsStore(100);
+    const client = new ExaClient({
+      ...BASE_EXA,
+      inlineContentsEnabled: true,
+      inlineContentsMaxResults: 10,
+      cache,
+      metrics
+    });
+
+    await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 60
+    });
+
+    expect(
+      metrics.recent('web_search', 10).some((event) => event.data?.event === 'inline_contents_used' && event.data?.count === 2)
+    ).toBe(true);
+  });
+
+  it('covers Serper helper parsing and html normalization branches', () => {
+    expect(__serperTestUtils.normalizeNewsResults({ news: 'bad-shape' })).toEqual([]);
+    expect(
+      __serperTestUtils.normalizeNewsResults({
+        news: [
+          { link: 'https://example.com/story', title: 'Story', snippet: 'alpha', date: '2024-01-01' },
+          { link: '', title: 'skip' }
+        ]
+      })
+    ).toEqual([
+      {
+        url: 'https://example.com/story',
+        title: 'Story',
+        snippet: 'alpha',
+        publishedAt: '2024-01-01',
+        source: 'example.com'
+      }
+    ]);
+    expect(__serperTestUtils.normalizeSearchResults({ organic: 'bad-shape' })).toEqual([]);
+    expect(
+      __serperTestUtils.normalizeSearchResults({
+        organic: [
+          { link: 'not-a-url', title: 123, snippet: 456, date: '2024-01-01' },
+          { title: 'skip missing url' }
+        ]
+      })
+    ).toEqual([{ url: 'not-a-url', publishedAt: '2024-01-01' }]);
+    expect(__serperTestUtils.extractTitle('<html><body>no title</body></html>')).toBeUndefined();
+    expect(__serperTestUtils.extractTitle('<title> Example   Title </title>')).toBe('Example Title');
+    expect(__serperTestUtils.extractTitle('<title>   </title>')).toBeUndefined();
+    expect(
+      __serperTestUtils.stripHtml('<html><style>.x{}</style><script>bad()</script><body>&nbsp;alpha &amp; &quot;beta&quot;</body></html>')
+    ).toBe('alpha & "beta"');
+    expect(__serperTestUtils.trimToBytes('short', 10)).toBe('short');
+    expect(__serperTestUtils.trimToBytes('longer-than-four', 4)).toBe('long');
+    expect(__serperTestUtils.extractDomain('notaurl')).toBeUndefined();
+    expect(__serperTestUtils.extractDomain('https://example.com/path')).toBe('example.com');
+  });
+
+  it('uses the canonical Serper base url, forwards filters, and caches news results', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          news: [{ link: 'https://example.com/story', title: 'Story', snippet: 'alpha', source: 'Example' }]
+        })
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new SerperClient({ ...BASE_SERPER, baseUrl: undefined, cache });
+    const options = {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 60,
+      domainAllowlist: ['example.com'],
+      domainDenylist: ['spam.com']
+    };
+
+    await client.search('market news', options);
+    await client.search('market news', options);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, request] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://google.serper.dev/news');
+    expect(JSON.parse(request.body as string)).toMatchObject({
+      site: 'example.com',
+      excludeTerms: 'spam.com'
+    });
+  });
+
+  it('returns empty search contents for empty url lists and cached hits for fully cached inputs', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    cache.setContent('serper:https://example.com/story', { url: 'https://example.com/story', text: 'cached' }, 60_000, Date.now());
+    const metrics = new MetricsStore(100);
+    const client = new SerperClient({ ...BASE_SERPER, cache, metrics });
+
+    expect(await client.fetchContents([], 60)).toEqual([]);
+    expect(await client.fetchContents(['https://example.com/story'], 60)).toEqual([{ url: 'https://example.com/story', text: 'cached' }]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(metrics.recent('web_search', 10).some((event) => event.data?.event === 'contents_cache_hit')).toBe(true);
+  });
+
+  it('keeps cached Serper contents when uncached fetches fail', async () => {
+    const fetchSpy = vi.fn().mockRejectedValue('network down');
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    cache.setContent('serper:https://cached.example/story', { url: 'https://cached.example/story', text: 'cached' }, 60_000, Date.now());
+    const metrics = new MetricsStore(100);
+    const client = new SerperClient({ ...BASE_SERPER, cache, metrics });
+
+    const contents = await client.fetchContents(['https://cached.example/story', 'https://uncached.example/story'], 60);
+
+    expect(contents).toEqual([{ url: 'https://cached.example/story', text: 'cached' }]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(metrics.recent('web_search', 10).some((event) => event.data?.event === 'request_failed')).toBe(true);
+  });
+
+  it('handles undefined Serper content cache ttl and non-string news titles', async () => {
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            news: [{ link: 'https://example.com/story', title: 123, snippet: 'alpha' }]
+          })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => '<html><body>alpha</body></html>'
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => '<html><body>alpha</body></html>'
+      });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const cache = new WebSearchCache();
+    const client = new SerperClient({ ...BASE_SERPER, cache });
+    const results = await client.search('market news', {
+      lookbackDays: 7,
+      maxResults: 3,
+      cacheTtlSeconds: 0
+    });
+    const first = await client.fetchContents(['https://example.com/story']);
+    const second = await client.fetchContents(['https://example.com/story']);
+
+    expect(results).toEqual([{ url: 'https://example.com/story', title: undefined, snippet: 'alpha', publishedAt: undefined, source: 'example.com' }]);
+    expect(first[0]?.title).toBeUndefined();
+    expect(second[0]?.text).toBe('alpha');
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 });

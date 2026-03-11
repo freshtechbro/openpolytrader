@@ -55,12 +55,46 @@ function validateEvPolicy(policy: TradePolicy): void {
     }
   }
 
-  if (policy.evWebSearchPrimary === 'exa' && !policy.evWebSearchExaEnabled) {
-    throw new Error('Invalid config: evWebSearchPrimary=exa requires evWebSearchExaEnabled');
+  if (policy.evWebSearchHighPriorityContentBudget < policy.evWebSearchDefaultContentBudget) {
+    throw new Error(
+      `Invalid config: evWebSearchHighPriorityContentBudget (${policy.evWebSearchHighPriorityContentBudget}) cannot be lower than evWebSearchDefaultContentBudget (${policy.evWebSearchDefaultContentBudget})`
+    );
   }
 
-  if (policy.evWebSearchPrimary === 'firecrawl' && !policy.evWebSearchFirecrawlEnabled) {
-    throw new Error('Invalid config: evWebSearchPrimary=firecrawl requires evWebSearchFirecrawlEnabled');
+  if (policy.evWebSearchExaInlineContentsMaxResults > policy.evWebSearchMaxResults) {
+    throw new Error(
+      `Invalid config: evWebSearchExaInlineContentsMaxResults (${policy.evWebSearchExaInlineContentsMaxResults}) cannot exceed evWebSearchMaxResults (${policy.evWebSearchMaxResults})`
+    );
+  }
+
+  if (policy.evWebSearchProviderPolicy === 'exa_only' && !policy.evWebSearchExaEnabled) {
+    throw new Error('Invalid config: evWebSearchProviderPolicy=exa_only requires evWebSearchExaEnabled');
+  }
+
+  if (policy.evWebSearchProviderPolicy === 'serper_only' && !policy.evWebSearchSerperEnabled) {
+    throw new Error('Invalid config: evWebSearchProviderPolicy=serper_only requires evWebSearchSerperEnabled');
+  }
+
+  if (policy.evWebSearchProviderPolicy === 'serper_exa') {
+    if (!policy.evWebSearchSerperEnabled || !policy.evWebSearchExaEnabled || !policy.evWebSearchExaFallbackEnabled) {
+      throw new Error(
+        'Invalid config: evWebSearchProviderPolicy=serper_exa requires evWebSearchSerperEnabled, evWebSearchExaEnabled, and evWebSearchExaFallbackEnabled'
+      );
+    }
+  }
+
+  if (policy.evWebSearchProviderPolicy === 'gdelt_serper_exa') {
+    if (!policy.evWebSearchGdeltEnabled) {
+      throw new Error('Invalid config: evWebSearchProviderPolicy=gdelt_serper_exa requires evWebSearchGdeltEnabled');
+    }
+    if (!policy.evWebSearchSerperEnabled) {
+      throw new Error('Invalid config: evWebSearchProviderPolicy=gdelt_serper_exa requires evWebSearchSerperEnabled');
+    }
+    if (!policy.evWebSearchExaEnabled || !policy.evWebSearchExaFallbackEnabled) {
+      throw new Error(
+        'Invalid config: evWebSearchProviderPolicy=gdelt_serper_exa requires evWebSearchExaEnabled and evWebSearchExaFallbackEnabled'
+      );
+    }
   }
 }
 

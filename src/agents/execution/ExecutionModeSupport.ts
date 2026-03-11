@@ -78,6 +78,8 @@ export class ExecutionModeSupport {
     const timeouts = this.deps.runtime.getTimeouts();
     return new ExecutionBasketRunner({
       defaultExecutionMode: this.deps.runtime.getPolicy().fwBasketExecutionMode,
+      tradingEnabled: this.deps.runtime.getTradingEnabled(),
+      tradingMode: this.deps.runtime.getTradingMode(),
       clob: this.deps.clob,
       incidentTracker: this.deps.incidentTracker,
       metrics: this.deps.metrics,

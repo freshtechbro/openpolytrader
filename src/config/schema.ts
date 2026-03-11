@@ -89,13 +89,37 @@ const POLICY_FIELDS: ConfigField[] = [
   { key: 'evModelRefreshMinutes', label: 'EV Model Refresh', type: 'number', min: 1, max: 1440, step: 1, unit: 'min', integer: true },
   { key: 'evCalibrationMethod', label: 'EV Calibration', type: 'enum', options: ['sigmoid', 'isotonic', 'temperature'] },
   { key: 'evModelConfidenceFloor', label: 'EV Model Confidence Floor', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
+  {
+    key: 'evWebSearchProviderPolicy',
+    label: 'EV Web Search Provider Policy',
+    type: 'enum',
+    options: ['exa_only', 'serper_only', 'serper_exa', 'gdelt_serper_exa']
+  },
+  { key: 'evWebSearchRefreshMinutes', label: 'EV Web Search Refresh', type: 'number', min: 1, max: 1440, step: 1, unit: 'min', integer: true },
   { key: 'evWebSearchExaEnabled', label: 'EV Web Search Exa Enabled', type: 'boolean' },
   { key: 'evWebSearchFirecrawlEnabled', label: 'EV Web Search Firecrawl Enabled', type: 'boolean' },
-  { key: 'evWebSearchPrimary', label: 'EV Web Search Primary', type: 'enum', options: ['exa', 'firecrawl'] },
+  { key: 'evWebSearchSerperEnabled', label: 'EV Web Search Serper Enabled', type: 'boolean' },
+  { key: 'evWebSearchGdeltEnabled', label: 'EV Web Search GDELT Enabled', type: 'boolean' },
+  { key: 'evWebSearchExaFallbackEnabled', label: 'EV Web Search Exa Fallback Enabled', type: 'boolean' },
   { key: 'evWebSearchLookbackDays', label: 'EV Web Search Lookback', type: 'number', min: 1, max: 365, step: 1, unit: 'days', integer: true },
   { key: 'evWebSearchMaxResults', label: 'EV Web Search Max Results', type: 'number', min: 1, max: 50, step: 1, unit: 'count', integer: true },
   { key: 'evWebSearchCacheTtlSeconds', label: 'EV Web Search Cache TTL', type: 'number', min: 60, max: 86400, step: 60, unit: 's', integer: true },
   { key: 'evWebSearchMaxConcurrency', label: 'EV Web Search Max Concurrency', type: 'number', min: 1, max: 20, step: 1, unit: 'count', integer: true },
+  { key: 'evWebSearchDefaultContentBudget', label: 'EV Web Search Default Content Budget', type: 'number', min: 0, max: 8, step: 1, unit: 'docs', integer: true },
+  { key: 'evWebSearchHighPriorityContentBudget', label: 'EV Web Search High Priority Content Budget', type: 'number', min: 0, max: 8, step: 1, unit: 'docs', integer: true },
+  {
+    key: 'evWebSearchDefaultQueryMode',
+    label: 'EV Web Search Default Query Mode',
+    type: 'enum',
+    options: ['base_only', 'base_plus_one', 'base_plus_two']
+  },
+  { key: 'evWebSearchNearResolutionMinutes', label: 'EV Web Search Near Resolution', type: 'number', min: 1, max: 10080, step: 1, unit: 'min', integer: true },
+  { key: 'evWebSearchPriceMoveTriggerBps', label: 'EV Web Search Price Move Trigger', type: 'number', min: 0, max: 10000, step: 1, unit: 'bps', integer: true },
+  { key: 'evWebSearchOfficialDomainRequired', label: 'EV Web Search Official Domain Required', type: 'boolean' },
+  { key: 'evWebSearchGdeltRefreshMinutes', label: 'EV Web Search GDELT Refresh', type: 'number', min: 1, max: 1440, step: 1, unit: 'min', integer: true },
+  { key: 'evWebSearchGdeltTriggerThreshold', label: 'EV Web Search GDELT Trigger Threshold', type: 'number', min: 0, max: 1, step: 0.01, unit: 'fraction' },
+  { key: 'evWebSearchExaInlineContentsEnabled', label: 'EV Web Search Exa Inline Contents Enabled', type: 'boolean' },
+  { key: 'evWebSearchExaInlineContentsMaxResults', label: 'EV Web Search Exa Inline Contents Max Results', type: 'number', min: 1, max: 10, step: 1, unit: 'count', integer: true },
   { key: 'evWebSearchFirecrawlMaxDepth', label: 'EV Firecrawl Max Depth', type: 'number', min: 1, max: 10, step: 1, unit: 'depth', integer: true },
   { key: 'evWebSearchFirecrawlMaxPages', label: 'EV Firecrawl Max Pages', type: 'number', min: 1, max: 100, step: 1, unit: 'pages', integer: true },
   { key: 'fwDependencyMode', label: 'FW Dependency Mode', type: 'enum', options: ['deterministic', 'llm', 'hybrid'] },
@@ -120,6 +144,12 @@ const POLICY_FIELDS: ConfigField[] = [
   { key: 'fwMaxLoopRuntimeMs', label: 'FW Max Loop Runtime', type: 'number', min: 1, max: 60000, step: 1, unit: 'ms', integer: true },
   { key: 'fwGapAbsTolerance', label: 'FW Abs Gap Tolerance', type: 'number', min: 0.00000001, max: 1, step: 0.00000001, unit: 'fraction' },
   { key: 'fwGapRelTolerance', label: 'FW Rel Gap Tolerance', type: 'number', min: 0.00000001, max: 1, step: 0.00000001, unit: 'fraction' },
+  {
+    key: 'fwRequireConverged',
+    label: 'FW Require Converged',
+    description: 'Reject non-converged Frank-Wolfe iterates and baskets instead of allowing approximate execution.',
+    type: 'boolean'
+  },
   { key: 'fwContractionInitialEpsilon', label: 'FW Contraction Initial Epsilon', type: 'number', min: 0.00000001, max: 1, step: 0.00000001, unit: 'fraction' },
   { key: 'fwContractionDecay', label: 'FW Contraction Decay', type: 'number', min: 0.00000001, max: 0.99999999, step: 0.00000001, unit: 'fraction' },
   { key: 'fwContractionMinEpsilon', label: 'FW Contraction Min Epsilon', type: 'number', min: 0.00000001, max: 1, step: 0.00000001, unit: 'fraction' },
@@ -157,7 +187,7 @@ const RISK_FIELDS: ConfigField[] = [
 ];
 
 export const CONFIG_SCHEMA: ConfigSchema = {
-  version: '1.5.0',
+  version: '1.7.0',
   sections: [
     { key: 'policy', label: 'Trade Policy', fields: POLICY_FIELDS },
     { key: 'risk', label: 'Risk Controls', fields: RISK_FIELDS }

@@ -150,7 +150,7 @@ describe('runtimeCatalog helpers', () => {
     });
     mocks.loadRiskProfile.mockReturnValue({
       source: 'persisted',
-      policy: { marketCatalogRefreshMs: 45_000 },
+      policy: { marketCatalogRefreshMs: 45_000, fwRequireConverged: false },
       risk: { marketCooldownSeconds: 90 }
     });
     mocks.persistActiveRiskProfile.mockReturnValue({ source: 'persisted' });
@@ -168,7 +168,8 @@ describe('runtimeCatalog helpers', () => {
       fwDependencyCacheMaxEntries: 250,
       fwDependencyBackoffInvalidMs: 1000,
       fwDependencyBackoffTimeoutMs: 2000,
-      fwDependencyBackoffErrorMs: 3000
+      fwDependencyBackoffErrorMs: 3000,
+      fwRequireConverged: true
     };
     const currentRisk = { marketCooldownSeconds: 60 };
     const configStore = {
@@ -235,10 +236,15 @@ describe('runtimeCatalog helpers', () => {
     expect(applied).toEqual(
       expect.objectContaining({
         profile: { id: 'high', source: 'persisted' },
+        policy: expect.objectContaining({ fwRequireConverged: false }),
         persisted: true
       })
     );
     expect(mocks.validateP0Config).toHaveBeenCalledOnce();
+    expect(configStore.replace).toHaveBeenCalledWith(
+      expect.objectContaining({ fwRequireConverged: false }),
+      expect.objectContaining({ marketCooldownSeconds: 90 })
+    );
     expect(mocks.persistActiveRiskProfile).toHaveBeenCalledWith(
       { id: 'high', source: 'persisted' },
       '/tmp/active-risk.json'

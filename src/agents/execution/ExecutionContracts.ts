@@ -1,3 +1,4 @@
+import type { TradingMode } from '../../config/env.js';
 import type { TradePolicy } from '../../config/policy.js';
 import type { BasketExecutionLegState, ExecutionState } from '../../domain/execution.js';
 import type { IncidentRecord } from '../../domain/incident.js';
@@ -151,6 +152,8 @@ export interface ExecutionRuntimeServices {
   getTimeouts(): ExecutionTimeouts;
   getExecutionAdvisor(): ExecutionAdvisor | undefined;
   getExecutionAdvisorMode(): 'disabled' | 'shadow' | 'advisory';
+  getTradingEnabled(): boolean;
+  getTradingMode(): TradingMode;
 }
 
 export interface PairedExecutionService {
