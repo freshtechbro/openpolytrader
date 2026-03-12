@@ -17,9 +17,9 @@
     "minEdgeTicks": 1,
     "depthBufferMultiplier": 1.1,
     "entrySlippageToleranceBps": 100,
-    "minDepthLevels": 1,
-    "maxOrdersPerMinute": 240,
-    "maxOrderToTradeRatio": 25,
+    "minDepthLevels": 2,
+    "maxOrdersPerMinute": 180,
+    "maxOrderToTradeRatio": 20,
     "orderVelocityWindowMs": 60000,
     "orderToTradeWindowMs": 600000,
     "priceBandBps": 1000,
@@ -29,7 +29,8 @@
     "fillTimeoutMs": 8000,
     "cancelTimeoutMs": 3000,
     "fallbackTickSize": 0.01,
-    "fallbackMinOrderSize": 0.001
+    "fallbackMinOrderSize": 0.001,
+    "fwRequireConverged": true
   },
   "risk": {
     "targetTradeFraction": 0.15,

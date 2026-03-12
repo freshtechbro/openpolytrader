@@ -89,7 +89,7 @@ describe('book freshness quarantine', () => {
     const handler = createBookFreshnessQuarantine({
       allowlist,
       incidentTracker,
-      tokenToMarketId: { t1: 'm1' },
+      getMarketIdForToken: (tokenId) => (tokenId === 't1' ? 'm1' : undefined),
       config: { threshold: 3, windowMs: 300000, cooldownMs: 60000 }
     });
 
@@ -112,7 +112,7 @@ describe('book freshness quarantine', () => {
     const handler = createBookFreshnessQuarantine({
       allowlist,
       incidentTracker,
-      tokenToMarketId: { t1: 'm1' },
+      getMarketIdForToken: (tokenId) => (tokenId === 't1' ? 'm1' : undefined),
       config: { threshold: 1, windowMs: 300000, cooldownMs: 60000 }
     });
 
@@ -133,7 +133,7 @@ describe('book freshness quarantine', () => {
     const handler = createBookFreshnessQuarantine({
       allowlist,
       incidentTracker,
-      tokenToMarketId: { t1: 'm1' },
+      getMarketIdForToken: (tokenId) => (tokenId === 't1' ? 'm1' : undefined),
       config: { threshold: 2, windowMs: 1000, cooldownMs: 60000 }
     });
 
@@ -153,7 +153,7 @@ describe('book freshness quarantine', () => {
     const handler = createBookFreshnessQuarantine({
       allowlist,
       incidentTracker,
-      tokenToMarketId: { t1: 'm1' },
+      getMarketIdForToken: (tokenId) => (tokenId === 't1' ? 'm1' : undefined),
       config: { threshold: 2, windowMs: 300000, cooldownMs: 60000 }
     });
 
@@ -182,7 +182,7 @@ describe('book freshness quarantine', () => {
     const handler = createBookFreshnessQuarantine({
       allowlist,
       incidentTracker,
-      tokenToMarketId: {},
+      getMarketIdForToken: () => undefined,
       config: { threshold: 1, windowMs: 300000, cooldownMs: 0 }
     });
 
@@ -193,7 +193,7 @@ describe('book freshness quarantine', () => {
     const handler2 = createBookFreshnessQuarantine({
       allowlist,
       incidentTracker,
-      tokenToMarketId: { t1: 'm1' },
+      getMarketIdForToken: (tokenId) => (tokenId === 't1' ? 'm1' : undefined),
       config: { threshold: 1, windowMs: 300000, cooldownMs: 0 }
     });
     handler2.handle(makeAlert('t1', 20000, 1000));
@@ -211,7 +211,7 @@ describe('book freshness quarantine', () => {
     const handler = createBookFreshnessQuarantine({
       allowlist,
       incidentTracker,
-      tokenToMarketId: { t1: 'm1' },
+      getMarketIdForToken: (tokenId) => (tokenId === 't1' ? 'm1' : undefined),
       config: { threshold: 2, windowMs: 300000, cooldownMs: 0 }
     });
 
@@ -235,7 +235,7 @@ describe('book freshness quarantine', () => {
     const handler = createBookFreshnessQuarantine({
       allowlist,
       incidentTracker,
-      tokenToMarketId: { t1: 'm1' },
+      getMarketIdForToken: (tokenId) => (tokenId === 't1' ? 'm1' : undefined),
       config: { threshold: 1, windowMs: 300000, cooldownMs: 0 },
       now: () => 5555
     });
@@ -262,7 +262,7 @@ describe('book freshness quarantine', () => {
     const handler = createBookFreshnessQuarantine({
       allowlist,
       incidentTracker,
-      tokenToMarketId: { t1: 'm1' },
+      getMarketIdForToken: (tokenId) => (tokenId === 't1' ? 'm1' : undefined),
       config: { threshold: 1, windowMs: 300000, cooldownMs: 0 }
     });
 

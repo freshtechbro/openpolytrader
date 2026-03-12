@@ -1,8 +1,10 @@
 import { Wallet } from 'ethers';
 
 import type { Env } from '../config/env.js';
+import { requireNonEmpty } from './PolymarketEnvHelpers.js';
+import { resolvePolymarketClobBaseUrl } from './PolymarketUrls.js';
 
-export type PolymarketL2Creds = {
+type PolymarketL2Creds = {
   apiKey: string;
   secret: string;
   passphrase: string;
@@ -16,15 +18,7 @@ type DerivedCreds = {
   passphrase: string;
 };
 
-function requireNonEmpty(value: string | undefined, label: string): string {
-  const trimmed = value?.trim() ?? '';
-  if (!trimmed) {
-    throw new Error(`Missing required ${label}`);
-  }
-  return trimmed;
-}
-
-async function signL1Auth(wallet: Wallet, nowSeconds: string, nonce: number): Promise<string> {
+function signL1Auth(wallet: Wallet, nowSeconds: string, nonce: number): Promise<string> {
   const domain = {
     name: 'ClobAuthDomain',
     version: '1',
@@ -91,34 +85,33 @@ async function fetchDerivedCreds(args: {
   return { apiKey, secret, passphrase };
 }
 
-export async function derivePolymarketL2Creds(args: {
+export function derivePolymarketL2Creds(args: {
   baseUrl: string;
   l1PrivateKey: string;
   nonce: number;
 }): Promise<PolymarketL2Creds> {
   const wallet = new Wallet(args.l1PrivateKey);
-  const creds = await fetchDerivedCreds({
+
+  return fetchDerivedCreds({
     baseUrl: args.baseUrl,
     wallet,
     nonce: args.nonce
-  });
-
-  return {
+  }).then((creds) => ({
     ...creds,
     address: wallet.address,
     derived: true
-  };
+  }));
 }
 
-export async function resolvePolymarketL2Creds(env: Env): Promise<PolymarketL2Creds | null> {
+export function resolvePolymarketL2Creds(env: Env): Promise<PolymarketL2Creds | null> {
   const l1PrivateKey = env.POLYMARKET_L1_PRIVATE_KEY?.trim();
   if (l1PrivateKey) {
     const nonce = Number(env.POLYMARKET_L1_NONCE ?? 0);
     if (!Number.isFinite(nonce) || nonce < 0) {
-      throw new Error('Invalid POLYMARKET_L1_NONCE; expected a non-negative integer');
+      return Promise.reject(new Error('Invalid POLYMARKET_L1_NONCE; expected a non-negative integer'));
     }
     return derivePolymarketL2Creds({
-      baseUrl: env.POLYMARKET_CLOB_BASE_URL,
+      baseUrl: resolvePolymarketClobBaseUrl(env.POLYMARKET_CLOB_BASE_URL),
       l1PrivateKey,
       nonce
     });
@@ -129,14 +122,14 @@ export async function resolvePolymarketL2Creds(env: Env): Promise<PolymarketL2Cr
   const passphrase = env.POLYMARKET_PASSPHRASE?.trim();
   const address = env.POLYMARKET_POSITIONS_USER?.trim();
   if (!apiKey || !secret || !passphrase || !address) {
-    return null;
+    return Promise.resolve(null);
   }
 
-  return {
+  return Promise.resolve({
     apiKey,
     secret,
     passphrase,
     address,
     derived: false
-  };
+  });
 }

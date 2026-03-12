@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 
-export interface PolymarketRealtimeConfig {
+interface PolymarketRealtimeConfig {
   url: string;
   reconnectBackoffMs?: number[];
   reconnectBaseDelayMs: number;

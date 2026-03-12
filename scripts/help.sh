@@ -66,6 +66,7 @@ Common flags (`catalog:refresh*`)
 
 Common env flags
   OPS_API_TOKEN                 Required by dev:ops and authenticated /ops/* requests.
+  OPS_BACKEND_READY_TIMEOUT_SECONDS  Seconds to wait for backend /health/ready after /health is up.
   OPS_DEV_SESSION_PREFILL_ENABLED  Toggle localhost token prefill for dashboard login.
   DASHBOARD_PORT                Override dev:ops dashboard port (default 5174).
   OPS_BASE_URL                  Override dashboard -> backend base URL in dev:ops.

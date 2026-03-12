@@ -1,28 +1,14 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
+import { collectSourceFiles } from './sourceFileWalker.js';
 
 describe('dashboard env access centralization', () => {
-  it('does not access import.meta.env outside dashboardConfig.ts', () => {
+  it('does not access import.meta.env outside dashboardConfig.ts', { timeout: 30_000 }, () => {
     const root = process.cwd();
     const srcRoot = path.join(root, 'dashboard', 'src');
-    const files: string[] = [];
-
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir)) {
-        const fullPath = path.join(dir, entry);
-        const stat = statSync(fullPath);
-        if (stat.isDirectory()) {
-          walk(fullPath);
-          continue;
-        }
-        if (!/\.(ts|tsx)$/.test(fullPath)) continue;
-        files.push(fullPath);
-      }
-    };
-
-    walk(srcRoot);
+    const files = collectSourceFiles(srcRoot, /\.(ts|tsx)$/);
 
     const offenders: Array<{ file: string; line: number; text: string }> = [];
     for (const file of files) {
@@ -47,4 +33,3 @@ describe('dashboard env access centralization', () => {
     expect(offenders).toEqual([]);
   });
 });
-

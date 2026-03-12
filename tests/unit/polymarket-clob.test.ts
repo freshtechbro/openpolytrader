@@ -34,6 +34,17 @@ afterEach(() => {
 });
 
 describe('PolymarketClob cancel endpoints', () => {
+  it('falls back to the canonical CLOB base URL when baseUrl is omitted', async () => {
+    const fetchSpy = stubFetch({ canceled: [], not_canceled: {} });
+    const { baseUrl: _ignored, ...configWithoutBaseUrl } = BASE_CONFIG;
+    const clob = new PolymarketClob(configWithoutBaseUrl);
+
+    await clob.cancelAll();
+
+    const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://clob.polymarket.com/cancel-all');
+  });
+
   it('sends cancel order with orderID payload', async () => {
     const fetchSpy = stubFetch({ canceled: ['order-1'], not_canceled: {} });
     const clob = new PolymarketClob(BASE_CONFIG);
@@ -112,7 +123,7 @@ describe('PolymarketClob order submission', () => {
       })
       .mockResolvedValueOnce({
         ok: true,
-        text: async () => JSON.stringify({ ok: true })
+        text: async () => JSON.stringify({ 'token-1': { BUY: '0.51' } })
       });
     vi.stubGlobal('fetch', fetchSpy);
 
@@ -126,6 +137,6 @@ describe('PolymarketClob order submission', () => {
     const response = await clob.getPrices([{ token_id: 'token-1', side: 'BUY' }]);
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(response).toEqual({ ok: true });
+    expect(response).toEqual({ 'token-1': { BUY: '0.51' } });
   });
 });

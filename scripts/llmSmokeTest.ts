@@ -12,7 +12,9 @@ import { LLMClient } from '../src/services/llm/LLMClient.js';
 import type { LLMAgentId, LLMMode, LLMRequest } from '../src/services/llm/types.js';
 import { logLLMDecision } from '../src/services/llm/LLMDecisionLogger.js';
 import { safeParseJSON } from '../src/utils/serialization.js';
+import { writeCliFailure } from '../src/utils/cliFailure.js';
 import { sha256 } from '../src/utils/crypto.js';
+import { runCliMain } from './lib/runCli.js';
 
 type SmokeTarget = {
   agent: LLMAgentId;
@@ -60,7 +62,7 @@ const TARGETS: SmokeTarget[] = [
   { agent: 'OpsAgent', buildRequest: jsonChatRequest }
 ];
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const env = loadEnv();
   const llmConfig = loadLLMConfig(env);
   const store = new EventStore({ dbPath: env.EVENT_STORE_PATH });
@@ -117,11 +119,10 @@ async function main(): Promise<void> {
     });
   }
 
-  console.log('[llm] smoke ok', { enabled: llmConfig.enabled, results, at_ms: nowMs });
+  console.log('LLM smoke ok', { enabled: llmConfig.enabled, results, at_ms: nowMs });
 }
 
-await main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`[llm] smoke failed: ${message}`);
+runCliMain(import.meta.url, main, (error) => {
+  writeCliFailure('LLM smoke failed', error);
   process.exitCode = 1;
 });

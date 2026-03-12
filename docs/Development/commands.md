@@ -107,8 +107,9 @@ lsof -ti tcp:3000,tcp:5174,tcp:7071 | xargs kill
 | `npm run catalog:relations` | Build dependency relation catalog via compiled JS entrypoint |
 
 `npm run dev:ops` startup gating:
-- Oracle and backend readiness are required.
+- Oracle health and backend `/health/ready` are required.
 - Dashboard probe timeout is a warning (non-fatal); re-check with `npm run dev:ops:status`.
+- Backend readiness wait is bounded by `OPS_BACKEND_READY_TIMEOUT_SECONDS` (default `45`).
 - `npm run dev:ops:status` only accepts dashboard log readiness when PID and listener checks are also live.
 - After initial dashboard timeout, `dev:ops` runs short bounded retry/backoff probes before warning.
 

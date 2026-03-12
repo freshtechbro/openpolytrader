@@ -11,14 +11,15 @@ import {
   type DependencyRelationCatalogEntry
 } from '../../domain/dependency.js';
 
-export interface DependencyRelationCatalogSnapshot {
+interface DependencyRelationCatalogSnapshot {
   path: string;
   loadedAtMs: number;
   entries: DependencyRelationCatalogEntry[];
   malformedEntries: number;
+  loadError?: 'missing_file' | 'parse_error';
 }
 
-export interface DependencyRelationCatalogBuildResult {
+interface DependencyRelationCatalogBuildResult {
   entries: DependencyRelationCatalogEntry[];
   deterministicRelations: number;
   semanticRelations: number;
@@ -39,7 +40,8 @@ export function loadDependencyRelationCatalog(
       path: absolutePath,
       loadedAtMs: nowMs,
       entries: [],
-      malformedEntries: 0
+      malformedEntries: 0,
+      loadError: 'missing_file'
     };
   }
 
@@ -52,7 +54,8 @@ export function loadDependencyRelationCatalog(
       path: absolutePath,
       loadedAtMs: nowMs,
       entries: [],
-      malformedEntries: 0
+      malformedEntries: 0,
+      loadError: 'parse_error'
     };
   }
 

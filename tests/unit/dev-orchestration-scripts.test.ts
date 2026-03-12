@@ -9,6 +9,17 @@ const readScript = (relativePath: string): string => {
 };
 
 describe('dev orchestration script guardrails', () => {
+  it('requires backend readiness before treating startup and status as healthy', () => {
+    const upSource = readScript('scripts/dev-up.sh');
+    const statusSource = readScript('scripts/dev-status.sh');
+
+    expect(upSource).toContain('BACKEND_READY_TIMEOUT_SECONDS="${OPS_BACKEND_READY_TIMEOUT_SECONDS:-45}"');
+    expect(upSource).toContain('wait_for_backend_ready');
+    expect(upSource).toContain('${OPS_BASE_URL}/health/ready');
+    expect(statusSource).toContain('backend_ready_status=$(http_code "${OPS_BASE_URL}/health/ready" "$TOKEN")');
+    expect(statusSource).toContain('if [[ "$backend_ready_status" != "200" ]]; then');
+  });
+
   it('requires live pid+listener before accepting dashboard log fallback', () => {
     const source = readScript('scripts/dev-status.sh');
 

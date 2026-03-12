@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import type { FastifyRequest } from 'fastify';
 
-import { readCookieValue, readOpsToken, tokensMatch, isAuthorized, queryFlag } from '../../src/security/Auth.js';
+import {
+  readCookieValue,
+  readOpsHeaderToken,
+  readOpsQueryToken,
+  readOpsToken,
+  tokensMatch,
+  isAuthorized,
+  queryFlag
+} from '../../src/security/Auth.js';
 import { hasSecret, redactSecret } from '../../src/security/Secrets.js';
 
 function makeRequest(
@@ -14,17 +22,21 @@ function makeRequest(
 describe('security auth helpers', () => {
   it('reads ops tokens from headers and query', () => {
     expect(
-      readOpsToken(makeRequest({ authorization: 'Bearer token-1' }))
+      readOpsHeaderToken(makeRequest({ authorization: 'Bearer token-1' }))
     ).toBe('token-1');
 
     expect(
-      readOpsToken(makeRequest({ 'x-ops-token': 'token-2' }))
+      readOpsHeaderToken(makeRequest({ 'x-ops-token': 'token-2' }))
     ).toBe('token-2');
+
+    expect(readOpsHeaderToken(makeRequest({}, { token: 'token-3' }))).toBeUndefined();
+    expect(
+      readOpsQueryToken(makeRequest({}, { token: 'token-3' }))
+    ).toBe('token-3');
 
     expect(
       readOpsToken(makeRequest({}, { token: 'token-3' }))
     ).toBe('token-3');
-
     expect(readOpsToken(makeRequest({ authorization: 'Basic abc' }))).toBeUndefined();
     expect(readOpsToken(makeRequest({ authorization: 'Bearer' }))).toBeUndefined();
   });
@@ -49,6 +61,19 @@ describe('security auth helpers', () => {
         'ok'
       )
     ).toBe(false);
+    expect(
+      isAuthorized(
+        makeRequest({}, { token: 'ok' }),
+        'ok'
+      )
+    ).toBe(false);
+    expect(
+      isAuthorized(
+        makeRequest({}, { token: 'ok' }),
+        'ok',
+        { allowQueryToken: true }
+      )
+    ).toBe(true);
   });
 
   it('parses query flags', () => {

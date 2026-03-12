@@ -3,10 +3,27 @@ import { EventEmitter } from 'node:events';
 import type { MarketPair } from '../domain/market.js';
 import type { MetricsStore } from '../telemetry/metrics.js';
 import { PolymarketClob } from './PolymarketClob.js';
+import {
+  coerceNumber,
+  enrichExistingPair,
+  extractConditionId,
+  extractTokenIds,
+  fetchMarketPage,
+  getEmptyRefreshBackoffMs,
+  hasAskLevels,
+  isMarketEnded,
+  normalizeOptionalString,
+  normalizeTags,
+  pickCategoryFromTags,
+  resolveDefaultGammaApiBaseUrl,
+  spreadWithinLimitOrUnavailable as spreadWithinLimitOrUnavailableForBook,
+  type GammaMarket,
+  type MarketCatalogOrder
+} from './MarketCatalogRefresherSupport.js';
 
-export type MarketCatalogOrder = 'volume24hr' | 'newest';
+export type { GammaMarket } from './MarketCatalogRefresherSupport.js';
 
-export interface MarketCatalogRefresherConfig {
+interface MarketCatalogRefresherConfig {
   /** Refresh interval in ms (default: 300000 = 5 min) */
   refreshIntervalMs: number;
   /** Max pairs to track (default: 80) */
@@ -37,32 +54,7 @@ export interface MarketCatalogRefresherConfig {
   requestTimeoutMs: number;
 }
 
-export interface GammaMarket {
-  condition_id?: string;
-  conditionId?: string;
-  question?: string;
-  category?: string;
-  tags?: unknown;
-  volume24hr?: number;
-  volume24hrClob?: number;
-  volumeNum?: number;
-  volume?: number | string;
-  liquidity?: number;
-  active?: boolean;
-  closed?: boolean;
-  accepting_orders?: boolean;
-  acceptingOrders?: boolean;
-  enable_order_book?: boolean;
-  enableOrderBook?: boolean;
-  endDate?: string | number | null;
-  endDateIso?: string | null;
-  end_date?: string | number | null;
-  end_date_iso?: string | null;
-  clobTokenIds?: string[] | string;
-  tokens?: Array<{ token_id?: string; tokenId?: string; outcome?: string }>;
-}
-
-export interface RefreshResult {
+interface RefreshResult {
   discoveredPairs: MarketPair[];
   removedMarketIds: string[];
   totalPairs: number;
@@ -70,7 +62,7 @@ export interface RefreshResult {
   durationMs: number;
 }
 
-const DEFAULT_CONFIG: Omit<MarketCatalogRefresherConfig, 'gammaApiBaseUrl'> = {
+const DEFAULT_CONFIG: MarketCatalogRefresherConfig = {
   refreshIntervalMs: 300000,
   maxPairs: 80,
   minVolume24h: 1000,
@@ -83,6 +75,7 @@ const DEFAULT_CONFIG: Omit<MarketCatalogRefresherConfig, 'gammaApiBaseUrl'> = {
   explorationMaxPairs: 30,
   explorationMinVolume24h: 1000,
   explorationMaxPages: 3,
+  gammaApiBaseUrl: resolveDefaultGammaApiBaseUrl(),
   requestTimeoutMs: 10000
 };
 
@@ -119,12 +112,15 @@ export class MarketCatalogRefresher extends EventEmitter {
   private emptyRefreshLogUntil = 0;
 
   constructor(
-    config: Partial<Omit<MarketCatalogRefresherConfig, 'gammaApiBaseUrl'>> & Pick<MarketCatalogRefresherConfig, 'gammaApiBaseUrl'>,
+    config: Partial<MarketCatalogRefresherConfig>,
     clob: PolymarketClob,
     metrics?: MetricsStore
   ) {
     super();
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = {
+      ...DEFAULT_CONFIG,
+      ...Object.fromEntries(Object.entries(config).filter(([, value]) => value !== undefined))
+    };
     this.clob = clob;
     this.metrics = metrics;
   }
@@ -208,7 +204,7 @@ export class MarketCatalogRefresher extends EventEmitter {
       const totalEndedExcluded = funnel.core.endedExcluded + funnel.exploration.endedExcluded;
       if (validPairs.length === 0 && previousMarketIds.size > 0 && totalEndedExcluded === 0) {
         const durationMs = Date.now() - startMs;
-        const backoffMs = this.getEmptyRefreshBackoffMs();
+        const backoffMs = getEmptyRefreshBackoffMs(this.config.refreshIntervalMs);
         if (Date.now() >= this.emptyRefreshLogUntil) {
           this.metrics?.record({
             type: 'error',
@@ -386,11 +382,10 @@ export class MarketCatalogRefresher extends EventEmitter {
     const maxPages = Math.max(1, params.maxPages);
 
     for (let page = 0; page < maxPages; page += 1) {
-      const { markets, nextCursor } = await this.fetchMarketPage({
-        limit: pageSize,
-        offset,
-        cursor,
-        order: params.order
+      const { markets, nextCursor } = await fetchMarketPage({
+        gammaApiBaseUrl: this.config.gammaApiBaseUrl,
+        requestTimeoutMs: this.config.requestTimeoutMs,
+        params: { limit: pageSize, offset, cursor, order: params.order }
       });
 
       pagesScanned += 1;
@@ -411,7 +406,7 @@ export class MarketCatalogRefresher extends EventEmitter {
         }
         if (conditionId && this.currentPairs.has(conditionId)) {
           const existingPair = this.currentPairs.get(conditionId)!;
-          validPairs.push(this.enrichExistingPair(existingPair, market));
+          validPairs.push(enrichExistingPair(existingPair, market));
           params.seenMarketIds.add(conditionId);
           continue;
         }
@@ -439,64 +434,6 @@ export class MarketCatalogRefresher extends EventEmitter {
     return { validPairs, pagesScanned, candidates, endedExcluded };
   }
 
-  private resolveOrderParams(orderMode: MarketCatalogOrder): { order: string; ascending: boolean } {
-    if (orderMode === 'newest') {
-      return { order: 'id', ascending: false };
-    }
-    return { order: 'volume24hr', ascending: false };
-  }
-
-  private async fetchMarketPage(params: {
-    limit: number;
-    offset: number;
-    cursor: string | null;
-    order: MarketCatalogOrder;
-  }): Promise<{ markets: GammaMarket[]; nextCursor: string | null }> {
-    const url = new URL('/markets', this.config.gammaApiBaseUrl);
-    const { order, ascending } = this.resolveOrderParams(params.order);
-    url.searchParams.set('limit', String(params.limit));
-    url.searchParams.set('order', order);
-    url.searchParams.set('ascending', String(ascending));
-    url.searchParams.set('active', 'true');
-    url.searchParams.set('closed', 'false');
-    if (params.cursor) {
-      url.searchParams.set('cursor', params.cursor);
-    } else {
-      url.searchParams.set('offset', String(params.offset));
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
-
-    try {
-      const response = await fetch(url.toString(), {
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'openpolytrader/0.1.0'
-        },
-        signal: controller.signal
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Gamma API fetch failed (${response.status}): ${text.slice(0, 200)}`);
-      }
-
-      const data = (await response.json()) as
-        | GammaMarket[]
-        | { data?: GammaMarket[]; next_cursor?: string | null; nextCursor?: string | null; cursor?: string | null };
-      if (Array.isArray(data)) {
-        return { markets: data, nextCursor: null };
-      }
-      if (data && Array.isArray(data.data)) {
-        return { markets: data.data, nextCursor: extractNextCursor(data) };
-      }
-      return { markets: [], nextCursor: null };
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
   private async validateAndConvertMarket(
     market: GammaMarket,
     minVolume24h = this.config.minVolume24h
@@ -517,7 +454,7 @@ export class MarketCatalogRefresher extends EventEmitter {
     );
     if (volume24h < minVolume24h) return null;
 
-    const tokenIds = this.extractTokenIds(market);
+    const tokenIds = extractTokenIds(market);
     if (!tokenIds) return null;
 
     const { yesTokenId, noTokenId } = tokenIds;
@@ -531,11 +468,16 @@ export class MarketCatalogRefresher extends EventEmitter {
         this.clob.getOrderBook(noTokenId)
       ]);
 
-      if (!this.hasValidAsks(yesBook) || !this.hasValidAsks(noBook)) return null;
+      if (!hasAskLevels(yesBook) || !hasAskLevels(noBook)) return null;
       if (!yesBook.tick_size || !noBook.tick_size) return null;
       if (!yesBook.min_order_size || !noBook.min_order_size) return null;
 
-      if (!this.hasAcceptableSpread(yesBook) || !this.hasAcceptableSpread(noBook)) return null;
+      if (
+        !this.spreadWithinLimitOrUnavailable(yesBook) ||
+        !this.spreadWithinLimitOrUnavailable(noBook)
+      ) {
+        return null;
+      }
 
       return {
         marketId: conditionId,
@@ -550,193 +492,8 @@ export class MarketCatalogRefresher extends EventEmitter {
     }
   }
 
-  private getEmptyRefreshBackoffMs(): number {
-    return Math.min(Math.max(this.config.refreshIntervalMs, 60000), 600000);
-  }
-
-  private extractTokenIds(market: GammaMarket): { yesTokenId: string; noTokenId: string } | null {
-    const parsedIds = parseClobTokenIds(market.clobTokenIds);
-    if (parsedIds && parsedIds.length === 2) {
-      return { yesTokenId: parsedIds[0], noTokenId: parsedIds[1] };
-    }
-
-    if (!Array.isArray(market.tokens) || market.tokens.length !== 2) return null;
-
-    const [a, b] = market.tokens;
-    const aToken = a?.token_id ?? a?.tokenId;
-    const bToken = b?.token_id ?? b?.tokenId;
-    if (!aToken || !bToken) return null;
-
-    const aOutcome = (a.outcome ?? '').toLowerCase().trim();
-    const bOutcome = (b.outcome ?? '').toLowerCase().trim();
-
-    if (aOutcome === 'yes' && bOutcome === 'no') {
-      return { yesTokenId: aToken, noTokenId: bToken };
-    }
-    if (aOutcome === 'no' && bOutcome === 'yes') {
-      return { yesTokenId: bToken, noTokenId: aToken };
-    }
-
-    const sorted = [
-      { tokenId: aToken, outcome: aOutcome },
-      { tokenId: bToken, outcome: bOutcome }
-    ].sort((x, y) => x.tokenId.localeCompare(y.tokenId));
-    return { yesTokenId: sorted[0].tokenId, noTokenId: sorted[1].tokenId };
-  }
-
-  private hasValidAsks(book: { asks?: Array<{ price: string | number; size: string | number }> }): boolean {
-    return Array.isArray(book.asks) && book.asks.length > 0;
-  }
-
-  private hasAcceptableSpread(book: {
+  private spreadWithinLimitOrUnavailable = (book: {
     bids?: Array<{ price: string | number }>;
     asks?: Array<{ price: string | number }>;
-  }): boolean {
-    if (!Array.isArray(book.bids) || book.bids.length === 0) return true;
-    if (!Array.isArray(book.asks) || book.asks.length === 0) return true;
-
-    const bestBid = findBestPrice(book.bids, Math.max);
-    const bestAsk = findBestPrice(book.asks, Math.min);
-
-    if (!Number.isFinite(bestBid) || !Number.isFinite(bestAsk)) return true;
-
-    return bestAsk - bestBid <= this.config.maxSpread;
-  }
-
-  private enrichExistingPair(existingPair: MarketPair, market: GammaMarket): MarketPair {
-    const marketQuestion = normalizeOptionalString(market.question);
-    const marketTags = normalizeTags(market.tags);
-    const existingTags = existingPair.tags;
-    const tags = marketTags ?? existingTags;
-    const category =
-      normalizeOptionalString(market.category) ??
-      pickCategoryFromTags(marketTags) ??
-      existingPair.category ??
-      pickCategoryFromTags(existingTags);
-    const question = marketQuestion ?? existingPair.question;
-
-    return {
-      marketId: existingPair.marketId,
-      yesTokenId: existingPair.yesTokenId,
-      noTokenId: existingPair.noTokenId,
-      ...(question ? { question } : {}),
-      ...(category ? { category } : {}),
-      ...(tags ? { tags } : {})
-    };
-  }
-}
-
-function extractConditionId(market: GammaMarket): string | null {
-  const value = market.condition_id ?? market.conditionId;
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-function normalizeOptionalString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function normalizeTags(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const tags = Array.from(
-    new Set(
-      value
-        .filter((entry): entry is string => typeof entry === 'string')
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-    )
-  );
-  return tags.length > 0 ? tags : undefined;
-}
-
-function pickCategoryFromTags(tags: string[] | undefined): string | undefined {
-  if (!tags || tags.length === 0) return undefined;
-  for (const tag of tags) {
-    if (tag.toLowerCase() === 'all') continue;
-    return tag;
-  }
-  return undefined;
-}
-
-function parseClobTokenIds(value: GammaMarket['clobTokenIds']): string[] | null {
-  if (Array.isArray(value)) {
-    return value.every((id) => typeof id === 'string') ? value : null;
-  }
-  if (typeof value === 'string' && value.trim().length > 0) {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      if (Array.isArray(parsed) && parsed.every((id) => typeof id === 'string')) {
-        return parsed;
-      }
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-function coerceNumber(value: unknown): number {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }
-  return 0;
-}
-
-function isMarketEnded(market: GammaMarket, nowMs: number): boolean {
-  const endMs = extractMarketEndTimeMs(market);
-  return endMs !== null && endMs <= nowMs;
-}
-
-function extractMarketEndTimeMs(market: GammaMarket): number | null {
-  const candidates: Array<unknown> = [market.endDate, market.endDateIso, market.end_date, market.end_date_iso];
-  for (const value of candidates) {
-    const parsed = parseTimestampMs(value);
-    if (parsed !== null) return parsed;
-  }
-  return null;
-}
-
-function parseTimestampMs(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    if (value <= 0) return null;
-    return value < 1_000_000_000_000 ? value * 1000 : value;
-  }
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return null;
-    const asNumber = Number(trimmed);
-    if (Number.isFinite(asNumber) && asNumber > 0) {
-      return asNumber < 1_000_000_000_000 ? asNumber * 1000 : asNumber;
-    }
-    const parsed = Date.parse(trimmed);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
-function findBestPrice(
-  levels: Array<{ price: string | number }>,
-  reducer: (a: number, b: number) => number
-): number {
-  let best: number | null = null;
-  for (const level of levels) {
-    const price = Number(level.price);
-    if (!Number.isFinite(price)) continue;
-    best = best === null ? price : reducer(best, price);
-  }
-  return best ?? Number.NaN;
-}
-
-function extractNextCursor(value: {
-  next_cursor?: string | null;
-  nextCursor?: string | null;
-  cursor?: string | null;
-}): string | null {
-  if (typeof value.next_cursor === 'string' && value.next_cursor.length > 0) return value.next_cursor;
-  if (typeof value.nextCursor === 'string' && value.nextCursor.length > 0) return value.nextCursor;
-  if (typeof value.cursor === 'string' && value.cursor.length > 0) return value.cursor;
-  return null;
+  }): boolean => spreadWithinLimitOrUnavailableForBook(book, this.config.maxSpread);
 }

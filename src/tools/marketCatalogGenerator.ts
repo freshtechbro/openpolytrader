@@ -3,19 +3,24 @@ import { dirname, resolve } from 'node:path';
 
 import { loadEnvWithOverrides } from '../config/env.js';
 import type { MarketPair } from '../domain/market.js';
-import { PolymarketClob } from '../services/PolymarketClob.js';
-
-type RawMarket = {
-  enable_order_book?: boolean;
-  active?: boolean;
-  closed?: boolean;
-  archived?: boolean;
-  accepting_orders?: boolean;
-  condition_id?: string;
-  question?: unknown;
-  tags?: unknown;
-  tokens?: Array<{ token_id?: string; outcome?: string }>;
-};
+import type { RawOrderBookSnapshot } from '../domain/orderbook.js';
+import type { PolymarketClob } from '../services/PolymarketClob.js';
+import { createPolymarketClobFromEnv } from '../services/PolymarketEnvHelpers.js';
+import { resolvePolymarketClobBaseUrl } from '../services/PolymarketUrls.js';
+import {
+  enrichPairWithMetadata,
+  hasRelationMetadata,
+  hasTag,
+  marketToPair,
+  mergePairs,
+  type RawMarket
+} from './marketCatalogGeneratorPairs.js';
+import {
+  parseGeneratorArgs,
+  printGeneratorHelp,
+  type GeneratorArgs,
+  type GeneratorMode
+} from './marketCatalogGeneratorArgs.js';
 
 type MarketsPage = {
   data: RawMarket[];
@@ -23,115 +28,33 @@ type MarketsPage = {
   count?: number;
 };
 
-export type GeneratorMode = 'near-zero' | 'binary' | 'any';
+type MarketCatalogErrorCode =
+  | 'catalog_read_failed'
+  | 'catalog_content_invalid'
+  | 'markets_fetch_failed'
+  | 'markets_response_invalid'
+  | 'orderbook_verification_failed'
+  | 'scan_aborted';
 
-export type GeneratorArgs = {
-  outPath?: string;
-  maxPairs?: number;
-  tag?: string;
-  yesnoOnly?: boolean;
-  mode?: GeneratorMode;
-  merge?: boolean;
-  verifyBooks?: boolean;
-  requireMetadata?: boolean;
-};
+export class MarketCatalogError extends Error {
+  override readonly cause?: unknown;
 
-export function parseGeneratorArgs(argv: string[]): GeneratorArgs & { help?: boolean } {
-  const args = argv.slice(2);
-  const result: GeneratorArgs & { help?: boolean } = {};
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--out' || arg === '-o') {
-      const value = args[++i];
-      if (!value) throw new Error('Missing value for --out');
-      result.outPath = value;
-      continue;
-    }
-    if (arg === '--max') {
-      const value = args[++i];
-      if (!value) throw new Error('Missing value for --max');
-      const parsed = Number(value);
-      if (!Number.isFinite(parsed) || parsed <= 0) throw new Error('--max must be a positive number');
-      result.maxPairs = Math.floor(parsed);
-      continue;
-    }
-    if (arg === '--tag') {
-      const value = args[++i];
-      if (!value) throw new Error('Missing value for --tag');
-      result.tag = value;
-      continue;
-    }
-    if (arg === '--yesno-only') {
-      result.yesnoOnly = true;
-      continue;
-    }
-    if (arg === '--mode') {
-      const value = args[++i];
-      if (value !== 'near-zero' && value !== 'binary' && value !== 'any') {
-        throw new Error('--mode must be one of: near-zero | binary | any');
-      }
-      result.mode = value;
-      continue;
-    }
-    if (arg === '--merge') {
-      result.merge = true;
-      continue;
-    }
-    if (arg === '--overwrite') {
-      result.merge = false;
-      continue;
-    }
-    if (arg === '--verify-books') {
-      result.verifyBooks = true;
-      continue;
-    }
-    if (arg === '--no-verify-books') {
-      result.verifyBooks = false;
-      continue;
-    }
-    if (arg === '--require-metadata') {
-      result.requireMetadata = true;
-      continue;
-    }
-    if (arg === '--allow-fallback-metadata') {
-      result.requireMetadata = false;
-      continue;
-    }
-    if (arg === '--help' || arg === '-h') {
-      result.help = true;
-      continue;
-    }
-    throw new Error(`Unknown arg: ${arg}`);
+  constructor(
+    message: string,
+    public readonly code: MarketCatalogErrorCode,
+    options?: { cause?: unknown }
+  ) {
+    super(message);
+    this.name = 'MarketCatalogError';
+    this.cause = options?.cause;
   }
-
-  return result;
 }
 
-export function printGeneratorHelp(): void {
-  // eslint-disable-next-line no-console
-  console.log(`market-catalog-generator
-
-Generates a MarketPair JSON catalog for MARKET_CATALOG_PATH by scanning Polymarket CLOB markets.
-
-Usage:
-  npx tsx src/tools/marketCatalogGeneratorCli.ts [options]
-  node dist/tools/marketCatalogGeneratorCli.js [options]
-
-Options:
-  --out, -o          Output JSON path (default: env MARKET_CATALOG_PATH or data/market-catalog.json)
-  --max              Stop after N pairs are collected (default: existing file size when --merge, else 200)
-  --tag              Only include markets whose tags include this string (case-insensitive)
-  --yesno-only       Only include markets whose outcomes are exactly Yes/No (more conservative)
-  --mode             near-zero | binary | any (default: near-zero)
-  --merge            Merge new pairs into existing file (never removes)
-  --overwrite        Replace the output file (default)
-  --verify-books     Verify both token orderbooks exist + have asks (default for near-zero)
-  --no-verify-books  Skip orderbook verification
-  --require-metadata           Require tick_size + min_order_size from /book (default for near-zero)
-  --allow-fallback-metadata    Allow missing metadata (fallbacks may be used at runtime)
-`);
-}
+export {
+  parseGeneratorArgs,
+  marketToPair,
+  mergePairs
+};
 
 export function cursorForOffset(offset: number): string {
   if (!Number.isInteger(offset) || offset < 0) {
@@ -140,179 +63,40 @@ export function cursorForOffset(offset: number): string {
   return Buffer.from(String(offset)).toString('base64');
 }
 
-function normalizeTag(value: unknown): string | null {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
   }
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-  for (const key of ['label', 'name', 'slug', 'title']) {
-    const candidate = record[key];
-    if (typeof candidate !== 'string') continue;
-    const trimmed = candidate.trim();
-    if (trimmed.length > 0) return trimmed;
-  }
-  return null;
-}
-
-function normalizeOptionalString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function normalizeTagList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return Array.from(
-    new Set(
-      value
-        .map((entry) => normalizeTag(entry))
-        .filter((entry): entry is string => entry !== null)
-    )
-  );
-}
-
-function hasTag(market: RawMarket, filter?: string): boolean {
-  if (!filter) return true;
-  const normalized = filter.trim().toLowerCase();
-  for (const tag of normalizeTagList(market.tags)) {
-    if (tag.toLowerCase().includes(normalized)) return true;
-  }
-  return false;
-}
-
-function pickCategory(tags: unknown): string | undefined {
-  for (const tag of normalizeTagList(tags)) {
-    if (tag.toLowerCase() === 'all') continue;
-    return tag;
-  }
-  return undefined;
-}
-
-function isYes(value?: string): boolean {
-  return typeof value === 'string' && value.trim().toLowerCase() === 'yes';
-}
-
-function isNo(value?: string): boolean {
-  return typeof value === 'string' && value.trim().toLowerCase() === 'no';
-}
-
-export function marketToPair(market: RawMarket, opts: { mode: GeneratorMode; yesnoOnly: boolean }): MarketPair | null {
-  if (!market.condition_id) return null;
-
-  if (opts.mode !== 'any') {
-    if (!market.active) return null;
-    if (market.closed) return null;
-    if (market.archived) return null;
-    if (!market.accepting_orders) return null;
-  }
-
-  if (opts.mode === 'near-zero') {
-    if (!market.enable_order_book) return null;
-  }
-
-  const tokens = market.tokens;
-  if (!Array.isArray(tokens) || tokens.length !== 2) return null;
-
-  const [a, b] = tokens;
-  if (!a?.token_id || !b?.token_id) return null;
-
-  const aOutcome = typeof a.outcome === 'string' ? a.outcome : '';
-  const bOutcome = typeof b.outcome === 'string' ? b.outcome : '';
-
-  if (opts.yesnoOnly) {
-    const ok = (isYes(aOutcome) && isNo(bOutcome)) || (isNo(aOutcome) && isYes(bOutcome));
-    if (!ok) return null;
-  }
-
-  let yesTokenId = a.token_id;
-  let noTokenId = b.token_id;
-
-  if (isYes(aOutcome) && isNo(bOutcome)) {
-    yesTokenId = a.token_id;
-    noTokenId = b.token_id;
-  } else if (isNo(aOutcome) && isYes(bOutcome)) {
-    yesTokenId = b.token_id;
-    noTokenId = a.token_id;
-  } else {
-    const sorted = [
-      { tokenId: a.token_id, outcome: aOutcome },
-      { tokenId: b.token_id, outcome: bOutcome }
-    ].sort((left, right) => {
-      const outcomeCompare = left.outcome.localeCompare(right.outcome, undefined, { sensitivity: 'base' });
-      if (outcomeCompare !== 0) return outcomeCompare;
-      return left.tokenId.localeCompare(right.tokenId);
-    });
-    yesTokenId = sorted[0].tokenId;
-    noTokenId = sorted[1].tokenId;
-  }
-
-  return {
-    marketId: market.condition_id,
-    yesTokenId,
-    noTokenId,
-    category: pickCategory(market.tags)
-  };
-}
-
-export function mergePairs(existing: MarketPair[], incoming: MarketPair[], maxPairs?: number): MarketPair[] {
-  const next: MarketPair[] = [];
-  const indexByMarketId = new Map<string, number>();
-
-  for (const pair of existing) {
-    if (indexByMarketId.has(pair.marketId)) continue;
-    indexByMarketId.set(pair.marketId, next.length);
-    next.push(pair);
-  }
-
-  for (const pair of incoming) {
-    const existingIndex = indexByMarketId.get(pair.marketId);
-    if (existingIndex === undefined) {
-      indexByMarketId.set(pair.marketId, next.length);
-      next.push(pair);
-      if (maxPairs && next.length >= maxPairs) break;
-      continue;
-    }
-    next[existingIndex] = mergePairMetadata(next[existingIndex], pair);
-  }
-
-  return maxPairs ? next.slice(0, maxPairs) : next;
-}
-
-function mergePairMetadata(existing: MarketPair, incoming: MarketPair): MarketPair {
-  const question = incoming.question ?? existing.question;
-  const category = incoming.category ?? existing.category;
-  const tags = mergeTags(existing.tags, incoming.tags);
-  return {
-    marketId: existing.marketId,
-    yesTokenId: existing.yesTokenId,
-    noTokenId: existing.noTokenId,
-    ...(question ? { question } : {}),
-    ...(category ? { category } : {}),
-    ...(tags.length > 0 ? { tags } : {})
-  };
-}
-
-function mergeTags(
-  existing: string[] | undefined,
-  incoming: string[] | undefined
-): string[] {
-  if (!existing?.length && !incoming?.length) return [];
-  if (!existing?.length) return [...(incoming ?? [])];
-  if (!incoming?.length) return [...existing];
-  return Array.from(new Set([...existing, ...incoming]));
+  return String(error);
 }
 
 export function readPairsFromFile(path: string): MarketPair[] {
+  const resolvedPath = resolve(path);
+  let raw: string;
   try {
-    const raw = readFileSync(resolve(path), 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isMarketPair);
-  } catch {
-    return [];
+    raw = readFileSync(resolvedPath, 'utf8');
+  } catch (error) {
+    throw new MarketCatalogError(`Failed to read market catalog file at ${resolvedPath}: ${formatUnknownError(error)}`, 'catalog_read_failed', {
+      cause: error
+    });
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new MarketCatalogError(
+      `Market catalog file at ${resolvedPath} is not valid JSON: ${formatUnknownError(error)}`,
+      'catalog_content_invalid',
+      { cause: error }
+    );
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new MarketCatalogError(`Market catalog file at ${resolvedPath} must contain a JSON array`, 'catalog_content_invalid');
+  }
+
+  return parsed.filter(isMarketPair);
 }
 
 function isMarketPair(value: unknown): value is MarketPair {
@@ -338,13 +122,21 @@ async function fetchMarketsPage(baseUrl: string, cursor?: string | null): Promis
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`CLOB markets fetch failed (${response.status}): ${text.slice(0, 200)}`);
+    throw new MarketCatalogError(`CLOB markets fetch failed (${response.status}): ${text.slice(0, 200)}`, 'markets_fetch_failed');
   }
-  const json = (await response.json()) as MarketsPage;
-  if (!Array.isArray(json.data)) {
-    throw new Error('Unexpected CLOB /markets response: missing data[]');
+  let json: unknown;
+  try {
+    json = await response.json();
+  } catch (error) {
+    throw new MarketCatalogError(`Unexpected CLOB /markets response: invalid JSON from ${url}`, 'markets_response_invalid', {
+      cause: error
+    });
   }
-  return json;
+  const page = json as Partial<MarketsPage>;
+  if (!Array.isArray(page.data)) {
+    throw new MarketCatalogError('Unexpected CLOB /markets response: missing data[]', 'markets_response_invalid');
+  }
+  return page as MarketsPage;
 }
 
 export async function findFirstOrderbookEnabledOffset(baseUrl: string, pageSize = 1000): Promise<number | null> {
@@ -395,33 +187,37 @@ function parsePositiveNumber(value: unknown): number | null {
   return null;
 }
 
-async function verifyOrderbooksWithOptions(
+function verifyOrderbooksWithOptions(
   clob: PolymarketClob,
   pair: MarketPair,
   options: { requireMetadata: boolean }
 ): Promise<boolean> {
-  try {
-    const [yesBook, noBook] = await Promise.all([
+  return Promise.all([
       clob.getOrderBook(pair.yesTokenId),
       clob.getOrderBook(pair.noTokenId)
-    ]);
+    ])
+    .then(([yesBook, noBook]: [RawOrderBookSnapshot, RawOrderBookSnapshot]) => {
+      const yesOk = Array.isArray(yesBook.asks) && yesBook.asks.length > 0;
+      const noOk = Array.isArray(noBook.asks) && noBook.asks.length > 0;
+      if (!(yesOk && noOk)) return false;
 
-    const yesOk = Array.isArray(yesBook.asks) && yesBook.asks.length > 0;
-    const noOk = Array.isArray(noBook.asks) && noBook.asks.length > 0;
-    if (!(yesOk && noOk)) return false;
+      if (options.requireMetadata) {
+        const yesTick = parsePositiveNumber(yesBook.tick_size);
+        const noTick = parsePositiveNumber(noBook.tick_size);
+        const yesMin = parsePositiveNumber(yesBook.min_order_size);
+        const noMin = parsePositiveNumber(noBook.min_order_size);
+        return Boolean(yesTick && noTick && yesMin && noMin);
+      }
 
-    if (options.requireMetadata) {
-      const yesTick = parsePositiveNumber(yesBook.tick_size);
-      const noTick = parsePositiveNumber(noBook.tick_size);
-      const yesMin = parsePositiveNumber(yesBook.min_order_size);
-      const noMin = parsePositiveNumber(noBook.min_order_size);
-      return Boolean(yesTick && noTick && yesMin && noMin);
-    }
-
-    return true;
-  } catch {
-    return false;
-  }
+      return true;
+    })
+    .catch((error: unknown) => {
+      throw new MarketCatalogError(
+        `Orderbook verification failed for market ${pair.marketId}: ${formatUnknownError(error)}`,
+        'orderbook_verification_failed',
+        { cause: error }
+      );
+    });
 }
 
 function ensureParentDirExists(_path: string): void {
@@ -431,7 +227,7 @@ function ensureParentDirExists(_path: string): void {
   }
 }
 
-export async function generateMarketCatalog(args: GeneratorArgs = {}): Promise<{
+export function generateMarketCatalog(args: GeneratorArgs = {}): Promise<{
   outPath: string;
   pairs: MarketPair[];
   pagesScanned: number;
@@ -439,12 +235,13 @@ export async function generateMarketCatalog(args: GeneratorArgs = {}): Promise<{
   merged: boolean;
   maxPairs: number;
 }> {
+  return (async () => {
   const env = loadEnvWithOverrides({
     TRADING_ENABLED: 'false',
     TRADING_MODE: 'off'
   });
 
-  const baseUrl = env.POLYMARKET_CLOB_BASE_URL.replace(/\/$/, '');
+  const baseUrl = resolvePolymarketClobBaseUrl(env.POLYMARKET_CLOB_BASE_URL).replace(/\/$/, '');
   const mode: GeneratorMode = args.mode ?? 'near-zero';
   const yesnoOnly = Boolean(args.yesnoOnly);
   const verifyBooks = args.verifyBooks ?? mode === 'near-zero';
@@ -466,22 +263,7 @@ export async function generateMarketCatalog(args: GeneratorArgs = {}): Promise<{
     return { outPath, pairs: finalPairs, pagesScanned: 0, mode, merged, maxPairs };
   }
 
-  const clob = new PolymarketClob({
-    baseUrl: env.POLYMARKET_CLOB_BASE_URL,
-    requestTimeoutMs: env.POLYMARKET_CLOB_TIMEOUT_MS,
-    rateLimitPerSecond: env.POLYMARKET_CLOB_RATE_LIMIT_PER_SEC,
-    rateLimitWindowMs: env.POLYMARKET_CLOB_RATE_LIMIT_WINDOW_MS,
-    orderPath: env.POLYMARKET_CLOB_ORDER_PATH,
-    batchOrderPath: env.POLYMARKET_CLOB_BATCH_ORDER_PATH,
-    cancelOrderPath: env.POLYMARKET_CLOB_CANCEL_ORDER_PATH,
-    cancelOrdersPath: env.POLYMARKET_CLOB_CANCEL_ORDERS_PATH,
-    cancelAllPath: env.POLYMARKET_CLOB_CANCEL_ALL_PATH,
-    cancelMarketOrdersPath: env.POLYMARKET_CLOB_CANCEL_MARKET_ORDERS_PATH,
-    activeOrdersPath: env.POLYMARKET_CLOB_ACTIVE_ORDERS_PATH,
-    retryMaxRetries: env.POLYMARKET_CLOB_RETRY_MAX_RETRIES,
-    retryBaseDelayMs: env.POLYMARKET_CLOB_RETRY_BASE_DELAY_MS,
-    retryMaxDelayMs: env.POLYMARKET_CLOB_RETRY_MAX_DELAY_MS
-  });
+  const clob = createPolymarketClobFromEnv(env);
 
   const incoming: MarketPair[] = [];
   const seenIncoming = new Set<string>();
@@ -535,7 +317,10 @@ export async function generateMarketCatalog(args: GeneratorArgs = {}): Promise<{
     cursor = page.next_cursor;
 
     if (pagesScanned > 500) {
-      throw new Error('Aborting: too many pages while scanning /markets (possible cursor loop)');
+      throw new MarketCatalogError(
+        'Aborting: too many pages while scanning /markets (possible cursor loop)',
+        'scan_aborted'
+      );
     }
   }
 
@@ -546,23 +331,7 @@ export async function generateMarketCatalog(args: GeneratorArgs = {}): Promise<{
   renameSync(tmpPath, outPath);
 
   return { outPath, pairs: finalPairs, pagesScanned, mode, merged, maxPairs };
-}
-
-function enrichPairWithMetadata(pair: MarketPair, market: RawMarket): MarketPair {
-  const question = normalizeOptionalString(market.question);
-  if (!question) return pair;
-  const tags = normalizeTagList(market.tags).filter(
-    (tag) => tag.toLowerCase() !== 'all'
-  );
-  return {
-    ...pair,
-    question,
-    ...(tags.length > 0 ? { tags } : {})
-  };
-}
-
-function hasRelationMetadata(pair: MarketPair): boolean {
-  return typeof pair.question === 'string' && pair.question.trim().length > 0;
+  })();
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {

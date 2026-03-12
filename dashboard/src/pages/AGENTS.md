@@ -12,4 +12,5 @@ Applies to `dashboard/src/pages/`.
 - Preserve loading/error states for all network calls.
 
 ## Tests
-- `npm run test:e2e` (from `dashboard/`).
+- `npm run test -- tests/unit/dashboard-pages.test.ts tests/unit/dashboard-risk-pages.test.ts tests/unit/dashboard-decision-sections.test.ts`
+- `npm --prefix dashboard run test:e2e`

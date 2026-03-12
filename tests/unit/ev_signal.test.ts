@@ -1,15 +1,16 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ScannerAgent } from '../../src/agents/scanner/ScannerAgent.js';
 import { MarketAllowlist } from '../../src/domain/allowlist.js';
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { loadEnv } from '../../src/config/env.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import type { OrderBookState } from '../../src/domain/orderbook.js';
 import type { MarketPair } from '../../src/domain/market.js';
 
 const DEFAULT_ENV = loadEnv({});
+let messageBus = createMessageBus();
 
 const basePolicy = {
   ...DEFAULT_TRADE_POLICY,
@@ -63,6 +64,10 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+beforeEach(() => {
+  messageBus = createMessageBus();
+});
+
 describe('EV signal path', () => {
   it('selects EV opportunity with high-confidence signal', () => {
     vi.useFakeTimers();
@@ -73,7 +78,7 @@ describe('EV signal path', () => {
     const allowlist = new MarketAllowlist({ autoResume: true });
     allowlist.allow('m1');
 
-    const agent = new ScannerAgent(basePolicy, allowlist, { tradingMode: 'paper', metrics });
+    const agent = new ScannerAgent(basePolicy, allowlist, { tradingMode: 'paper', metrics, messageBus });
 
     const pair: MarketPair = { marketId: 'm1', yesTokenId: 'y1', noTokenId: 'n1' };
     const yesBook = makeBook('y1', 0.4, 0.39, now);
@@ -104,7 +109,7 @@ describe('EV signal path', () => {
     allowlist.allow('m2');
 
     const policy = { ...basePolicy, evConfidenceMin: 0.8 };
-    const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics });
+    const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics, messageBus });
 
     const pair: MarketPair = { marketId: 'm2', yesTokenId: 'y2', noTokenId: 'n2' };
     const yesBook = makeBook('y2', 0.45, 0.44, now);
@@ -141,7 +146,7 @@ describe('EV signal path', () => {
       evModelMode: 'llm_only' as const,
       evCalibrationMethod: 'isotonic' as const
     };
-    const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics });
+    const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics, messageBus });
 
     const pair: MarketPair = { marketId: 'm4', yesTokenId: 'y4', noTokenId: 'n4' };
     const yesBook = makeBook('y4', 0.5, 0.49, now);
@@ -172,7 +177,7 @@ describe('EV signal path', () => {
     allowlist.allow('m3');
 
     const policy = { ...basePolicy, evCooldownSeconds: 60 };
-    const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics });
+    const agent = new ScannerAgent(policy, allowlist, { tradingMode: 'paper', metrics, messageBus });
 
     const pair: MarketPair = { marketId: 'm3', yesTokenId: 'y3', noTokenId: 'n3' };
     const yesBook = makeBook('y3', 0.42, 0.41, now);

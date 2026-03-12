@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -9,11 +9,18 @@ import { loadLLMConfig } from '../../src/config/llm.js';
 import { RiskAdvisor } from '../../src/agents/risk/RiskAdvisor.js';
 import { MockLLMClient } from '../../src/services/llm/MockLLMClient.js';
 import { EventStore } from '../../src/core/EventStore.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import type { LLMCallResult } from '../../src/services/llm/types.js';
+import { MetricsStore } from '../../src/telemetry/metrics.js';
+
+let messageBus = createMessageBus();
 
 describe('RiskAdvisor', () => {
   const paths: string[] = [];
+
+  beforeEach(() => {
+    messageBus = createMessageBus();
+  });
 
   afterEach(() => {
     for (const path of paths.splice(0, paths.length)) {
@@ -34,6 +41,7 @@ describe('RiskAdvisor', () => {
       llmConfig,
       llmClient,
       promptVersion: 'test-v1',
+      messageBus,
       policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
     });
 
@@ -51,6 +59,72 @@ describe('RiskAdvisor', () => {
     expect(result.recommendedSizeRaw).toBeNull();
   });
 
+  it('throws when required LLM advisor context fields are missing', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_RISK_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+    const llmClient = new MockLLMClient({
+      defaultProviderId: 'opencode-zen',
+      defaultBaseUrl: llmConfig.providers['opencode-zen'].baseUrl,
+      defaultTimeoutMs: llmConfig.agents.RiskAgent.timeoutMs
+    });
+    const input = {
+      opportunityId: 'opp-missing',
+      marketId: 'm1',
+      minSize: 1,
+      deterministicSize: 5,
+      constraints: {}
+    };
+
+    type PrivateRiskAdvisor = {
+      resolveLlmConfig: () => unknown;
+      resolveLlmClient: () => unknown;
+      resolvePromptVersion: () => string;
+      resolvePolicyHashes: () => unknown;
+      recommendSize: (args: typeof input) => Promise<unknown>;
+    };
+
+    await expect(
+      (new RiskAdvisor({
+        llmClient,
+        promptVersion: 'test-v1',
+        messageBus,
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }) as unknown as PrivateRiskAdvisor).recommendSize(input)
+    ).rejects.toThrow('RiskAdvisor requires config');
+
+    expect(() =>
+      (new RiskAdvisor({
+        llmConfig,
+        promptVersion: 'test-v1',
+        messageBus,
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }) as unknown as PrivateRiskAdvisor).resolveLlmClient()
+    ).toThrow('RiskAdvisor requires client');
+
+    expect(() =>
+      (new RiskAdvisor({
+        llmConfig,
+        llmClient,
+        messageBus,
+        policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+      }) as unknown as PrivateRiskAdvisor).resolvePromptVersion()
+    ).toThrow('RiskAdvisor requires promptVersion');
+
+    expect(() =>
+      (new RiskAdvisor({
+        llmConfig,
+        llmClient,
+        promptVersion: 'test-v1',
+        messageBus
+      }) as unknown as PrivateRiskAdvisor).resolvePolicyHashes()
+    ).toThrow('RiskAdvisor requires policyHashes');
+  });
+
   it('clamps non-finite and negative inputs to 0', async () => {
     const env = loadEnv({});
     const llmConfig = loadLLMConfig(env);
@@ -64,6 +138,7 @@ describe('RiskAdvisor', () => {
       llmConfig,
       llmClient,
       promptVersion: 'test-v1',
+      messageBus,
       policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
     });
 
@@ -103,6 +178,7 @@ describe('RiskAdvisor', () => {
       llmConfig,
       llmClient,
       promptVersion: 'test-v1',
+      messageBus,
       policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
     });
 
@@ -142,6 +218,7 @@ describe('RiskAdvisor', () => {
       llmConfig,
       llmClient,
       promptVersion: 'test-v1',
+      messageBus,
       policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
     });
 
@@ -278,6 +355,7 @@ describe('RiskAdvisor', () => {
       llmClient,
       promptVersion: 'test-v1',
       policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' },
+      messageBus,
       eventStore: store
     });
 
@@ -294,6 +372,58 @@ describe('RiskAdvisor', () => {
     expect(rows[0]?.agent).toBe('RiskAgent');
 
     store.close();
+  });
+
+  it('records shadow decisions but keeps the deterministic size in shadow mode', async () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_RISK_MODE: 'shadow',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+    const metrics = new MetricsStore(10);
+    const fixture = JSON.parse(readFileSync('tests/fixtures/llm/risk-recommend-size.json', 'utf8'));
+    const llmClient = new MockLLMClient({
+      defaultProviderId: 'opencode-zen',
+      defaultBaseUrl: llmConfig.providers['opencode-zen'].baseUrl,
+      defaultTimeoutMs: llmConfig.agents.RiskAgent.timeoutMs
+    });
+    llmClient.enqueue('RiskAgent', {
+      status: 'success',
+      endpoint: 'chat.completions',
+      model: llmConfig.agents.RiskAgent.model,
+      outputText: JSON.stringify({ ...fixture, recommended_size: 12, reason: 'shadow-ok', confidence: 0.8 })
+    });
+
+    const advisor = new RiskAdvisor({
+      llmConfig,
+      llmClient,
+      metrics,
+      promptVersion: 'test-v1',
+      policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' }
+    });
+
+    const result = await advisor.recommendSize({
+      opportunityId: 'opp-shadow',
+      marketId: 'm-shadow',
+      minSize: 10,
+      deterministicSize: 50,
+      constraints: { binding: 'depth' }
+    });
+
+    expect(result.recommendedSizeRaw).toBe(12);
+    expect(result.clampedSize).toBe(50);
+    expect(result.reason).toBe('shadow-ok');
+    expect(metrics.recent('shadow_decision', 1)[0]?.data).toMatchObject({
+      agent: 'RiskAgent',
+      opportunityId: 'opp-shadow',
+      marketId: 'm-shadow',
+      deterministicSize: 50,
+      recommendedSizeRaw: 12,
+      clampedSize: 12,
+      confidence: 0.8
+    });
   });
 
   it('emits llm:decision with mapped status and usage', async () => {
@@ -350,6 +480,7 @@ describe('RiskAdvisor', () => {
       llmClient,
       promptVersion: 'test-v1',
       policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' },
+      messageBus,
       eventStore: store
     });
 
@@ -451,5 +582,74 @@ describe('RiskAdvisor', () => {
     messageBus.off('llm:decision', handler);
 
     expect(emitted).toBe(0);
+  });
+
+  it('falls back to advisor prompt metadata when persistDecision is called without an LLM context', () => {
+    const env = loadEnv({
+      LLM_ENABLED: 'true',
+      LLM_RISK_MODE: 'advisory',
+      LLM_PRIMARY_API_KEY: 'zen-key',
+      LLM_FALLBACK_API_KEY: 'or-key'
+    });
+    const llmConfig = loadLLMConfig(env);
+    const llmClient = new MockLLMClient({
+      defaultProviderId: 'opencode-zen',
+      defaultBaseUrl: llmConfig.providers['opencode-zen'].baseUrl,
+      defaultTimeoutMs: llmConfig.agents.RiskAgent.timeoutMs
+    });
+
+    const advisor = new RiskAdvisor({
+      llmConfig,
+      llmClient,
+      promptVersion: 'fallback-v1',
+      policyHashes: { tradePolicyHash: 'policy-hash', riskConfigHash: 'risk-hash' },
+      messageBus
+    });
+
+    const call = {
+      status: 'success',
+      providerId: 'opencode-zen',
+      baseUrl: llmConfig.providers['opencode-zen'].baseUrl,
+      endpoint: 'chat.completions',
+      model: llmConfig.agents.RiskAgent.model,
+      outputText: '{"recommended_size":10,"reason":"ok","confidence":0.5}',
+      startedAtMs: 0,
+      latencyMs: 1,
+      timeoutMs: 1,
+      maxRetries: 0,
+      attempt: 1
+    } satisfies LLMCallResult;
+
+    let emitted = 0;
+    const handler = () => {
+      emitted += 1;
+    };
+    messageBus.on('llm:decision', handler);
+
+    (
+      advisor as unknown as {
+        persistDecision: (args: {
+          opportunityId: string;
+          mode: 'disabled' | 'shadow' | 'advisory';
+          baseline: unknown;
+          output: { recommended_size: number; reason: string; confidence: number };
+          call: LLMCallResult;
+          promptEnvelope: unknown;
+          nowMs: number;
+        }) => void;
+      }
+    ).persistDecision({
+      opportunityId: 'opp-fallback-metadata',
+      mode: 'advisory',
+      baseline: { deterministic_size: 10 },
+      output: { recommended_size: 10, reason: 'ok', confidence: 0.5 },
+      call,
+      promptEnvelope: { task: 'recommend_size' },
+      nowMs: 2
+    });
+
+    messageBus.off('llm:decision', handler);
+
+    expect(emitted).toBe(1);
   });
 });

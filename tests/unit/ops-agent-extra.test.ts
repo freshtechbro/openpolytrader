@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 import { OpsAgent } from '../../src/agents/ops/OpsAgent.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import { loadEnv } from '../../src/config/env.js';
 
 const DEFAULT_ENV = loadEnv({});
@@ -30,9 +30,11 @@ describe('OpsAgent runChecks', () => {
 
   it('emits alerts when degraded', async () => {
     const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    const messageBus = createMessageBus();
     const agent = new OpsAgent(
       {
         intervalMs: 1000,
+        messageBus,
         checks: [
           { name: 'fail', check: async () => ({ ok: false, error: 'boom' }) }
         ]
@@ -229,7 +231,8 @@ describe('OpsAgent runChecks', () => {
 
   it('reuses an existing outlier handler when already set', () => {
     const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
-    const agent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const messageBus = createMessageBus();
+    const agent = new OpsAgent({ intervalMs: 1000, checks: [], messageBus }, metrics);
     const existingHandler = vi.fn();
 
     messageBus.on('marketdata:outlier', existingHandler);
@@ -248,7 +251,8 @@ describe('OpsAgent runChecks', () => {
 
   it('records outlier telemetry with the default outlier handler', () => {
     const metrics = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
-    const agent = new OpsAgent({ intervalMs: 1000, checks: [] }, metrics);
+    const messageBus = createMessageBus();
+    const agent = new OpsAgent({ intervalMs: 1000, checks: [], messageBus }, metrics);
 
     try {
       agent.start();

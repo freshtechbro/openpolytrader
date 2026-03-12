@@ -16,11 +16,11 @@ Applies to `src/agents/` and all agent subdirectories.
 - `fw_basket`: multi-market FW basket execution with bounded basket size and mode (`sequential_failfast` or `batch_best_effort`).
 
 ## Rules
-- Read the root `AGENTS.md` and the nearest local `AGENTS.md` before changes.
+- Read the repo-root `agents.md` plus the nearest local `AGENTS.md` before changes.
 - Do not bypass risk gates or execution safety checks.
 - Maintain event emission contracts (`opportunity:detected`, `risk:approved`, `execution:outcome`, `execution:fill`).
 - Avoid `as any` or unsafe casts; prefer explicit types and guards.
 
 ## Tests
-- Use targeted tests under `tests/unit/*agent*` when changing agent behavior.
+- Use targeted suites under `tests/unit/` for the agent family you changed (`execution*`, `risk*`, `scanner*`, `signal*`, `portfolio*`, `learning*`, `marketdata*`, `fw-*`, `ops-agent*`).
 - Run full `npm run test:coverage` when touching multiple agents.

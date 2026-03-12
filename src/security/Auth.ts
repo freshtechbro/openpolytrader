@@ -2,7 +2,11 @@ import { timingSafeEqual } from 'node:crypto';
 
 import type { FastifyRequest } from 'fastify';
 
-export function readOpsToken(request: FastifyRequest): string | undefined {
+interface AuthorizationOptions {
+  allowQueryToken?: boolean;
+}
+
+export function readOpsHeaderToken(request: FastifyRequest): string | undefined {
   const header = request.headers.authorization;
   if (typeof header === 'string') {
     const [scheme, value] = header.split(' ');
@@ -14,6 +18,10 @@ export function readOpsToken(request: FastifyRequest): string | undefined {
     return headerToken.trim();
   }
 
+  return undefined;
+}
+
+export function readOpsQueryToken(request: FastifyRequest): string | undefined {
   const queryToken = (request.query as Record<string, unknown> | undefined)?.token;
   if (typeof queryToken === 'string' && queryToken.trim()) {
     return queryToken.trim();
@@ -22,17 +30,27 @@ export function readOpsToken(request: FastifyRequest): string | undefined {
   return undefined;
 }
 
+export function readOpsToken(request: FastifyRequest): string | undefined {
+  return readOpsHeaderToken(request) ?? readOpsQueryToken(request);
+}
+
 export function tokensMatch(token: string, expected: string): boolean {
   if (token.length !== expected.length) return false;
 
   return timingSafeEqual(Buffer.from(token), Buffer.from(expected));
 }
 
-export function isAuthorized(request: FastifyRequest, expectedToken?: string): boolean {
+export function isAuthorized(
+  request: FastifyRequest,
+  expectedToken?: string,
+  options: AuthorizationOptions = {}
+): boolean {
   const expected = expectedToken?.trim();
   if (!expected) return true;
 
-  const token = readOpsToken(request);
+  const token =
+    readOpsHeaderToken(request) ??
+    (options.allowQueryToken ? readOpsQueryToken(request) : undefined);
   if (!token) return false;
 
   return tokensMatch(token, expected);

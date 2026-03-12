@@ -1,19 +1,7 @@
-import { test, expect } from '@playwright/test';
+import { expect, test } from './fixtures';
 
-import { startDashboardServer, type DashboardTestServer } from './server';
-
-let serverHandle: DashboardTestServer;
-
-test.beforeAll(async () => {
-  serverHandle = await startDashboardServer();
-});
-
-test.afterAll(async () => {
-  await serverHandle.close();
-});
-
-test('public routes render and link to ops', async ({ page }) => {
-  await page.goto(serverHandle.baseUrl);
+test('public routes render and link to ops', async ({ page, dashboardServer }) => {
+  await page.goto(dashboardServer.baseUrl);
   await expect(page.getByRole('heading', { name: 'Operate a disciplined trading pipeline, not a blind bot.' })).toBeVisible();
 
   await page.getByRole('link', { name: 'Product' }).click();
@@ -28,6 +16,6 @@ test('public routes render and link to ops', async ({ page }) => {
   await page.getByRole('link', { name: 'Get Started' }).click();
   await expect(page.getByRole('heading', { name: 'Run local paper mode first.' })).toBeVisible();
 
-  await page.goto(`${serverHandle.baseUrl}/ops/overview`);
+  await page.goto(`${dashboardServer.baseUrl}/ops/overview`);
   await expect(page.getByText('OpenPolyTrader Ops')).toBeVisible();
 });

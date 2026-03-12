@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
@@ -6,13 +6,18 @@ import { readFileSync } from 'node:fs';
 
 import { LearningAgent } from '../../src/agents/learning/LearningAgent.js';
 import { EventStore } from '../../src/core/EventStore.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import { loadEnv } from '../../src/config/env.js';
 import { loadLLMConfig } from '../../src/config/llm.js';
 import { MockLLMClient } from '../../src/services/llm/MockLLMClient.js';
 
 describe('LearningAgent online loop', () => {
   const paths: string[] = [];
+  let messageBus = createMessageBus();
+
+  beforeEach(() => {
+    messageBus = createMessageBus();
+  });
 
   afterEach(() => {
     for (const path of paths.splice(0, paths.length)) {
@@ -50,6 +55,7 @@ describe('LearningAgent online loop', () => {
     const agent = new LearningAgent(
       {
         enabled: true,
+        messageBus,
         llm: {
           config: llmConfig,
           client: llmClient,
@@ -115,6 +121,7 @@ describe('LearningAgent online loop', () => {
     const agent = new LearningAgent(
       {
         enabled: true,
+        messageBus,
         llm: {
           config: llmConfig,
           client: llmClient,
@@ -161,6 +168,7 @@ describe('LearningAgent online loop', () => {
     const agent = new LearningAgent(
       {
         enabled: true,
+        messageBus,
         llm: {
           config: llmConfig,
           client: {
@@ -212,14 +220,14 @@ describe('LearningAgent online loop', () => {
 
     const store = new EventStore({ dbPath });
 
-    const agent1 = new LearningAgent({ enabled: true }, store);
+    const agent1 = new LearningAgent({ enabled: true, messageBus }, store);
     agent1.start();
     messageBus.emit('opportunity:detected', {
       opportunity: { id: 'opp-1', marketId: 'market_123', edge: 0.1 }
     });
     agent1.stop();
 
-    const agent2 = new LearningAgent({ enabled: true }, store);
+    const agent2 = new LearningAgent({ enabled: true, messageBus }, store);
     agent2.start();
     messageBus.emit('opportunity:detected', {
       opportunity: { id: 'opp-2', marketId: 'market_123', edge: 0.3 }
@@ -283,7 +291,7 @@ describe('LearningAgent online loop', () => {
       metadata: { agent: 'ExecutionAgent' }
     });
 
-    const agent = new LearningAgent({ enabled: true }, store);
+    const agent = new LearningAgent({ enabled: true, messageBus }, store);
     agent.start();
     agent.stop();
 
@@ -344,7 +352,7 @@ describe('LearningAgent online loop', () => {
       metadata: { agent: 'LearningAgent' }
     });
 
-    const agent = new LearningAgent({ enabled: true, statsRetentionMs: 60 * 60 * 1000 }, store);
+    const agent = new LearningAgent({ enabled: true, statsRetentionMs: 60 * 60 * 1000, messageBus }, store);
     agent.start();
     agent.stop();
 
@@ -387,6 +395,7 @@ describe('LearningAgent online loop', () => {
       {
         enabled: true,
         promptTopNMarkets: 2,
+        messageBus,
         llm: {
           config: llmConfig,
           client: llmClient,

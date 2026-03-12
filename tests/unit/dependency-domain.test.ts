@@ -147,6 +147,26 @@ describe('dependency domain helpers', () => {
     expect(partitionEdges.some((edge) => edge.relationType === 'partition')).toBe(true);
   });
 
+  it('does not classify uncategorized partition prompts as partitions', () => {
+    const now = Date.now();
+    const edges = extractDeterministicDependencyEdges(
+      [
+        {
+          marketId: 'm-5',
+          question: 'Which party wins governor race?'
+        },
+        {
+          marketId: 'm-6',
+          question: 'Who wins senate race?'
+        }
+      ],
+      now,
+      { source: 'deterministic', evidencePrefix: 'test' }
+    );
+
+    expect(edges.some((edge) => edge.relationType === 'partition')).toBe(false);
+  });
+
   it('normalizes valid catalog entries and rejects malformed records', () => {
     const malformed = normalizeRelationCatalogEntry({
       marketA: 'a',

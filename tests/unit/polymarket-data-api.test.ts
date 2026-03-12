@@ -37,6 +37,17 @@ afterEach(() => {
 });
 
 describe('PolymarketDataApi', () => {
+  it('falls back to the canonical data-api base URL when baseUrl is omitted', async () => {
+    const fetchSpy = stubFetch([]);
+    const { baseUrl: _ignored, ...configWithoutBaseUrl } = BASE_CONFIG;
+    const api = new PolymarketDataApi(configWithoutBaseUrl);
+
+    await api.getPositions({ user: '0xabc' });
+
+    const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://data-api.polymarket.com/positions?user=0xabc');
+  });
+
   it('fetches and normalizes positions', async () => {
     const fetchSpy = stubFetch([
       {

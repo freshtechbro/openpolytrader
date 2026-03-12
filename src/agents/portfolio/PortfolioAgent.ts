@@ -12,22 +12,29 @@ import type {
 } from '../../domain/portfolio.js';
 import type { IncidentTracker } from '../../services/IncidentTracker.js';
 import type { VenueOpenOrder, VenuePosition } from '../../domain/venue.js';
-import { messageBus } from '../../core/MessageBus.js';
+import { resolveMessageBus, type MessageBus } from '../../core/MessageBus.js';
 import type { EventStore } from '../../core/EventStore.js';
+import type { RuntimeEventMap } from '../../core/runtimeEvents.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import type { LLMConfig as AppLLMConfig } from '../../config/llm.js';
-import { PortfolioAnomalySchema } from '../../domain/llm.js';
-import { logLLMDecision } from '../../services/llm/LLMDecisionLogger.js';
-import type { LLMCallResult, LLMRequest } from '../../services/llm/types.js';
-import { safeParseJSON } from '../../utils/serialization.js';
-
-export interface PortfolioAgentOptions {
+import type { LLMClientPort } from '../../services/llm/types.js';
+import { analyzePortfolioAnomaly } from './PortfolioAnomalyDetector.js';
+import {
+  actualToDetail,
+  expectedFillKey,
+  expectedToDetail,
+  isPriceWithinTolerance,
+  resolveExpectedFillCandidates,
+  type ExpectedFillResolution
+} from './PortfolioExpectedFill.js';
+interface PortfolioAgentOptions {
   tokenToMarketId?: Record<string, string>;
+  messageBus?: MessageBus<RuntimeEventMap>;
   metrics?: MetricsStore;
   eventStore?: EventStore;
   llm?: {
     config: AppLLMConfig;
-    client: { call: (agent: 'PortfolioAgent', request: LLMRequest) => Promise<LLMCallResult> };
+    client: LLMClientPort<'PortfolioAgent'>;
     promptVersion: string;
     policyHashes: { tradePolicyHash: string; riskConfigHash: string };
   };
@@ -39,48 +46,48 @@ export class PortfolioAgent {
   private positionUpdatedAt = new Map<string, number>();
   private expectedFills = new Map<string, ExpectedFill>();
   private tokenToMarketId: Map<string, string>;
+  private messageBus: MessageBus<RuntimeEventMap>;
   private metrics?: MetricsStore;
   private store?: EventStore;
   private llm?: NonNullable<PortfolioAgentOptions['llm']>;
-
   constructor(
     private totalCapital: number,
     private incidentTracker?: IncidentTracker,
     options?: PortfolioAgentOptions
   ) {
     this.tokenToMarketId = new Map(Object.entries(options?.tokenToMarketId ?? {}));
+    this.messageBus = resolveMessageBus<RuntimeEventMap>(options?.messageBus, 'PortfolioAgent');
     this.metrics = options?.metrics;
     this.store = options?.eventStore;
     this.llm = options?.llm;
   }
 
+  updateTokenToMarketId(tokenToMarketId: Readonly<Record<string, string>>): void {
+    this.tokenToMarketId = new Map(Object.entries(tokenToMarketId));
+    for (const position of this.positions.values()) {
+      if (!position.marketId) {
+        position.marketId = this.tokenToMarketId.get(position.tokenId);
+      }
+    }
+  }
+
   expectFill(fill: ExpectedFill): void {
     this.expectedFills.set(expectedFillKey(fill.opportunityId, fill.tokenId), fill);
   }
-
   private resolveExpectedFill(actual: ObservedFill): ExpectedFillResolution {
-    const directKey =
-      actual.opportunityId ? expectedFillKey(actual.opportunityId, actual.tokenId) : null;
+    const directKey = actual.opportunityId ? expectedFillKey(actual.opportunityId, actual.tokenId) : null;
     if (directKey) {
       const direct = this.expectedFills.get(directKey);
       if (direct) return { expected: direct, key: directKey };
     }
-
     const candidates = resolveExpectedFillCandidates(this.expectedFills.entries(), actual);
-    if (candidates.length === 1) {
-      return { expected: candidates[0].expected, key: candidates[0].key };
-    }
+    if (candidates.length === 1) return { expected: candidates[0].expected, key: candidates[0].key };
     if (candidates.length > 1) {
       candidates.sort((a, b) => b.expected.timestamp - a.expected.timestamp);
-      return {
-        expected: candidates[0].expected,
-        key: candidates[0].key,
-        ambiguous: candidates.length
-      };
+      return { expected: candidates[0].expected, key: candidates[0].key, ambiguous: candidates.length };
     }
     return null;
   }
-
   private recordFillMismatchIncident(
     actual: ObservedFill,
     expected: ExpectedFill | undefined,
@@ -88,7 +95,6 @@ export class PortfolioAgent {
   ): void {
     const marketId = actual.marketId;
     if (!this.incidentTracker || !marketId) return;
-
     this.incidentTracker.record({
       marketId,
       reason: 'fill_mismatch',
@@ -101,14 +107,12 @@ export class PortfolioAgent {
       }
     });
   }
-
   applyFillWithReconciliation(
     actual: ObservedFill,
     options?: Partial<FillReconciliationOptions>
   ): ReconciliationResult {
     const resolved = this.resolveExpectedFill(actual);
     const issues: ReconciliationIssue[] = [];
-
     if (!resolved) {
       issues.push({
         type: 'unexpected_fill',
@@ -120,7 +124,6 @@ export class PortfolioAgent {
       this.recordFillMismatchIncident(actual, undefined, issues);
       return { ok: false, issues };
     }
-
     const { expected, key, ambiguous } = resolved;
     if (ambiguous) {
       issues.push({
@@ -130,10 +133,8 @@ export class PortfolioAgent {
         expected: { candidateCount: ambiguous }
       });
     }
-
     const sizeTolerance = Math.max(options?.sizeTolerance ?? 0, 0);
     const priceTolerance = Math.max(options?.priceTolerance ?? 0, 0);
-
     if (Math.abs(actual.size - expected.expectedSize) > sizeTolerance) {
       issues.push({
         type: 'size_mismatch',
@@ -143,7 +144,6 @@ export class PortfolioAgent {
         actual: actualToDetail(actual)
       });
     }
-
     if (!isPriceWithinTolerance(expected, actual, priceTolerance)) {
       issues.push({
         type: 'price_mismatch',
@@ -153,32 +153,23 @@ export class PortfolioAgent {
         actual: actualToDetail(actual)
       });
     }
-
     this.expectedFills.delete(key);
     this.applyFill(actual);
-
     if (issues.length > 0) {
       this.recordFillMismatchIncident(actual, expected, issues);
       return { ok: false, expected, issues };
     }
-
     return { ok: true, expected, issues };
   }
-
   checkStalePending(maxAgeMs: number): ExpectedFill[] {
     const bounded = Math.max(maxAgeMs, 0);
     const nowMs = Date.now();
     const stale: ExpectedFill[] = [];
-
     for (const fill of this.expectedFills.values()) {
-      if (nowMs - fill.timestamp > bounded) {
-        stale.push(fill);
-      }
+      if (nowMs - fill.timestamp > bounded) stale.push(fill);
     }
-
     return stale;
   }
-
   applyFill(fill: FillUpdate): void {
     const nowMs = Date.now();
     const position = this.positions.get(fill.tokenId);
@@ -195,34 +186,27 @@ export class PortfolioAgent {
         averagePrice: fill.price,
         side: fill.side
       };
-
       if (created.size !== 0) {
         this.positions.set(fill.tokenId, created);
         this.positionUpdatedAt.set(fill.tokenId, nowMs);
       }
     } else {
-      if (marketId && !position.marketId) {
-        position.marketId = marketId;
-      }
+      if (marketId && !position.marketId) position.marketId = marketId;
       const totalNotional = position.averagePrice * existingSize + fill.price * signedSize;
       position.size = newSize;
       position.averagePrice = newSize === 0 ? 0 : totalNotional / newSize;
       position.side = newSize >= 0 ? 'BUY' : 'SELL';
-
       if (position.size === 0) {
         this.positions.delete(fill.tokenId);
         this.positionUpdatedAt.delete(fill.tokenId);
         return;
       }
-
       this.positionUpdatedAt.set(fill.tokenId, nowMs);
     }
   }
-
   applyPnL(delta: number): void {
     this.dailyPnL += delta;
   }
-
   clearMarketExposure(marketId: string): void {
     for (const [tokenId, position] of this.positions.entries()) {
       if (position.marketId === marketId) {
@@ -231,26 +215,17 @@ export class PortfolioAgent {
       }
     }
   }
-
   reduceMarketExposure(marketId: string, amount: number): void {
     const delta = Math.max(amount, 0);
     if (delta <= 0) return;
-
     const positions = Array.from(this.positions.values()).filter(
       (position) => position.marketId === marketId && position.size !== 0
     );
-
-    const total = positions.reduce(
-      (sum, position) => sum + Math.abs(position.size) * position.averagePrice,
-      0
-    );
-
+    const total = positions.reduce((sum, position) => sum + Math.abs(position.size) * position.averagePrice, 0);
     if (total <= 0) return;
-
     const target = Math.max(total - delta, 0);
     const scale = target / total;
     const nowMs = Date.now();
-
     for (const position of positions) {
       const scaledSize = position.size * scale;
       position.size = Math.abs(scaledSize) < 1e-12 ? 0 : scaledSize;
@@ -258,7 +233,6 @@ export class PortfolioAgent {
       this.positionUpdatedAt.set(position.tokenId, nowMs);
     }
   }
-
   applyUnwind(params: {
     marketId: string;
     tokenId: string;
@@ -280,19 +254,13 @@ export class PortfolioAgent {
       size: params.size,
       price: params.unwindPrice
     };
-
     this.applyFill(buyFill);
     this.applyFill(sellFill);
     this.applyPnL((params.unwindPrice - params.entryPrice) * params.size);
   }
-
   snapshot(): PortfolioSnapshot {
     const nowMs = Date.now();
-    const deployed = Array.from(this.positions.values()).reduce(
-      (sum, position) => sum + Math.abs(position.size) * position.averagePrice,
-      0
-    );
-
+    const deployed = Array.from(this.positions.values()).reduce((sum, position) => sum + Math.abs(position.size) * position.averagePrice, 0);
     const marketExposure: Record<string, number> = {};
     for (const position of this.positions.values()) {
       if (!position.marketId || position.size === 0) continue;
@@ -300,7 +268,6 @@ export class PortfolioAgent {
         (marketExposure[position.marketId] ?? 0) +
         Math.abs(position.size) * position.averagePrice;
     }
-
     const positionsByMarket = new Map<string, Position[]>();
     for (const position of this.positions.values()) {
       if (position.size === 0) continue;
@@ -309,31 +276,26 @@ export class PortfolioAgent {
       bucket.push(position);
       positionsByMarket.set(marketKey, bucket);
     }
-
     const openTokenIds = new Set<string>();
     for (const [marketId, positions] of positionsByMarket.entries()) {
       if (marketId === 'unknown') {
         for (const position of positions) openTokenIds.add(position.tokenId);
         continue;
       }
-
       if (positions.length < 2) {
         for (const position of positions) openTokenIds.add(position.tokenId);
         continue;
       }
-
       const reference = positions[0].size;
       const referenceSign = Math.sign(reference);
       const completeSet = positions.every((position) => {
         if (Math.sign(position.size) !== referenceSign) return false;
         return Math.abs(position.size - reference) <= 1e-12;
       });
-
       if (!completeSet) {
         for (const position of positions) openTokenIds.add(position.tokenId);
       }
     }
-
     let oldestOpenPositionMs: number | null = null;
     for (const tokenId of openTokenIds) {
       const updatedAt = this.positionUpdatedAt.get(tokenId) ?? nowMs;
@@ -341,9 +303,7 @@ export class PortfolioAgent {
         oldestOpenPositionMs = updatedAt;
       }
     }
-    const openInventoryAgeMs =
-      oldestOpenPositionMs === null ? 0 : Math.max(0, nowMs - oldestOpenPositionMs);
-
+    const openInventoryAgeMs = oldestOpenPositionMs === null ? 0 : Math.max(0, nowMs - oldestOpenPositionMs);
     return {
       totalCapital: this.totalCapital,
       availableCapital: Math.max(this.totalCapital - deployed, 0),
@@ -352,7 +312,6 @@ export class PortfolioAgent {
       openInventoryAgeMs
     };
   }
-
   reconcileWithVenue(input: {
     openOrders?: VenueOpenOrder[];
     internalOpenOrders?: Array<{ orderId: string; marketId?: string; tokenId?: string }>;
@@ -363,19 +322,16 @@ export class PortfolioAgent {
     const nowMs = input.nowMs ?? Date.now();
     const tolerance = Math.max(input.positionSizeTolerance ?? 0, 0);
     const issues: VenueReconciliationIssue[] = [];
-
     const venueOrders = new Map<string, VenueOpenOrder>();
     for (const order of input.openOrders ?? []) {
       if (!order.orderId) continue;
       venueOrders.set(order.orderId, order);
     }
-
     const internalOrders = new Map<string, { marketId?: string; tokenId?: string }>();
     for (const order of input.internalOpenOrders ?? []) {
       if (!order.orderId) continue;
       internalOrders.set(order.orderId, { marketId: order.marketId, tokenId: order.tokenId });
     }
-
     for (const [orderId, meta] of internalOrders.entries()) {
       if (!venueOrders.has(orderId)) {
         issues.push({
@@ -387,7 +343,6 @@ export class PortfolioAgent {
         });
       }
     }
-
     for (const [orderId, order] of venueOrders.entries()) {
       if (!internalOrders.has(orderId)) {
         issues.push({
@@ -399,13 +354,11 @@ export class PortfolioAgent {
         });
       }
     }
-
     const venuePositions = new Map<string, VenuePosition>();
     for (const position of input.positions ?? []) {
       if (!position.tokenId) continue;
       venuePositions.set(position.tokenId, position);
     }
-
     for (const position of this.positions.values()) {
       if (!position.tokenId || Math.abs(position.size) <= tolerance) continue;
       const venue = venuePositions.get(position.tokenId);
@@ -423,7 +376,6 @@ export class PortfolioAgent {
         });
         continue;
       }
-
       if (Math.abs(position.size - venue.size) > tolerance) {
         issues.push({
           type: 'position_size_mismatch',
@@ -444,11 +396,9 @@ export class PortfolioAgent {
         });
       }
     }
-
     for (const position of venuePositions.values()) {
       if (!position.tokenId || Math.abs(position.size) <= tolerance) continue;
       if (this.positions.has(position.tokenId)) continue;
-
       issues.push({
         type: 'extra_position',
         marketId: position.marketId,
@@ -461,7 +411,6 @@ export class PortfolioAgent {
         }
       });
     }
-
     if (issues.length > 0 && this.incidentTracker) {
       const grouped = new Map<string, VenueReconciliationIssue[]>();
       for (const issue of issues) {
@@ -470,7 +419,6 @@ export class PortfolioAgent {
         bucket.push(issue);
         grouped.set(key, bucket);
       }
-
       for (const [marketId, marketIssues] of grouped.entries()) {
         this.incidentTracker.record({
           marketId,
@@ -481,170 +429,25 @@ export class PortfolioAgent {
         });
       }
     }
-
     return { ok: issues.length === 0, checkedAtMs: nowMs, issues };
   }
-
   async analyzeAnomalies(input: { venueIssues?: VenueReconciliationIssue[]; nowMs?: number } = {}): Promise<void> {
     const llm = this.llm;
     if (!llm || !llm.config.enabled) return;
     if (llm.config.agents.PortfolioAgent.mode === 'disabled') return;
-
     const nowMs = input.nowMs ?? Date.now();
-    const snapshot = this.snapshot();
-    const venueIssuesCount = Array.isArray(input.venueIssues) ? input.venueIssues.length : 0;
-
-    const promptEnvelope = {
-      task: 'detect_anomaly',
-      inputs: {
-        snapshot: {
-          total_capital: snapshot.totalCapital,
-          available_capital: snapshot.availableCapital,
-          daily_pnl: snapshot.dailyPnL,
-          open_inventory_age_ms: snapshot.openInventoryAgeMs ?? 0,
-          market_exposure: snapshot.marketExposure,
-          positions_count: this.positions.size,
-          pending_expected_fills: this.expectedFills.size,
-          venue_issues_count: venueIssuesCount
-        }
-      },
-      output: { anomaly: false, severity: 'low|medium|high', reason: null, confidence: 0.0 }
-    };
-
-    const request: LLMRequest = {
-      endpoint: 'chat.completions',
-      model: llm.config.agents.PortfolioAgent.model,
-      temperature: 0,
-      max_tokens: 300,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'developer',
-          content:
-            'Return JSON only, with shape: {"anomaly":boolean,"severity":"low"|"medium"|"high","reason":string|null,"confidence":number}. Use only the inputs. Only flag anomaly=true when evidence is strong; otherwise set anomaly=false and reason=null. Confidence must be between 0 and 1. No prose.'
-        },
-        { role: 'user', content: JSON.stringify(promptEnvelope) }
-      ]
-    };
-
-    const call = await llm.client.call('PortfolioAgent', request);
-    const hasOutputText = Boolean(call.outputText);
-    const parsed = hasOutputText ? safeParseJSON(call.outputText) : null;
-    const validated = hasOutputText
-      ? PortfolioAnomalySchema.safeParse(parsed)
-      : ({ success: false } as const);
-    const missingOutput = !hasOutputText;
-    const finalDecision = validated.success
-      ? validated.data
-      : {
-          anomaly: false,
-          severity: 'low',
-          reason: missingOutput ? 'missing_output_text' : 'invalid_output',
-          confidence: 0
-        };
-    const violations = missingOutput ? ['missing_output_text'] : validated.success ? [] : ['invalid_output'];
-
-    if (validated.success && validated.data.anomaly) {
-      const alert = {
-        type: 'llm_portfolio_anomaly',
-        severity: validated.data.severity ?? 'low',
-        reason: validated.data.reason,
-        confidence: validated.data.confidence,
-        timestamp: nowMs
-      };
-      messageBus.emit('ops:alert', alert);
-      this.metrics?.record({ type: 'incident', timestamp: nowMs, data: alert });
-    }
-
-    logLLMDecision({
-      agent: 'PortfolioAgent',
-      mode: llm.config.agents.PortfolioAgent.mode,
-      task: 'detect_anomaly',
-      subject: 'system:portfolio',
-      baseline: promptEnvelope.inputs,
-      output: finalDecision,
-      confidence: finalDecision.confidence,
-      applied: validated.success ? validated.data.anomaly : false,
-      clamp: { raw: parsed, final: finalDecision, violations },
+    await analyzePortfolioAnomaly({
+      snapshot: this.snapshot(),
+      positionsCount: this.positions.size,
+      pendingExpectedFills: this.expectedFills.size,
+      venueIssues: input.venueIssues,
       nowMs,
-      call,
-      request,
-      promptEnvelopeForHash: promptEnvelope,
-      contextForHash: promptEnvelope.inputs,
-      promptVersion: llm.promptVersion,
-      policyHashes: llm.policyHashes,
-      providerFallback: {
-        providerId: llm.config.agents.PortfolioAgent.provider,
-        baseUrl: llm.config.providers[llm.config.agents.PortfolioAgent.provider].baseUrl,
-        endpoint: request.endpoint,
-        model: request.model
-      },
-      store: this.store
+      llm,
+      messageBus: this.messageBus,
+      store: this.store,
+      onIncident: (alert) => {
+        this.metrics?.record({ type: 'incident', timestamp: nowMs, data: alert });
+      }
     });
   }
 }
-
-function expectedFillKey(opportunityId: string, tokenId: string): string {
-  return `${opportunityId}:${tokenId}`;
-}
-
-function actualToDetail(actual: ObservedFill): Record<string, unknown> {
-  return {
-    tokenId: actual.tokenId,
-    marketId: actual.marketId,
-    opportunityId: actual.opportunityId,
-    side: actual.side,
-    size: actual.size,
-    price: actual.price,
-    timestamp: actual.timestamp
-  };
-}
-
-function expectedToDetail(expected: ExpectedFill): Record<string, unknown> {
-  return {
-    opportunityId: expected.opportunityId,
-    tokenId: expected.tokenId,
-    expectedSize: expected.expectedSize,
-    expectedPrice: expected.expectedPrice,
-    timestamp: expected.timestamp
-  };
-}
-
-function isPriceWithinTolerance(
-  expected: ExpectedFill,
-  actual: ObservedFill,
-  tolerance: number
-): boolean {
-  const expectedPrice = expected.expectedPrice;
-  if (!Number.isFinite(expectedPrice) || !Number.isFinite(actual.price)) return false;
-
-  if (actual.side === 'BUY') {
-    return actual.price <= expectedPrice + tolerance;
-  }
-
-  return actual.price >= expectedPrice - tolerance;
-}
-
-function isSameExpectedFillCandidate(expected: ExpectedFill, actual: ObservedFill): boolean {
-  if (expected.tokenId !== actual.tokenId) return false;
-  if (actual.opportunityId && expected.opportunityId !== actual.opportunityId) return false;
-  return true;
-}
-
-function resolveExpectedFillCandidates(
-  expectedFills: Iterable<[string, ExpectedFill]>,
-  actual: ObservedFill
-): Array<{ key: string; expected: ExpectedFill }> {
-  const candidates: Array<{ key: string; expected: ExpectedFill }> = [];
-  for (const [key, expected] of expectedFills) {
-    if (isSameExpectedFillCandidate(expected, actual)) {
-      candidates.push({ key, expected });
-    }
-  }
-  return candidates;
-}
-
-type ExpectedFillResolution =
-  | { expected: ExpectedFill; key: string; ambiguous?: undefined }
-  | { expected: ExpectedFill; key: string; ambiguous: number }
-  | null;

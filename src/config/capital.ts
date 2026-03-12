@@ -1,6 +1,6 @@
-export type CapitalSource = 'rpc_usdc' | 'static';
+type CapitalSource = 'rpc_usdc' | 'static';
 
-export interface CapitalConfig {
+interface CapitalConfig {
   source: CapitalSource;
   refreshIntervalMs: number;
   fallbackDollars: number;

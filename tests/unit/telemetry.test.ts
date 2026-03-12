@@ -77,6 +77,17 @@ describe('MetricsStore', () => {
     expect(snapshot.counts.web_search).toBe(2);
   });
 
+  it('tracks router and heartbeat events under web_search', () => {
+    const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
+    store.record({ type: 'web_search', timestamp: 1, data: { event: 'route_decided', route: 'serper' } });
+    store.record({ type: 'web_search', timestamp: 2, data: { event: 'heartbeat_updated', triggerScore: 0.8 } });
+
+    const recent = store.recent('web_search', 10);
+    expect(recent).toHaveLength(2);
+    expect(recent[0].data?.event).toBe('route_decided');
+    expect(recent[1].data?.event).toBe('heartbeat_updated');
+  });
+
   it('filters recent events by type', () => {
     const store = new MetricsStore(DEFAULT_METRICS_MAX_EVENTS);
     store.record({ type: 'info', timestamp: 10, data: {} });

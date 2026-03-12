@@ -1,11 +1,15 @@
-import { messageBus } from '../../core/MessageBus.js';
+import { resolveMessageBus, type MessageBus } from '../../core/MessageBus.js';
+import type { RuntimeEventMap } from '../../core/runtimeEvents.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import type { EventStore } from '../../core/EventStore.js';
-import type { LLMConfig as AppLLMConfig } from '../../config/llm.js';
 import { OpsHealthSummarySchema } from '../../domain/llm.js';
-import { logLLMDecision } from '../../services/llm/LLMDecisionLogger.js';
-import type { LLMCallResult, LLMRequest } from '../../services/llm/types.js';
-import { safeParseJSON } from '../../utils/serialization.js';
+import {
+  callAgentJson,
+  logAgentDecision,
+  withAgent,
+  type AgentLlmConfig
+} from '../../services/llm/AgentLlm.js';
+import type { LLMRequest } from '../../services/llm/types.js';
 
 export interface HealthCheckResult {
   ok: boolean;
@@ -19,35 +23,33 @@ export interface HealthCheck {
   check: () => Promise<HealthCheckResult>;
 }
 
-export interface OpsHealthReport {
+interface OpsHealthReport {
   status: 'healthy' | 'degraded';
   checks: Record<string, HealthCheckResult>;
   lastCheckMs: number | null;
   uptimeMs: number;
 }
 
-export interface OpsAgentConfig {
+interface OpsAgentConfig {
   intervalMs: number;
   checks: HealthCheck[];
+  messageBus?: MessageBus<RuntimeEventMap>;
   alertWebhookUrl?: string;
   eventStore?: EventStore;
-  llm?: {
-    config: AppLLMConfig;
-    client: { call: (agent: 'OpsAgent', request: LLMRequest) => Promise<LLMCallResult> };
-    promptVersion: string;
-    policyHashes: { tradePolicyHash: string; riskConfigHash: string };
+  llm?: AgentLlmConfig<'OpsAgent'> & {
     eventStore?: EventStore;
   };
 }
 
 export class OpsAgent {
+  private messageBus: MessageBus<RuntimeEventMap>;
   private timer: NodeJS.Timeout | null = null;
   private loopActive = false;
   private startedAt = 0;
   private alertWebhookUrl: string | null;
   private eventStore?: EventStore;
   private llm?: NonNullable<OpsAgentConfig['llm']>;
-  private outlierHandler: ((payload: unknown) => void) | null = null;
+  private outlierHandler: ((payload: RuntimeEventMap['marketdata:outlier']) => void) | null = null;
   private lastReport: OpsHealthReport = {
     status: 'healthy',
     checks: {},
@@ -59,6 +61,7 @@ export class OpsAgent {
     private config: OpsAgentConfig,
     private metrics?: MetricsStore
   ) {
+    this.messageBus = resolveMessageBus<RuntimeEventMap>(config.messageBus, 'OpsAgent');
     const webhook = config.alertWebhookUrl?.trim();
     this.alertWebhookUrl = webhook && webhook.length > 0 ? webhook : null;
     this.eventStore = config.eventStore;
@@ -85,7 +88,7 @@ export class OpsAgent {
           data: { message: 'marketdata_outlier', payload }
         });
       };
-      messageBus.on('marketdata:outlier', this.outlierHandler);
+      this.messageBus.on('marketdata:outlier', this.outlierHandler);
     }
     const tick = async () => {
       if (!this.loopActive) return;
@@ -109,7 +112,7 @@ export class OpsAgent {
       this.timer = null;
     }
     if (this.outlierHandler) {
-      messageBus.off('marketdata:outlier', this.outlierHandler);
+      this.messageBus.off('marketdata:outlier', this.outlierHandler);
       this.outlierHandler = null;
     }
   }
@@ -158,7 +161,7 @@ export class OpsAgent {
       uptimeMs: this.startedAt ? now - this.startedAt : 0
     };
 
-    messageBus.emit('ops:health', this.lastReport);
+    this.messageBus.emit('ops:health', this.lastReport);
     this.metrics?.record({
       type: 'health',
       timestamp: now,
@@ -169,7 +172,7 @@ export class OpsAgent {
       for (const [name, result] of Object.entries(results)) {
         if (!result.ok) {
           const alert = { check: name, result, timestamp: now };
-          messageBus.emit('ops:alert', alert);
+          this.messageBus.emit('ops:alert', alert);
           this.metrics?.record({
             type: 'incident',
             timestamp: now,
@@ -226,28 +229,25 @@ export class OpsAgent {
       ]
     };
 
-    const call = await llm.client.call('OpsAgent', request);
-    const hasOutputText = Boolean(call.outputText);
-    const parsed = hasOutputText ? safeParseJSON(call.outputText) : null;
-    const validated = hasOutputText
-      ? OpsHealthSummarySchema.safeParse(parsed)
-      : ({ success: false } as const);
-    const missingOutput = !hasOutputText;
+    const context = withAgent('OpsAgent', llm);
+    const { call, parsed, validated, missingOutput, violations } = await callAgentJson(
+      context,
+      request,
+      OpsHealthSummarySchema
+    );
     const output = validated.success
       ? validated.data
       : missingOutput
         ? { error: 'missing_output_text', status: call.status, llm_error: call.error ?? null }
         : { error: 'invalid_output' };
-    const violations = missingOutput ? ['missing_output_text'] : validated.success ? [] : ['invalid_output'];
     const applied = validated.success;
     const confidence = validated.success ? validated.data.confidence : 0;
 
     if (validated.success) {
-      messageBus.emit('ops:health_summary', { ...validated.data, generatedAtMs: nowMs });
+      this.messageBus.emit('ops:health_summary', { ...validated.data, generatedAtMs: nowMs });
     }
 
-    logLLMDecision({
-      agent: 'OpsAgent',
+    logAgentDecision(context, {
       mode: llm.config.agents.OpsAgent.mode,
       task: 'health_summary',
       subject: 'system:ops-health',
@@ -261,19 +261,12 @@ export class OpsAgent {
       request,
       promptEnvelopeForHash: promptEnvelope,
       contextForHash: promptEnvelope.inputs,
-      promptVersion: llm.promptVersion,
-      policyHashes: llm.policyHashes,
-      providerFallback: {
-        providerId: llm.config.agents.OpsAgent.provider,
-        baseUrl: llm.config.providers[llm.config.agents.OpsAgent.provider].baseUrl,
-        endpoint: request.endpoint,
-        model: request.model
-      },
+      messageBus: this.messageBus,
       store: this.eventStore ?? llm.eventStore
     });
 
     if (!validated.success && call.error) {
-      messageBus.emit('llm:error', {
+      this.messageBus.emit('llm:error', {
         agent: 'OpsAgent',
         provider_id: call.providerId ?? llm.config.agents.OpsAgent.provider,
         endpoint: call.endpoint ?? request.endpoint,

@@ -1,12 +1,14 @@
-import { messageBus } from '../../core/MessageBus.js';
+import { resolveMessageBus, type MessageBus } from '../../core/MessageBus.js';
+import type { MarketUpdateEvent, RuntimeEventMap } from '../../core/runtimeEvents.js';
 import type { TradePolicy } from '../../config/policy.js';
-import { PolymarketClob, type OrderBookResponse } from '../../services/PolymarketClob.js';
+import { PolymarketClob } from '../../services/PolymarketClob.js';
 import { PolymarketRealtime } from '../../services/PolymarketRealtime.js';
 import {
   applyOrderBookDelta,
   coercePositiveNumber,
   isAlignedToTick,
   normalizeOrderBook,
+  type RawOrderBookSnapshot,
   type OrderBookDelta,
   type OrderBookState
 } from '../../domain/orderbook.js';
@@ -14,32 +16,42 @@ import { isOutOfSequence } from '../../domain/sequence.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import type { EventStore } from '../../core/EventStore.js';
 import type { LLMConfig as AppLLMConfig } from '../../config/llm.js';
-import { MarketDataOutlierSchema } from '../../domain/llm.js';
-import { logLLMDecision } from '../../services/llm/LLMDecisionLogger.js';
-import type { LLMCallResult, LLMRequest } from '../../services/llm/types.js';
-import { safeParseJSON } from '../../utils/serialization.js';
+import type { LLMClientPort } from '../../services/llm/types.js';
 import { mapWithConcurrency } from '../../utils/concurrency.js';
+import {
+  coerceString,
+  coerceTimestampString,
+  extractBestLevel,
+  extractPriceChangeUpdates,
+  extractTokenId,
+  normalizeWsBook,
+  routeMarketDataMessage
+} from './MarketDataEventParsing.js';
+import { recordBookParameterMetrics, recordFallbackMetrics } from './MarketDataMetrics.js';
+import { detectMarketDataOutlier } from './MarketDataOutlierDetector.js';
 
-export interface MarketDataAgentConfig {
+interface MarketDataAgentConfig {
   tokenIds: string[];
   policy: TradePolicy;
+  messageBus?: MessageBus<RuntimeEventMap>;
   metrics?: MetricsStore;
   eventStore?: EventStore;
   llm?: {
     config: AppLLMConfig;
-    client: { call: (agent: 'MarketDataAgent', request: LLMRequest) => Promise<LLMCallResult> };
+    client: LLMClientPort<'MarketDataAgent'>;
     promptVersion: string;
     policyHashes: { tradePolicyHash: string; riskConfigHash: string };
   };
 }
 
-export interface MarketUpdateEvent {
-  tokenId: string;
-  book: OrderBookState;
+interface SnapshotRefreshResult {
+  ok: boolean;
+  error?: string;
 }
 
 export class MarketDataAgent {
   private orderbooks = new Map<string, OrderBookState>();
+  private messageBus: MessageBus<RuntimeEventMap>;
   private metrics?: MetricsStore;
   private store?: EventStore;
   private llm?: NonNullable<MarketDataAgentConfig['llm']>;
@@ -54,6 +66,7 @@ export class MarketDataAgent {
     private clob: PolymarketClob,
     private realtime: PolymarketRealtime
   ) {
+    this.messageBus = resolveMessageBus<RuntimeEventMap>(config.messageBus, 'MarketDataAgent');
     this.metrics = config.metrics;
     this.store = config.eventStore;
     this.llm = config.llm;
@@ -82,7 +95,7 @@ export class MarketDataAgent {
         timestamp: Date.now(),
         data: { message: 'realtime_connect_failed', detail: message }
       });
-      return;
+      throw error;
     }
 
     if (this.config.tokenIds.length > 0) {
@@ -94,10 +107,11 @@ export class MarketDataAgent {
     return this.orderbooks.get(tokenId);
   }
 
-  async refreshSnapshot(tokenId: string): Promise<void> {
+  async refreshSnapshot(tokenId: string): Promise<SnapshotRefreshResult> {
     try {
       const snapshot = await this.clob.getOrderBook(tokenId);
       this.updateBook(tokenId, snapshot, Date.now(), { force: true });
+      return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.metrics?.record({
@@ -105,6 +119,7 @@ export class MarketDataAgent {
         timestamp: Date.now(),
         data: { message: 'snapshot_refresh_failed', tokenId, detail: message }
       });
+      return { ok: false, error: message };
     }
   }
 
@@ -123,10 +138,10 @@ export class MarketDataAgent {
 
     const refreshConcurrency = 40;
     await mapWithConcurrency(staleTokenIds, refreshConcurrency, async (tokenId) => {
-      try {
-        await this.refreshSnapshot(tokenId);
+      const result = await this.refreshSnapshot(tokenId);
+      if (result.ok) {
         refreshed.push(tokenId);
-      } catch {
+      } else {
         failed.push(tokenId);
       }
     });
@@ -199,44 +214,25 @@ export class MarketDataAgent {
   }
 
   private handleEvent(message: Record<string, unknown>): void {
-    const envelopeType = typeof message.type === 'string' ? message.type : undefined;
-    const payload =
-      message.payload && typeof message.payload === 'object'
-        ? (message.payload as Record<string, unknown>)
-        : message;
-    const eventTypeRaw = (payload.event_type ?? payload.type ?? envelopeType) as
-      | string
-      | undefined;
-    const eventType = typeof eventTypeRaw === 'string' ? eventTypeRaw.toLowerCase() : undefined;
-    
-    // Handle explicit book/agg_orderbook events OR raw order book data with bids/asks
-    const isBookEvent = eventType === 'book' || eventType === 'agg_orderbook';
-    const isRawBookData =
-      Array.isArray(payload.bids) ||
-      Array.isArray(payload.asks) ||
-      Array.isArray(payload.buys) ||
-      Array.isArray(payload.sells);
-    
-    if (!isBookEvent && !isRawBookData) {
-      if (eventType === 'price_change') {
-        this.handlePriceChange(payload);
-        return;
-      }
-      if (eventType === 'tick_size_change') {
-        this.handleTickSizeChange(payload);
-        return;
-      }
-      if (eventType === 'best_bid_ask') {
-        this.handleBestBidAsk(payload);
-        return;
-      }
+    const routedEvent = routeMarketDataMessage(message);
+    if (!routedEvent) return;
+
+    const { kind, payload } = routedEvent;
+    if (kind === 'price_change') {
+      this.handlePriceChange(payload);
+      return;
+    }
+    if (kind === 'tick_size_change') {
+      this.handleTickSizeChange(payload);
+      return;
+    }
+    if (kind === 'best_bid_ask') {
+      this.handleBestBidAsk(payload);
       return;
     }
 
     const tokenId = extractTokenId(payload);
-    if (!tokenId) {
-      return;
-    }
+    if (!tokenId) return;
 
     const normalized = normalizeWsBook(payload);
     this.updateBook(tokenId, normalized, Date.now());
@@ -244,7 +240,7 @@ export class MarketDataAgent {
 
   private updateBook(
     tokenId: string,
-    raw: OrderBookResponse,
+    raw: RawOrderBookSnapshot,
     receivedAtMs: number,
     options: { force?: boolean } = {}
   ): void {
@@ -271,150 +267,50 @@ export class MarketDataAgent {
       minOrderSize: this.config.policy.fallbackMinOrderSize
     }, previous);
 
-    if (this.metrics && (rawTickSize !== null || rawMinOrderSize !== null)) {
-      const previousTickSize = previous?.tickSize;
-      const previousMinOrderSize = previous?.minOrderSize;
-      if (previousTickSize !== next.tickSize || previousMinOrderSize !== next.minOrderSize) {
-        this.metrics.record({
-          type: 'info',
-          timestamp: receivedAtMs,
-          data: {
-            message: 'book_params_updated',
-            tokenId,
-            rawTickSize,
-            rawMinOrderSize,
-            previousTickSize,
-            previousMinOrderSize,
-            resolvedTickSize: next.tickSize,
-            resolvedMinOrderSize: next.minOrderSize
-          }
-        });
-      }
-    }
-
-    if (this.metrics && (usedTickFallback || usedMinOrderFallback)) {
-      this.metrics.record({
-        type: 'book_fallback',
-        timestamp: receivedAtMs,
-        data: {
-          tokenId,
-          usedTickFallback,
-          usedMinOrderFallback,
-          fallbackTickSize: this.config.policy.fallbackTickSize,
-          fallbackMinOrderSize: this.config.policy.fallbackMinOrderSize,
-          rawTickSize,
-          rawMinOrderSize,
-          resolvedTickSize: next.tickSize,
-          resolvedMinOrderSize: next.minOrderSize
-        }
-      });
-    }
-    this.orderbooks.set(tokenId, next);
-    messageBus.emit('market:updated', { tokenId, book: next } satisfies MarketUpdateEvent);
-
-    const bestAsk = next.bestAsk?.price;
-    const bestBid = next.bestBid?.price;
-    if (next.tickSize > 0) {
-      const askAligned = bestAsk === undefined || isAlignedToTick(bestAsk, next.tickSize);
-      const bidAligned = bestBid === undefined || isAlignedToTick(bestBid, next.tickSize);
-      if (!askAligned || !bidAligned) {
-        this.metrics?.record({
-          type: 'info',
-          timestamp: receivedAtMs,
-          data: {
-            message: 'tick_misaligned',
-            tokenId,
-            tickSize: next.tickSize,
-            bestAsk,
-            bestBid
-          }
-        });
-        this.scheduleSnapshotResync(tokenId, 'tick_misaligned', receivedAtMs);
-      }
-    }
-
+    recordBookParameterMetrics(this.metrics, tokenId, previous, next, receivedAtMs, rawTickSize, rawMinOrderSize);
+    recordFallbackMetrics(
+      this.metrics,
+      this.config.policy,
+      tokenId,
+      next,
+      receivedAtMs,
+      usedTickFallback,
+      usedMinOrderFallback,
+      rawTickSize,
+      rawMinOrderSize
+    );
+    this.publishBookUpdate(tokenId, next, receivedAtMs);
     void this.maybeDetectOutlier(tokenId, next, receivedAtMs);
   }
 
   private handlePriceChange(payload: Record<string, unknown>): void {
-    const changes = extractPriceChanges(payload);
     const nowMs = Date.now();
+    const expectedBest = new Map<string, { bestBid?: number; bestAsk?: number }>();
+    const updates = extractPriceChangeUpdates(payload, nowMs);
+    if (updates.length === 0) return;
 
-    if (changes.length > 0) {
-      const expectedBest = new Map<string, { bestBid?: number; bestAsk?: number }>();
-      for (const change of changes) {
-        const tokenId = extractTokenId(change) ?? extractTokenId(payload);
-        if (!tokenId) continue;
-
-        const sideRaw = change.side ?? change.book_side ?? change.order_side;
-        const side = normalizeSide(sideRaw);
-        const price = coerceNumber(change.price);
-        const size = coerceNumber(change.size);
-        if (!side || price === null || size === null) continue;
-
-        const exchangeTimestamp = coerceTimestampString(change.timestamp ?? change.ts ?? payload.timestamp ?? payload.ts);
-        const delta: OrderBookDelta = {
-          side,
-          price,
-          size,
-          receivedAtMs: nowMs,
-          exchangeTimestamp,
-          tickSize: coercePositiveNumber(change.tick_size ?? change.tickSize ?? payload.tick_size ?? payload.tickSize) ?? undefined,
-          minOrderSize:
-            coercePositiveNumber(change.min_order_size ?? change.minOrderSize ?? payload.min_order_size ?? payload.minOrderSize) ??
-            undefined
-        };
-
-        this.applyDelta(tokenId, delta);
-
-        const bestBid = coerceNumber(change.best_bid ?? change.best_bid_price ?? payload.best_bid ?? payload.best_bid_price);
-        const bestAsk = coerceNumber(change.best_ask ?? change.best_ask_price ?? payload.best_ask ?? payload.best_ask_price);
-        if (bestBid !== null || bestAsk !== null) {
-          const current = expectedBest.get(tokenId) ?? {};
-          if (bestBid !== null) current.bestBid = bestBid;
-          if (bestAsk !== null) current.bestAsk = bestAsk;
-          expectedBest.set(tokenId, current);
-        }
-      }
-
-      for (const [tokenId, expected] of expectedBest) {
-        const book = this.orderbooks.get(tokenId);
-        if (!book) continue;
-        const bidMismatch =
-          expected.bestBid !== undefined &&
-          (!book.bestBid || Math.abs(book.bestBid.price - expected.bestBid) > 1e-9);
-        const askMismatch =
-          expected.bestAsk !== undefined &&
-          (!book.bestAsk || Math.abs(book.bestAsk.price - expected.bestAsk) > 1e-9);
-        if (bidMismatch || askMismatch) {
-          this.scheduleSnapshotResync(tokenId, 'best_bid_ask_mismatch', nowMs);
-        }
-      }
-
-      return;
+    for (const update of updates) {
+      this.applyDelta(update.tokenId, update.delta);
+      if (!update.expectedBest) continue;
+      const current = expectedBest.get(update.tokenId) ?? {};
+      if (update.expectedBest.bestBid !== undefined) current.bestBid = update.expectedBest.bestBid;
+      if (update.expectedBest.bestAsk !== undefined) current.bestAsk = update.expectedBest.bestAsk;
+      expectedBest.set(update.tokenId, current);
     }
 
-    const tokenId = extractTokenId(payload);
-    if (!tokenId) return;
-
-    const sideRaw = payload.side ?? payload.book_side ?? payload.order_side;
-    const side = normalizeSide(sideRaw);
-    const price = coerceNumber(payload.price);
-    const size = coerceNumber(payload.size);
-    if (!side || price === null || size === null) return;
-
-    const exchangeTimestamp = coerceTimestampString(payload.timestamp ?? payload.ts);
-    const delta: OrderBookDelta = {
-      side,
-      price,
-      size,
-      receivedAtMs: nowMs,
-      exchangeTimestamp,
-      tickSize: coercePositiveNumber(payload.tick_size ?? payload.tickSize) ?? undefined,
-      minOrderSize: coercePositiveNumber(payload.min_order_size ?? payload.minOrderSize) ?? undefined
-    };
-
-    this.applyDelta(tokenId, delta);
+    for (const [tokenId, expected] of expectedBest) {
+      const book = this.orderbooks.get(tokenId);
+      if (!book) continue;
+      const bidMismatch =
+        expected.bestBid !== undefined &&
+        (!book.bestBid || Math.abs(book.bestBid.price - expected.bestBid) > 1e-9);
+      const askMismatch =
+        expected.bestAsk !== undefined &&
+        (!book.bestAsk || Math.abs(book.bestAsk.price - expected.bestAsk) > 1e-9);
+      if (bidMismatch || askMismatch) {
+        this.scheduleSnapshotResync(tokenId, 'best_bid_ask_mismatch', nowMs);
+      }
+    }
   }
 
   private handleTickSizeChange(payload: Record<string, unknown>): void {
@@ -445,7 +341,7 @@ export class MarketDataAgent {
     };
 
     this.orderbooks.set(tokenId, next);
-    messageBus.emit('market:updated', { tokenId, book: next } satisfies MarketUpdateEvent);
+    this.messageBus.emit('market:updated', { tokenId, book: next } satisfies MarketUpdateEvent);
   }
 
   private handleBestBidAsk(payload: Record<string, unknown>): void {
@@ -508,29 +404,7 @@ export class MarketDataAgent {
     }
 
     const next = applyOrderBookDelta(book, delta);
-    this.orderbooks.set(tokenId, next);
-    messageBus.emit('market:updated', { tokenId, book: next } satisfies MarketUpdateEvent);
-
-    const bestAsk = next.bestAsk?.price;
-    const bestBid = next.bestBid?.price;
-    if (next.tickSize > 0) {
-      const askAligned = bestAsk === undefined || isAlignedToTick(bestAsk, next.tickSize);
-      const bidAligned = bestBid === undefined || isAlignedToTick(bestBid, next.tickSize);
-      if (!askAligned || !bidAligned) {
-        this.metrics?.record({
-          type: 'info',
-          timestamp: delta.receivedAtMs,
-          data: {
-            message: 'tick_misaligned',
-            tokenId,
-            tickSize: next.tickSize,
-            bestAsk,
-            bestBid
-          }
-        });
-        this.scheduleSnapshotResync(tokenId, 'tick_misaligned', delta.receivedAtMs);
-      }
-    }
+    this.publishBookUpdate(tokenId, next, delta.receivedAtMs);
   }
 
   private scheduleSnapshotResync(tokenId: string, reason: string, nowMs = Date.now()): void {
@@ -559,201 +433,42 @@ export class MarketDataAgent {
     if (!options.force && nowMs - last < 30000) return;
     this.lastOutlierCheckMs.set(tokenId, nowMs);
 
-    const bestBid = book.bestBid?.price ?? null;
-    const bestAsk = book.bestAsk?.price ?? null;
-    const mid = bestBid && bestAsk ? (bestBid + bestAsk) / 2 : null;
-    const spread = bestBid && bestAsk ? bestAsk - bestBid : null;
-
-    const promptEnvelope = {
-      task: 'detect_outlier',
-      inputs: {
-        orderbook: {
-          mid_price: mid,
-          spread,
-          top_bid: bestBid,
-          top_ask: bestAsk,
-          depth_top: book.bestAsk?.size ?? null,
-          timestamp: book.exchangeTimestamp ?? null
-        }
-      },
-      output: { outlier: false, reason: null, confidence: 0.0 }
-    };
-
-    const model = llm.config.agents.MarketDataAgent.model;
-    const jsonInstruction =
-      'Return JSON only, with shape: {"outlier":boolean,"reason":string|null,"confidence":number}. Use only the inputs. If best bid/ask or spread is missing, return outlier=false, reason=null, confidence=0. Only flag outlier=true for extreme or clearly inconsistent prices/spreads. Confidence must be between 0 and 1. No prose.';
-
-    const request: LLMRequest = {
-      endpoint: 'chat.completions',
-      model,
-      messages: [
-        { role: 'developer', content: jsonInstruction },
-        { role: 'user', content: JSON.stringify(promptEnvelope) }
-      ],
-      temperature: 0,
-      max_tokens: 200,
-      response_format: { type: 'json_object' }
-    };
-
-    const call = await llm.client.call('MarketDataAgent', request);
-
-    const hasOutputText = Boolean(call.outputText);
-    const parsed = hasOutputText ? safeParseJSON(call.outputText) : null;
-    const validated = hasOutputText
-      ? MarketDataOutlierSchema.safeParse(parsed)
-      : ({ success: false } as const);
-
-    const missingOutput = !hasOutputText;
-    const outputOnMissing = missingOutput
-      ? { error: 'missing_output_text', status: call.status, llm_error: call.error ?? null }
-      : null;
-    const outputOnInvalid = { error: 'invalid_output' };
-    const output = missingOutput ? outputOnMissing : validated.success ? validated.data : outputOnInvalid;
-    const applied = validated.success && validated.data.outlier;
-    const confidence = validated.success ? validated.data.confidence : 0;
-    const violations = missingOutput ? ['missing_output_text'] : validated.success ? [] : ['invalid_output'];
-
-    if (applied) {
-      messageBus.emit('marketdata:outlier', { tokenId, outlier: validated.data, at_ms: nowMs });
-    }
-
-    logLLMDecision({
-      agent: 'MarketDataAgent',
-      mode: llm.config.agents.MarketDataAgent.mode,
-      task: 'detect_outlier',
-      subject: tokenId,
-      baseline: promptEnvelope.inputs,
-      output,
-      confidence,
-      applied,
-      clamp: { raw: parsed, final: validated.success ? validated.data : undefined, violations },
+    await detectMarketDataOutlier({
+      tokenId,
+      book,
       nowMs,
-      call,
-      request,
-      promptEnvelopeForHash: promptEnvelope,
-      contextForHash: promptEnvelope.inputs,
-      promptVersion: llm.promptVersion,
-      policyHashes: llm.policyHashes,
-      providerFallback: {
-        providerId: llm.config.agents.MarketDataAgent.provider,
-        baseUrl: llm.config.providers[llm.config.agents.MarketDataAgent.provider].baseUrl,
-        endpoint: request.endpoint,
-        model: request.model
-      },
+      llm,
+      messageBus: this.messageBus,
       store: this.store
     });
   }
-}
 
-function extractTokenId(payload: Record<string, unknown>): string | null {
-  const candidates = [
-    payload.asset_id,
-    payload.token_id,
-    payload.market_id,
-    payload.marketId
-  ];
-
-  for (const value of candidates) {
-    if (typeof value === 'string' && value.length > 0) {
-      return value;
-    }
+  private publishBookUpdate(tokenId: string, book: OrderBookState, receivedAtMs: number): void {
+    this.orderbooks.set(tokenId, book);
+    this.messageBus.emit('market:updated', { tokenId, book } satisfies MarketUpdateEvent);
+    this.scheduleTickAlignmentResync(tokenId, book, receivedAtMs);
   }
 
-  return null;
-}
+  private scheduleTickAlignmentResync(tokenId: string, book: OrderBookState, receivedAtMs: number): void {
+    const bestAsk = book.bestAsk?.price;
+    const bestBid = book.bestBid?.price;
+    if (book.tickSize <= 0) return;
 
-function normalizeWsBook(payload: Record<string, unknown>): OrderBookResponse {
-  const buys = payload.buys;
-  const sells = payload.sells;
-  const tickSize = coerceString(payload.tick_size ?? payload.tickSize);
-  const minOrderSize = coerceString(payload.min_order_size ?? payload.minOrderSize);
-  const timestamp = coerceString(payload.timestamp ?? payload.ts);
-  const hash = coerceString(payload.hash);
+    const askAligned = bestAsk === undefined || isAlignedToTick(bestAsk, book.tickSize);
+    const bidAligned = bestBid === undefined || isAlignedToTick(bestBid, book.tickSize);
+    if (askAligned && bidAligned) return;
 
-  if (Array.isArray(buys) || Array.isArray(sells)) {
-    return {
-      bids: Array.isArray(buys) ? (buys as OrderBookResponse['bids']) : [],
-      asks: Array.isArray(sells) ? (sells as OrderBookResponse['asks']) : [],
-      timestamp: timestamp ?? undefined,
-      hash: hash ?? undefined,
-      tick_size: tickSize ?? undefined,
-      min_order_size: minOrderSize ?? undefined
-    };
+    this.metrics?.record({
+      type: 'info',
+      timestamp: receivedAtMs,
+      data: {
+        message: 'tick_misaligned',
+        tokenId,
+        tickSize: book.tickSize,
+        bestAsk,
+        bestBid
+      }
+    });
+    this.scheduleSnapshotResync(tokenId, 'tick_misaligned', receivedAtMs);
   }
-
-  const bids = payload.bids;
-  const asks = payload.asks;
-
-  return {
-    bids: Array.isArray(bids) ? (bids as OrderBookResponse['bids']) : [],
-    asks: Array.isArray(asks) ? (asks as OrderBookResponse['asks']) : [],
-    timestamp: timestamp ?? undefined,
-    hash: hash ?? undefined,
-    tick_size: tickSize ?? undefined,
-    min_order_size: minOrderSize ?? undefined
-  };
-}
-
-function extractPriceChanges(payload: Record<string, unknown>): Array<Record<string, unknown>> {
-  const candidates = [payload.price_changes, payload.priceChanges, payload.changes];
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) {
-      return candidate.filter((entry) => entry && typeof entry === 'object') as Array<Record<string, unknown>>;
-    }
-  }
-  return [];
-}
-
-function normalizeSide(value: unknown): 'bid' | 'ask' | null {
-  if (typeof value !== 'string') return null;
-  const normalized = value.toLowerCase();
-  if (normalized === 'buy' || normalized === 'bid') return 'bid';
-  if (normalized === 'sell' || normalized === 'ask') return 'ask';
-  return null;
-}
-
-function coerceNumber(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value !== 'string') return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return null;
-  return parsed;
-}
-
-function coerceString(value: unknown): string | null {
-  if (typeof value === 'string' && value.length > 0) return value;
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-  return null;
-}
-
-function coerceTimestampString(value: unknown): string | undefined {
-  const asString = coerceString(value);
-  return asString ?? undefined;
-}
-
-function extractBestLevel(
-  payload: Record<string, unknown>,
-  side: 'bid' | 'ask'
-): { price: number; size: number } | null {
-  const priceKey = side === 'bid' ? 'best_bid_price' : 'best_ask_price';
-  const sizeKey = side === 'bid' ? 'best_bid_size' : 'best_ask_size';
-  const altKey = side === 'bid' ? 'best_bid' : 'best_ask';
-
-  const price = coerceNumber(payload[priceKey] ?? payload[`${side}_price`]);
-  const size = coerceNumber(payload[sizeKey] ?? payload[`${side}_size`]);
-  if (price !== null && size !== null) {
-    return { price, size };
-  }
-
-  const alt = payload[altKey];
-  if (alt && typeof alt === 'object' && !Array.isArray(alt)) {
-    const record = alt as Record<string, unknown>;
-    const altPrice = coerceNumber(record.price);
-    const altSize = coerceNumber(record.size);
-    if (altPrice !== null && altSize !== null) {
-      return { price: altPrice, size: altSize };
-    }
-  }
-
-  return null;
 }

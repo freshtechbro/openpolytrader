@@ -43,13 +43,27 @@ export interface TradePolicy {
   evModelRefreshMinutes: number;
   evCalibrationMethod: 'sigmoid' | 'isotonic' | 'temperature';
   evModelConfidenceFloor: number;
+  evWebSearchProviderPolicy: 'exa_only' | 'serper_only' | 'serper_exa' | 'gdelt_serper_exa';
+  evWebSearchRefreshMinutes: number;
   evWebSearchExaEnabled: boolean;
   evWebSearchFirecrawlEnabled: boolean;
-  evWebSearchPrimary: 'exa' | 'firecrawl';
+  evWebSearchSerperEnabled: boolean;
+  evWebSearchGdeltEnabled: boolean;
+  evWebSearchExaFallbackEnabled: boolean;
   evWebSearchLookbackDays: number;
   evWebSearchMaxResults: number;
   evWebSearchCacheTtlSeconds: number;
   evWebSearchMaxConcurrency: number;
+  evWebSearchDefaultContentBudget: number;
+  evWebSearchHighPriorityContentBudget: number;
+  evWebSearchDefaultQueryMode: 'base_only' | 'base_plus_one' | 'base_plus_two';
+  evWebSearchNearResolutionMinutes: number;
+  evWebSearchPriceMoveTriggerBps: number;
+  evWebSearchOfficialDomainRequired: boolean;
+  evWebSearchGdeltRefreshMinutes: number;
+  evWebSearchGdeltTriggerThreshold: number;
+  evWebSearchExaInlineContentsEnabled: boolean;
+  evWebSearchExaInlineContentsMaxResults: number;
   evWebSearchFirecrawlMaxDepth: number;
   evWebSearchFirecrawlMaxPages: number;
   fwDependencyMode: 'deterministic' | 'llm' | 'hybrid';
@@ -74,6 +88,7 @@ export interface TradePolicy {
   fwMaxLoopRuntimeMs: number;
   fwGapAbsTolerance: number;
   fwGapRelTolerance: number;
+  fwRequireConverged: boolean;
   fwContractionInitialEpsilon: number;
   fwContractionDecay: number;
   fwContractionMinEpsilon: number;
@@ -140,13 +155,27 @@ export const DEFAULT_TRADE_POLICY: TradePolicy = {
   evModelRefreshMinutes: 60,
   evCalibrationMethod: 'sigmoid',
   evModelConfidenceFloor: 0.55,
+  evWebSearchProviderPolicy: 'gdelt_serper_exa',
+  evWebSearchRefreshMinutes: 30,
   evWebSearchExaEnabled: true,
   evWebSearchFirecrawlEnabled: false,
-  evWebSearchPrimary: 'exa',
+  evWebSearchSerperEnabled: true,
+  evWebSearchGdeltEnabled: true,
+  evWebSearchExaFallbackEnabled: true,
   evWebSearchLookbackDays: 7,
   evWebSearchMaxResults: 10,
   evWebSearchCacheTtlSeconds: 7200,
   evWebSearchMaxConcurrency: 3,
+  evWebSearchDefaultContentBudget: 3,
+  evWebSearchHighPriorityContentBudget: 5,
+  evWebSearchDefaultQueryMode: 'base_plus_one',
+  evWebSearchNearResolutionMinutes: 240,
+  evWebSearchPriceMoveTriggerBps: 500,
+  evWebSearchOfficialDomainRequired: true,
+  evWebSearchGdeltRefreshMinutes: 15,
+  evWebSearchGdeltTriggerThreshold: 0.45,
+  evWebSearchExaInlineContentsEnabled: true,
+  evWebSearchExaInlineContentsMaxResults: 10,
   evWebSearchFirecrawlMaxDepth: 2,
   evWebSearchFirecrawlMaxPages: 10,
   fwDependencyMode: 'hybrid',
@@ -171,6 +200,7 @@ export const DEFAULT_TRADE_POLICY: TradePolicy = {
   fwMaxLoopRuntimeMs: 350,
   fwGapAbsTolerance: 0.0005,
   fwGapRelTolerance: 0.05,
+  fwRequireConverged: true,
   fwContractionInitialEpsilon: 0.1,
   fwContractionDecay: 0.5,
   fwContractionMinEpsilon: 0.01,

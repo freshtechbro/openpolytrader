@@ -1,8 +1,8 @@
+import { writeCliFailureDetail } from '../utils/cliFailure.js';
 import { runMarketCatalogPrestart } from './marketCatalogPrestart.js';
 
 runMarketCatalogPrestart().catch((error) => {
-  // eslint-disable-next-line no-console
-  console.error(error);
+  writeCliFailureDetail('marketCatalogPrestart failed', error);
   process.exitCode = 1;
+  return;
 });
-

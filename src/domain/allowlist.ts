@@ -6,7 +6,7 @@ export interface MarketStatusEntry {
   reason?: string;
 }
 
-export interface MarketAllowlistConfig {
+interface MarketAllowlistConfig {
   autoResume: boolean;
 }
 

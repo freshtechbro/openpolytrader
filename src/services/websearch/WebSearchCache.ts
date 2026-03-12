@@ -2,7 +2,7 @@ import type { WebSearchContent, WebSearchResult } from './WebSearchClient.js';
 
 type CacheEntry<T> = { value: T; expiresAtMs: number };
 
-export interface WebSearchCacheConfig {
+interface WebSearchCacheConfig {
   maxEntries?: number;
 }
 

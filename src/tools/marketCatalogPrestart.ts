@@ -11,7 +11,7 @@ type PrestartEnv = {
   MARKET_CATALOG_PRESTART_MAX_AGE_MS?: number;
 };
 
-export async function runMarketCatalogPrestart(deps?: {
+export function runMarketCatalogPrestart(deps?: {
   loadEnv?: () => PrestartEnv;
   generateMarketCatalog?: typeof generateMarketCatalog;
   pathExists?: (path: string) => boolean;
@@ -29,8 +29,8 @@ export async function runMarketCatalogPrestart(deps?: {
   const outPath = env.MARKET_CATALOG_PATH?.trim();
   if (!outPath) {
     // eslint-disable-next-line no-console
-    console.log('[prestart] market catalog: skipped (MARKET_CATALOG_PATH not set)');
-    return;
+    console.log('Market catalog prestart skipped (MARKET_CATALOG_PATH not set)');
+    return Promise.resolve();
   }
 
   const fileExists = pathExists(outPath);
@@ -41,9 +41,9 @@ export async function runMarketCatalogPrestart(deps?: {
   if (fileExists && staleCheck && !staleCheck.stale) {
     // eslint-disable-next-line no-console
     console.log(
-      `[prestart] market catalog: skipped (fresh ageMs=${Math.round(staleCheck.ageMs)} maxAgeMs=${maxAgeMs})`
+      `Market catalog prestart skipped (fresh ageMs=${Math.round(staleCheck.ageMs)} maxAgeMs=${maxAgeMs})`
     );
-    return;
+    return Promise.resolve();
   }
 
   // Conservative overwrite refresh:
@@ -51,7 +51,7 @@ export async function runMarketCatalogPrestart(deps?: {
   // - bootstrap with configured max pairs
   // - only outcomes exactly Yes/No
   // - near-zero mode with orderbook + metadata verification
-  const result = await generateFn({
+  return generateFn({
     outPath,
     mode: 'near-zero',
     merge: false,
@@ -59,14 +59,14 @@ export async function runMarketCatalogPrestart(deps?: {
     yesnoOnly: true,
     verifyBooks: true,
     requireMetadata: true
+  }).then((result) => {
+    const reason = !fileExists ? 'missing' : 'stale';
+    const ageSuffix = staleCheck ? ` ageMs=${Math.round(staleCheck.ageMs)} maxAgeMs=${maxAgeMs}` : '';
+    // eslint-disable-next-line no-console
+    console.log(
+      `Market catalog prestart completed: out=${result.outPath} pairs=${result.pairs.length} pages=${result.pagesScanned} merged=${result.merged} reason=${reason}${ageSuffix}`
+    );
   });
-
-  const reason = !fileExists ? 'missing' : 'stale';
-  const ageSuffix = staleCheck ? ` ageMs=${Math.round(staleCheck.ageMs)} maxAgeMs=${maxAgeMs}` : '';
-  // eslint-disable-next-line no-console
-  console.log(
-    `[prestart] market catalog: out=${result.outPath} pairs=${result.pairs.length} pages=${result.pagesScanned} merged=${result.merged} reason=${reason}${ageSuffix}`
-  );
 }
 
 function getCatalogStaleness(

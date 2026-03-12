@@ -1,13 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_TRADE_POLICY } from '../../src/config/policy.js';
 import type { DependencyMarketInput } from '../../src/domain/dependency.js';
 import type { OrderBookState } from '../../src/domain/orderbook.js';
+import type { FwLoopResult } from '../../src/agents/projection/fw/types.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { FwProjectionAgent } from '../../src/agents/projection/FwProjectionAgent.js';
 import { IpOracleClient } from '../../src/services/ip-oracle/IpOracleClient.js';
 
-function makeBook(tokenId: string, ask: number, bid: number, nowMs: number): OrderBookState {
+function makeProjectionBook(tokenId: string, ask: number, bid: number, nowMs: number): OrderBookState {
   return {
     tokenId,
     bids: [{ price: bid, size: 100 }],
@@ -61,12 +62,12 @@ function buildUniverse(now: number): {
 } {
   return {
     orderbooks: new Map<string, OrderBookState>([
-      ['yes-1', makeBook('yes-1', 0.48, 0.47, now)],
-      ['no-1', makeBook('no-1', 0.48, 0.47, now)],
-      ['yes-2', makeBook('yes-2', 0.479, 0.469, now)],
-      ['no-2', makeBook('no-2', 0.479, 0.469, now)],
-      ['yes-3', makeBook('yes-3', 0.478, 0.468, now)],
-      ['no-3', makeBook('no-3', 0.478, 0.468, now)]
+      ['yes-1', makeProjectionBook('yes-1', 0.48, 0.47, now)],
+      ['no-1', makeProjectionBook('no-1', 0.48, 0.47, now)],
+      ['yes-2', makeProjectionBook('yes-2', 0.479, 0.469, now)],
+      ['no-2', makeProjectionBook('no-2', 0.479, 0.469, now)],
+      ['yes-3', makeProjectionBook('yes-3', 0.478, 0.468, now)],
+      ['no-3', makeProjectionBook('no-3', 0.478, 0.468, now)]
     ]),
     marketUniverse: [
       {
@@ -94,6 +95,30 @@ function buildUniverse(now: number): {
         question: 'Will turnout exceed 60% in state A?'
       }
     ]
+  };
+}
+
+function makeApproximateLoopResult(): FwLoopResult {
+  return {
+    iterate: {
+      point: [1],
+      objective: 0.2,
+      weights: [1],
+      activeSet: []
+    },
+    diagnostics: {
+      loopId: 'loop-approx',
+      iterationCount: 4,
+      activeSetSize: 1,
+      contractionSteps: 0,
+      terminalGapAbs: 0.01,
+      terminalGapRel: 0.02,
+      terminalReason: 'runtime_budget',
+      converged: false,
+      runtimeMs: 20,
+      iterations: []
+    },
+    reason: 'projection_runtime_budget'
   };
 }
 
@@ -156,8 +181,8 @@ describe('FwProjectionAgent', () => {
         yesTokenId: 'yes-fw',
         noTokenId: 'no-fw'
       },
-      yesBook: makeBook('yes-fw', 0.75, 0.74, now),
-      noBook: makeBook('no-fw', 0.31, 0.3, now),
+      yesBook: makeProjectionBook('yes-fw', 0.75, 0.74, now),
+      noBook: makeProjectionBook('no-fw', 0.31, 0.3, now),
       policy: {
         ...DEFAULT_TRADE_POLICY,
         fwSelectionTopK: 0,
@@ -211,10 +236,10 @@ describe('FwProjectionAgent', () => {
 
     const stale = now - (DEFAULT_TRADE_POLICY.maxBookStalenessMs + 5000);
     const orderbooks = new Map<string, OrderBookState>([
-      ['yes-1', makeBook('yes-1', 0.7, 0.69, stale)],
-      ['no-1', makeBook('no-1', 0.29, 0.28, stale)],
-      ['yes-2', makeBook('yes-2', 0.69, 0.68, stale)],
-      ['no-2', makeBook('no-2', 0.3, 0.29, stale)]
+      ['yes-1', makeProjectionBook('yes-1', 0.7, 0.69, stale)],
+      ['no-1', makeProjectionBook('no-1', 0.29, 0.28, stale)],
+      ['yes-2', makeProjectionBook('yes-2', 0.69, 0.68, stale)],
+      ['no-2', makeProjectionBook('no-2', 0.3, 0.29, stale)]
     ]);
 
     const result = await agent.projectUniverse({
@@ -263,5 +288,84 @@ describe('FwProjectionAgent', () => {
       );
     const rejected = (filterSummary?.data as { rejected_non_executable?: number }).rejected_non_executable;
     expect((rejected ?? 0) > 0).toBe(true);
+  });
+
+  it('rejects non-converged positive iterates in strict profiles', async () => {
+    const metrics = new MetricsStore(200);
+    const agent = buildAgent({ metrics });
+    const approximateLoop = makeApproximateLoopResult();
+    (agent as unknown as { loopEngine: { run: ReturnType<typeof vi.fn> } }).loopEngine = {
+      run: vi.fn().mockResolvedValue(approximateLoop)
+    };
+    const now = Date.now();
+
+    const result = await agent.projectPair({
+      pair: {
+        marketId: 'm-fw',
+        yesTokenId: 'yes-fw',
+        noTokenId: 'no-fw'
+      },
+      yesBook: makeProjectionBook('yes-fw', 0.45, 0.44, now),
+      noBook: makeProjectionBook('no-fw', 0.45, 0.44, now),
+      policy: {
+        ...DEFAULT_TRADE_POLICY,
+        fwSelectionTopK: 0,
+        fwSelectionWeightFloor: 0,
+        fwMinEdgeThreshold: 0.0001,
+        fwRequireConverged: true
+      },
+      nowMs: now
+    });
+
+    expect(result.opportunity).toBeNull();
+    expect(result.reason).toBe('projection_requires_converged');
+    expect(
+      metrics.recent('fw_projection', 20).find(
+        (event) =>
+          event.data &&
+          typeof event.data === 'object' &&
+          (event.data as { event?: string; reason?: string }).event === 'projection_rejected' &&
+          (event.data as { reason?: string }).reason === 'projection_requires_converged'
+      )
+    ).toBeDefined();
+  });
+
+  it('keeps approximate iterate acceptance in permissive profiles', async () => {
+    const metrics = new MetricsStore(200);
+    const agent = buildAgent({ metrics });
+    const approximateLoop = makeApproximateLoopResult();
+    (agent as unknown as { loopEngine: { run: ReturnType<typeof vi.fn> } }).loopEngine = {
+      run: vi.fn().mockResolvedValue(approximateLoop)
+    };
+    const now = Date.now();
+
+    const result = await agent.projectPair({
+      pair: {
+        marketId: 'm-fw',
+        yesTokenId: 'yes-fw',
+        noTokenId: 'no-fw'
+      },
+      yesBook: makeProjectionBook('yes-fw', 0.45, 0.44, now),
+      noBook: makeProjectionBook('no-fw', 0.45, 0.44, now),
+      policy: {
+        ...DEFAULT_TRADE_POLICY,
+        fwSelectionTopK: 0,
+        fwSelectionWeightFloor: 0,
+        fwMinEdgeThreshold: 0.0001,
+        fwRequireConverged: false
+      },
+      nowMs: now
+    });
+
+    expect(result.opportunity?.type).toBe('fw_projection');
+    expect(result.opportunity?.fw?.loop?.converged).toBe(false);
+    expect(
+      metrics.recent('fw_projection', 20).find(
+        (event) =>
+          event.data &&
+          typeof event.data === 'object' &&
+          (event.data as { event?: string }).event === 'non_converged_iterate_accepted'
+      )
+    ).toBeDefined();
   });
 });

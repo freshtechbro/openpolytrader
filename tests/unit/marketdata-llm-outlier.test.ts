@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { randomUUID } from 'node:crypto';
 import { readFileSync, rmSync } from 'node:fs';
 
 import { MarketDataAgent } from '../../src/agents/market-data/MarketDataAgent.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 import { EventStore } from '../../src/core/EventStore.js';
 import { loadEnv } from '../../src/config/env.js';
 import { loadLLMConfig } from '../../src/config/llm.js';
@@ -14,8 +14,14 @@ import type { PolymarketClob } from '../../src/services/PolymarketClob.js';
 import type { PolymarketRealtime } from '../../src/services/PolymarketRealtime.js';
 import type { OrderBookState } from '../../src/domain/orderbook.js';
 
+let messageBus = createMessageBus();
+
 describe('MarketDataAgent LLM outlier detection', () => {
   const paths: string[] = [];
+
+  beforeEach(() => {
+    messageBus = createMessageBus();
+  });
 
   afterEach(() => {
     for (const path of paths.splice(0, paths.length)) {
@@ -48,6 +54,7 @@ describe('MarketDataAgent LLM outlier detection', () => {
       {
         tokenIds: [],
         policy: DEFAULT_TRADE_POLICY,
+        messageBus,
         llm: {
           config: llmConfig,
           client: llmClient,
@@ -108,6 +115,7 @@ describe('MarketDataAgent LLM outlier detection', () => {
       {
         tokenIds: [],
         policy: DEFAULT_TRADE_POLICY,
+        messageBus,
         eventStore: store,
         llm: {
           config: llmConfig,
@@ -175,6 +183,7 @@ describe('MarketDataAgent LLM outlier detection', () => {
       {
         tokenIds: [],
         policy: DEFAULT_TRADE_POLICY,
+        messageBus,
         eventStore: store,
         llm: {
           config: llmConfig,

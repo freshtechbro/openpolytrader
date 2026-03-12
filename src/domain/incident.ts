@@ -45,60 +45,53 @@ export interface IncidentRecord {
   recoveryAction?: 'block' | 'quarantine' | 'pause' | 'alert_only';
 }
 
+const DEFAULT_SEVERITY_BY_REASON: Partial<Record<IncidentReason, IncidentSeverity>> = {
+  auth_failure: 'critical',
+  circuit_breaker: 'critical',
+  unwind_failed: 'critical',
+  fill_mismatch: 'critical',
+  recon_drift: 'critical',
+  order_cancel_failed: 'critical',
+  order_failed: 'high',
+  order_timeout: 'high',
+  order_rejected: 'high',
+  partial_fill: 'high',
+  unwind_triggered: 'high',
+  latency_exceeded: 'high',
+  slippage_exceeded: 'high',
+  depth_insufficient: 'high',
+  price_moved: 'high',
+  velocity_throttle: 'high',
+  otr_exceeded: 'high',
+  order_delayed: 'medium',
+  ws_disconnected: 'medium',
+  rpc_degraded: 'medium',
+  api_429: 'medium',
+  api_5xx: 'medium',
+  book_stale: 'medium',
+  book_inconsistent: 'medium'
+};
+
+const DEFAULT_RECOVERY_ACTION_BY_REASON: Partial<Record<IncidentReason, IncidentRecord['recoveryAction']>> = {
+  auth_failure: 'pause',
+  circuit_breaker: 'pause',
+  rpc_degraded: 'pause',
+  ws_disconnected: 'pause',
+  api_429: 'pause',
+  api_5xx: 'pause',
+  recon_drift: 'pause',
+  fill_mismatch: 'pause',
+  order_cancel_failed: 'pause',
+  unwind_failed: 'block',
+  unknown: 'alert_only'
+};
+
 export function getDefaultSeverity(reason: IncidentReason): IncidentSeverity {
-  switch (reason) {
-    case 'auth_failure':
-    case 'circuit_breaker':
-    case 'unwind_failed':
-    case 'fill_mismatch':
-    case 'recon_drift':
-    case 'order_cancel_failed':
-      return 'critical';
-    case 'order_failed':
-    case 'order_timeout':
-    case 'order_rejected':
-    case 'partial_fill':
-    case 'unwind_triggered':
-    case 'latency_exceeded':
-    case 'slippage_exceeded':
-    case 'depth_insufficient':
-    case 'price_moved':
-    case 'velocity_throttle':
-    case 'otr_exceeded':
-      return 'high';
-    case 'order_delayed':
-    case 'ws_disconnected':
-    case 'rpc_degraded':
-    case 'api_429':
-    case 'api_5xx':
-    case 'book_stale':
-    case 'book_inconsistent':
-      return 'medium';
-    case 'unknown':
-    default:
-      return 'low';
-  }
+  return DEFAULT_SEVERITY_BY_REASON[reason] ?? 'low';
 }
 
 export function getDefaultRecoveryAction(
   reason: IncidentReason
 ): IncidentRecord['recoveryAction'] {
-  switch (reason) {
-    case 'auth_failure':
-    case 'circuit_breaker':
-    case 'rpc_degraded':
-    case 'ws_disconnected':
-    case 'api_429':
-    case 'api_5xx':
-    case 'recon_drift':
-    case 'fill_mismatch':
-    case 'order_cancel_failed':
-      return 'pause';
-    case 'unwind_failed':
-      return 'block';
-    case 'unknown':
-      return 'alert_only';
-    default:
-      return 'quarantine';
-  }
+  return DEFAULT_RECOVERY_ACTION_BY_REASON[reason] ?? 'quarantine';
 }

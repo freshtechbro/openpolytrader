@@ -3,9 +3,7 @@
  * Events: 'trading:mode_changed', 'trading:enabled_changed'
  */
 
-import { EventEmitter } from 'events';
-
-export type TradingMode = 'off' | 'shadow' | 'paper' | 'live';
+type TradingMode = 'off' | 'shadow' | 'paper' | 'live';
 
 export interface TradingState {
   enabled: boolean;
@@ -14,28 +12,29 @@ export interface TradingState {
   changedBy: 'env' | 'api';
 }
 
-export interface TradingModeChangeEvent {
+interface TradingModeChangeEvent {
   previousMode: TradingMode;
   newMode: TradingMode;
   changedAt: Date;
   changedBy: 'env' | 'api';
 }
 
-export interface TradingEnabledChangeEvent {
+interface TradingEnabledChangeEvent {
   previousEnabled: boolean;
   newEnabled: boolean;
   changedAt: Date;
   changedBy: 'env' | 'api';
 }
 
-export class TradingStateManager extends EventEmitter {
+export class TradingStateManager {
   private _enabled: boolean;
   private _mode: TradingMode;
   private _changedAt: Date;
   private _changedBy: 'env' | 'api';
+  private readonly modeChangeListeners = new Set<(event: TradingModeChangeEvent) => void>();
+  private readonly enabledChangeListeners = new Set<(event: TradingEnabledChangeEvent) => void>();
 
   constructor(initialEnabled: boolean, initialMode: TradingMode) {
-    super();
     this._enabled = initialEnabled;
     this._mode = initialMode;
     this._changedAt = new Date();
@@ -88,7 +87,9 @@ export class TradingStateManager extends EventEmitter {
       changedBy,
     };
 
-    this.emit('trading:mode_changed', event);
+    for (const listener of this.modeChangeListeners) {
+      listener(event);
+    }
     return true;
   }
 
@@ -109,15 +110,17 @@ export class TradingStateManager extends EventEmitter {
       changedBy,
     };
 
-    this.emit('trading:enabled_changed', event);
+    for (const listener of this.enabledChangeListeners) {
+      listener(event);
+    }
     return true;
   }
 
   onModeChange(callback: (event: TradingModeChangeEvent) => void): void {
-    this.on('trading:mode_changed', callback);
+    this.modeChangeListeners.add(callback);
   }
 
   onEnabledChange(callback: (event: TradingEnabledChangeEvent) => void): void {
-    this.on('trading:enabled_changed', callback);
+    this.enabledChangeListeners.add(callback);
   }
 }

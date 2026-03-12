@@ -28,61 +28,61 @@ describe('market catalog CLI wrappers', () => {
 
   it('marketCatalogGeneratorCli sets exit code on error', async () => {
     mainMock.mockRejectedValueOnce(new Error('boom'));
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await import('../../src/tools/marketCatalogGeneratorCli.js');
     await flushMicrotasks();
 
     expect(mainMock).toHaveBeenCalledWith(process.argv);
     expect(process.exitCode).toBe(1);
-    expect(consoleSpy).toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalled();
 
-    consoleSpy.mockRestore();
+    stderrSpy.mockRestore();
     process.exitCode = originalExitCode;
   });
 
   it('marketCatalogGeneratorCli leaves exit code on success', async () => {
     mainMock.mockResolvedValueOnce(undefined);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await import('../../src/tools/marketCatalogGeneratorCli.js');
     await flushMicrotasks();
 
     expect(mainMock).toHaveBeenCalledWith(process.argv);
     expect(process.exitCode).toBeUndefined();
-    expect(consoleSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).not.toHaveBeenCalled();
 
-    consoleSpy.mockRestore();
+    stderrSpy.mockRestore();
     process.exitCode = originalExitCode;
   });
 
   it('marketCatalogPrestartCli sets exit code on error', async () => {
     prestartMock.mockRejectedValueOnce(new Error('boom'));
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await import('../../src/tools/marketCatalogPrestartCli.js');
     await flushMicrotasks();
 
     expect(prestartMock).toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
-    expect(consoleSpy).toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalled();
 
-    consoleSpy.mockRestore();
+    stderrSpy.mockRestore();
     process.exitCode = originalExitCode;
   });
 
   it('marketCatalogPrestartCli leaves exit code on success', async () => {
     prestartMock.mockResolvedValueOnce(undefined);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
     await import('../../src/tools/marketCatalogPrestartCli.js');
     await flushMicrotasks();
 
     expect(prestartMock).toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
-    expect(consoleSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).not.toHaveBeenCalled();
 
-    consoleSpy.mockRestore();
+    stderrSpy.mockRestore();
     process.exitCode = originalExitCode;
   });
 });

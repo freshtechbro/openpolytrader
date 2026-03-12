@@ -1,5 +1,5 @@
 {
-  "id": "extra_high",
-  "source": "settings/risk-gates/extra_high.json",
-  "updatedAt": "2026-02-02T17:10:23.653Z"
+  "id": "high",
+  "source": "settings/risk-gates/high.json",
+  "updatedAt": "2026-03-11T17:44:02.182Z"
 }

@@ -2,7 +2,7 @@ import { dot, evaluateFwGradient, evaluateFwObjective, l2Distance } from './obje
 import { projectToSimplex } from './simplex.js';
 import type { FwObjectiveContext, FwVertex } from './types.js';
 
-export interface HullSolveInput {
+interface HullSolveInput {
   activeSet: FwVertex[];
   context: FwObjectiveContext;
   initialWeights?: number[];
@@ -10,7 +10,7 @@ export interface HullSolveInput {
   tolerance: number;
 }
 
-export interface HullSolveResult {
+interface HullSolveResult {
   point: number[];
   weights: number[];
   objective: number;

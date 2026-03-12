@@ -3,10 +3,11 @@ import { useMemo, useState } from 'react';
 import { Panel } from '../components/Panel';
 import { Section } from '../components/Section';
 import { MetricsTable, type TableRow } from '../components/MetricsTable';
+import type { OpsIncident } from './Overview';
 
 const INCIDENTS_PREVIEW_LIMIT = 25;
 
-export function Incidents({ incidents }: { incidents: any[] }) {
+export function Incidents({ incidents }: { incidents: OpsIncident[] }) {
   const [showAllIncidents, setShowAllIncidents] = useState(false);
   const visibleIncidents = showAllIncidents ? incidents : incidents.slice(0, INCIDENTS_PREVIEW_LIMIT);
   const rows = useMemo<TableRow[]>(() => {

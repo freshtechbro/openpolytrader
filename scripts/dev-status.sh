@@ -113,6 +113,10 @@ if [[ "$backend_status" != "200" ]]; then
   echo "Backend health is not 200." >&2
   exit 1
 fi
+if [[ "$backend_ready_status" != "200" ]]; then
+  echo "Backend readiness is not 200." >&2
+  exit 1
+fi
 if [[ "$dashboard_ok" != "true" ]]; then
   echo "Dashboard health is not confirmed (HTTP != 200 and no live log-ready fallback)." >&2
   exit 1

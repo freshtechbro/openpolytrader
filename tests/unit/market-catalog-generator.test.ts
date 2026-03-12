@@ -7,6 +7,7 @@ import {
   cursorForOffset,
   findFirstOrderbookEnabledOffset,
   generateMarketCatalog,
+  MarketCatalogError,
   parseGeneratorArgs,
   readPairsFromFile,
   main as generatorMain,
@@ -403,19 +404,50 @@ describe('market catalog generator', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('returns [] for invalid catalog files', () => {
+  it('throws a typed error for invalid catalog files', () => {
     const dir = mkdtempSync(join(tmpdir(), 'catalog-bad-'));
     const file = join(dir, 'catalog.json');
     writeFileSync(file, '{not json', 'utf8');
-    expect(readPairsFromFile(file)).toEqual([]);
+
+    try {
+      readPairsFromFile(file);
+      throw new Error('expected readPairsFromFile to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(MarketCatalogError);
+      expect(error).toMatchObject({ code: 'catalog_content_invalid' });
+    }
+
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('returns [] when the catalog file contains a non-array JSON payload', () => {
+  it('throws a typed error when the catalog file contains a non-array JSON payload', () => {
     const dir = mkdtempSync(join(tmpdir(), 'catalog-nonarray-'));
     const file = join(dir, 'catalog.json');
     writeFileSync(file, JSON.stringify({ nope: true }), 'utf8');
-    expect(readPairsFromFile(file)).toEqual([]);
+
+    try {
+      readPairsFromFile(file);
+      throw new Error('expected readPairsFromFile to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(MarketCatalogError);
+      expect(error).toMatchObject({ code: 'catalog_content_invalid' });
+    }
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('throws a typed error when the catalog file cannot be read', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'catalog-missing-'));
+    const file = join(dir, 'missing.json');
+
+    try {
+      readPairsFromFile(file);
+      throw new Error('expected readPairsFromFile to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(MarketCatalogError);
+      expect(error).toMatchObject({ code: 'catalog_read_failed' });
+    }
+
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -1089,7 +1121,7 @@ describe('market catalog generator', () => {
     process.env.POLYMARKET_CLOB_BASE_URL = savedBaseUrl;
   });
 
-  it('skips markets when orderbook verification throws (catch)', async () => {
+  it('throws a typed error when orderbook verification fails', async () => {
     const savedBaseUrl = process.env.POLYMARKET_CLOB_BASE_URL;
     process.env.POLYMARKET_CLOB_BASE_URL = 'https://clob.test';
 
@@ -1134,8 +1166,12 @@ describe('market catalog generator', () => {
       })
     );
 
-    const result = await generateMarketCatalog({ outPath: file, mode: 'near-zero', maxPairs: 1, merge: false });
-    expect(result.pairs).toEqual([]);
+    await expect(generateMarketCatalog({ outPath: file, mode: 'near-zero', maxPairs: 1, merge: false })).rejects.toMatchObject({
+      code: 'orderbook_verification_failed'
+    });
+    await expect(generateMarketCatalog({ outPath: file, mode: 'near-zero', maxPairs: 1, merge: false })).rejects.toThrow(
+      'Orderbook verification failed for market 0xabc'
+    );
 
     vi.unstubAllGlobals();
     rmSync(dir, { recursive: true, force: true });
@@ -1403,6 +1439,27 @@ describe('market catalog generator', () => {
 
     vi.unstubAllGlobals();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('throws when merge mode receives an invalid existing catalog file', async () => {
+    const savedBaseUrl = process.env.POLYMARKET_CLOB_BASE_URL;
+    process.env.POLYMARKET_CLOB_BASE_URL = 'https://clob.test';
+
+    const dir = mkdtempSync(join(tmpdir(), 'catalog-merge-invalid-'));
+    const file = join(dir, 'market-catalog.json');
+    writeFileSync(file, '{not json', 'utf8');
+
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(generateMarketCatalog({ outPath: file, mode: 'any', merge: true, verifyBooks: false })).rejects.toMatchObject({
+      code: 'catalog_content_invalid'
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+    rmSync(dir, { recursive: true, force: true });
+    process.env.POLYMARKET_CLOB_BASE_URL = savedBaseUrl;
   });
 
   it('skips pairs when requireMetadata=true and /book is missing metadata', async () => {

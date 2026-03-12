@@ -1,8 +1,12 @@
-import type { EventStore } from '../../core/EventStore.js';
 import type { LatencyEvent } from '../../telemetry/events.js';
 import type { MetricEvent, MetricEventType } from '../../telemetry/metrics.js';
 
-export interface SLOAggregate {
+type SloMetricStore = Pick<
+  import('../../core/EventStore.js').EventStore,
+  'queryMetricsByTypes'
+>;
+
+interface SLOAggregate {
   window: '1h' | '24h';
   pairedFillRate: number;
   p95LatencyMs: number;
@@ -18,7 +22,7 @@ export interface SLOAggregate {
   };
 }
 
-export interface SLOAggregatesResponse {
+interface SLOAggregatesResponse {
   generatedAtMs: number;
   aggregates: SLOAggregate[];
 }
@@ -34,7 +38,7 @@ const SLO_TYPES: MetricEventType[] = [
   'incident'
 ];
 
-export function computeSloAggregates(store: EventStore, nowMs = Date.now()): SLOAggregatesResponse {
+export function computeSloAggregates(store: SloMetricStore, nowMs = Date.now()): SLOAggregatesResponse {
   return {
     generatedAtMs: nowMs,
     aggregates: [
@@ -45,7 +49,7 @@ export function computeSloAggregates(store: EventStore, nowMs = Date.now()): SLO
 }
 
 function computeWindow(
-  store: EventStore,
+  store: SloMetricStore,
   input: { window: '1h' | '24h'; windowMs: number; nowMs: number }
 ): SLOAggregate {
   const events = store.queryMetricsByTypes(SLO_TYPES, input.windowMs, input.nowMs);

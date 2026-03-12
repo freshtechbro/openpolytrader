@@ -1,6 +1,6 @@
 import type { StoredEvent } from './EventStore.js';
 
-export type EventReducer<State> = (state: State, event: StoredEvent) => State;
+type EventReducer<State> = (state: State, event: StoredEvent) => State;
 
 export class StateRebuilder<State> {
   constructor(

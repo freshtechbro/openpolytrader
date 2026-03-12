@@ -1,34 +1,33 @@
 import type { TradePolicy } from '../../config/policy.js';
 import type { TradingMode } from '../../config/env.js';
 import { MarketAllowlist } from '../../domain/allowlist.js';
-import { evaluateEvGates, evaluateGatesWithFees } from '../../domain/gates.js';
 import { createUniformTakerFeeModel } from '../../domain/feeModel.js';
 import type { DependencyMarketInput } from '../../domain/dependency.js';
 import { type MarketPair } from '../../domain/market.js';
 import { type OrderBookState } from '../../domain/orderbook.js';
-import { ArbitrageOpportunity, evOpportunityId, opportunityId } from '../../domain/opportunity.js';
+import { ArbitrageOpportunity } from '../../domain/opportunity.js';
 import type { MetricsStore } from '../../telemetry/metrics.js';
 import type { EventStore } from '../../core/EventStore.js';
+import type { RuntimeEventMap } from '../../core/runtimeEvents.js';
 import type { FwProjectionAgent } from '../projection/FwProjectionAgent.js';
-import { messageBus } from '../../core/MessageBus.js';
-import { ScannerScoreSchema } from '../../domain/llm.js';
+import { resolveMessageBus, type MessageBus } from '../../core/MessageBus.js';
 import type { LLMConfig as AppLLMConfig } from '../../config/llm.js';
-import type { LLMCallResult, LLMRequest } from '../../services/llm/types.js';
-import { logLLMDecision } from '../../services/llm/LLMDecisionLogger.js';
-import { safeParseJSON } from '../../utils/serialization.js';
+import type { LLMClientPort } from '../../services/llm/types.js';
 import { mapWithConcurrency } from '../../utils/concurrency.js';
-import { clamp01 } from '../../utils/math.js';
-import { normalizeReasonKey, shouldEmitScopedReason } from '../../utils/eventDedupe.js';
+import {
+  scoreScannerOpportunity,
+  type ScannerInsight
+} from './ScannerOpportunityScorer.js';
+import { evaluateScannerPair } from './ScannerPairEvaluator.js';
 
-const REJECTION_EMISSION_COOLDOWN_MS = 3000;
-
-export interface ScannerAgentConfig {
+interface ScannerAgentConfig {
   tradingMode?: TradingMode;
+  messageBus?: MessageBus<RuntimeEventMap>;
   metrics?: MetricsStore;
   eventStore?: EventStore;
   llm?: {
     config: AppLLMConfig;
-    client: { call: (agent: 'ScannerAgent', request: LLMRequest) => Promise<LLMCallResult> };
+    client: LLMClientPort<'ScannerAgent'>;
     promptVersion: string;
     policyHashes: { tradePolicyHash: string; riskConfigHash: string };
   };
@@ -37,11 +36,12 @@ export interface ScannerAgentConfig {
 
 export class ScannerAgent {
   private tradingMode: TradingMode;
+  private messageBus: MessageBus<RuntimeEventMap>;
   private metrics?: MetricsStore;
   private store?: EventStore;
   private llm?: NonNullable<ScannerAgentConfig['llm']>;
-  private insightHandler: ((payload: unknown) => void) | null = null;
-  private insightsByMarketId = new Map<string, { market_id: string; signal: string; value: number; ttl_ms: number; confidence: number; expiresAtMs: number }>();
+  private insightHandler: ((payload: RuntimeEventMap['learning:insight']) => void) | null = null;
+  private insightsByMarketId = new Map<string, ScannerInsight & { expiresAtMs: number }>();
   private shadowScoringInFlight = false;
   private lastShadowScoringStartAtMs = 0;
   private lastEvOpportunityAt = new Map<string, number>();
@@ -56,6 +56,7 @@ export class ScannerAgent {
     config?: ScannerAgentConfig
   ) {
     this.tradingMode = config?.tradingMode ?? 'off';
+    this.messageBus = resolveMessageBus<RuntimeEventMap>(config?.messageBus, 'ScannerAgent');
     this.metrics = config?.metrics;
     this.store = config?.eventStore;
     this.llm = config?.llm;
@@ -63,10 +64,8 @@ export class ScannerAgent {
     this.fwProjectionAgent = config?.fwProjectionAgent;
 
     this.insightHandler = (payload) => {
-      const parsed = payload as { insights?: Array<{ market_id: string; signal: string; value: number; ttl_ms: number; confidence: number }> };
-      if (!Array.isArray(parsed.insights)) return;
       const nowMs = Date.now();
-      for (const insight of parsed.insights) {
+      for (const insight of payload.insights) {
         if (!insight || typeof insight.market_id !== 'string' || insight.market_id.length === 0) continue;
         if (typeof insight.ttl_ms !== 'number' || !Number.isFinite(insight.ttl_ms) || insight.ttl_ms <= 0) continue;
         if (typeof insight.value !== 'number' || !Number.isFinite(insight.value)) continue;
@@ -74,12 +73,12 @@ export class ScannerAgent {
         this.insightsByMarketId.set(insight.market_id, { ...insight, expiresAtMs: nowMs + insight.ttl_ms });
       }
     };
-    messageBus.on('learning:insight', this.insightHandler);
+    this.messageBus.on('learning:insight', this.insightHandler);
   }
 
   stop(): void {
     if (this.insightHandler) {
-      messageBus.off('learning:insight', this.insightHandler);
+      this.messageBus.off('learning:insight', this.insightHandler);
       this.insightHandler = null;
     }
   }
@@ -223,85 +222,13 @@ export class ScannerAgent {
     if (!llm || !llm.config.enabled) return candidates.map((opportunity) => ({ opportunity, score: opportunity.edge }));
 
     return mapWithConcurrency(candidates, maxConcurrency, async (opportunity) => {
-        const insight = this.getInsight(opportunity.marketId, nowMs);
-        const promptEnvelope = {
-          task: 'score_market',
-          inputs: {
-            market_id: opportunity.marketId,
-            current_edge: opportunity.edge,
-            recent_outcomes: insight
-              ? { signal: insight.signal, value: insight.value, confidence: insight.confidence }
-              : null,
-            book_quality: {
-              depth: opportunity.maxSizeByDepth,
-              spread: Math.max(opportunity.tickSize, 0)
-            }
-          },
-          constraints: { no_trade_decisions: true },
-          output: { priority_score: 0.5, rationale: '...', confidence: 0.5 }
-        };
-
-        const request: LLMRequest = {
-          endpoint: 'chat.completions',
-          model: llm.config.agents.ScannerAgent.model,
-          temperature: 0,
-          max_tokens: 300,
-          response_format: { type: 'json_object' },
-          messages: [
-            {
-              role: 'developer',
-              content:
-                'Return JSON only, with shape: {"priority_score":number,"rationale":string,"confidence":number}. Do NOT make trade decisions; only rank opportunities. Use only the inputs. Score must be between 0 and 1 and reflect relative priority vs the deterministic edge. recent_outcomes may be null and that is expected; still score using current_edge and book_quality. Only return priority_score=0.5, confidence=0, rationale="insufficient_data" when current_edge or book_quality is missing/invalid and you cannot score safely. Confidence must be between 0 and 1. No prose.'
-            },
-            { role: 'user', content: JSON.stringify(promptEnvelope) }
-          ]
-        };
-
-        const call = await llm.client.call('ScannerAgent', request);
-        const hasOutputText = Boolean(call.outputText);
-        const parsed = hasOutputText ? safeParseJSON(call.outputText) : null;
-        const validated = hasOutputText
-          ? ScannerScoreSchema.safeParse(parsed)
-          : ({ success: false } as const);
-        const missingOutput = !hasOutputText;
-
-        const output = validated.success
-          ? validated.data
-          : {
-              priority_score: 0.5,
-              rationale: missingOutput ? 'missing_output_text' : 'invalid_output',
-              confidence: 0
-            };
-        const violations = missingOutput ? ['missing_output_text'] : validated.success ? [] : ['invalid_output'];
-
-        logLLMDecision({
-          agent: 'ScannerAgent',
-          mode,
-          task: 'score_market',
-          subject: opportunity.id,
-          baseline: { deterministic_priority: opportunity.edge },
-          output,
-          confidence: output.confidence,
-          applied: mode === 'advisory',
-          clamp: {
-            raw: safeParseJSON(call.outputText),
-            final: output,
-            bounds: { priority_score: [0, 1] },
-            violations
-          },
+        const score = await scoreScannerOpportunity({
+          opportunity,
+          insight: this.getInsight(opportunity.marketId, nowMs),
           nowMs,
-          call,
-          request,
-          promptEnvelopeForHash: promptEnvelope,
-          contextForHash: { deterministic_priority: opportunity.edge },
-          promptVersion: llm.promptVersion,
-          policyHashes: llm.policyHashes,
-          providerFallback: {
-            providerId: llm.config.agents.ScannerAgent.provider,
-            baseUrl: llm.config.providers[llm.config.agents.ScannerAgent.provider].baseUrl,
-            endpoint: request.endpoint,
-            model: request.model
-          },
+          mode,
+          llm,
+          messageBus: this.messageBus,
           store: this.store
         });
 
@@ -314,13 +241,12 @@ export class ScannerAgent {
               opportunityId: opportunity.id,
               marketId: opportunity.marketId,
               deterministicPriority: opportunity.edge,
-              llmPriority: output.priority_score,
-              confidence: output.confidence
+              llmPriority: score
             }
           });
         }
 
-        return { opportunity, score: output.priority_score };
+        return { opportunity, score };
       });
   }
 
@@ -343,94 +269,25 @@ export class ScannerAgent {
       return null;
     }
 
-    const allowNearZero = this.policy.signalMode !== 'ev';
-    const allowEv = this.policy.signalMode !== 'near_zero';
-
-    let nearZeroOpportunity: ArbitrageOpportunity | null = null;
-    if (allowNearZero) {
-      const gateDecision = evaluateGatesWithFees({
-        yesBook,
-        noBook,
-        policy: this.policy,
-        nowMs,
-        venue: 'polymarket',
-        feeModel: this.nearZeroFeeModel
-      });
-
-      if (!gateDecision.passed) {
-        const reasonKey = normalizeReasonKey(gateDecision.reasons);
-        if (
-          shouldEmitScopedReason(
-            this.gateRejectionEmissionState,
-            pair.marketId,
-            reasonKey,
-            nowMs,
-            REJECTION_EMISSION_COOLDOWN_MS
-          )
-        ) {
-          const gateOpportunityId = buildGateOpportunityId(pair, yesBook, noBook, nowMs);
-          this.metrics?.record({
-            type: 'gate_rejection',
-            timestamp: nowMs,
-            data: {
-              opportunityId: gateOpportunityId,
-              marketId: pair.marketId,
-              reasons: gateDecision.reasons,
-              gateDecision
-            }
-          });
-        }
-      } else {
-        const bestYes = yesBook.bestAsk!;
-        const bestNo = noBook.bestAsk!;
-        const minOrderSize = Math.max(yesBook.minOrderSize, noBook.minOrderSize);
-        const tickSize = Math.max(yesBook.tickSize, noBook.tickSize);
-
-        nearZeroOpportunity = {
-          id: opportunityId(pair.marketId, bestYes.price, bestNo.price, nowMs),
-          marketId: pair.marketId,
-          yesTokenId: pair.yesTokenId,
-          noTokenId: pair.noTokenId,
-          yesPrice: bestYes.price,
-          noPrice: bestNo.price,
-          costPerSet: gateDecision.costPerSet,
-          edge: gateDecision.edge,
-          tickSize,
-          maxSizeByDepth: gateDecision.maxSizeByDepth,
-          minOrderSize,
-          detectedAt: nowMs,
-          gateReasons: gateDecision.reasons,
-          pair,
-          type: 'near_zero'
-        };
-      }
-    }
-
-    let evOpportunity: ArbitrageOpportunity | null = null;
-    if (allowEv) {
-      evOpportunity = this.buildEvOpportunity(pair, yesBook, noBook, nowMs);
-    }
-
-    if (nearZeroOpportunity && evOpportunity) {
-      if (evOpportunity.edge > nearZeroOpportunity.edge) {
-        this.lastEvOpportunityAt.set(pair.marketId, nowMs);
-        return evOpportunity;
-      }
-      return nearZeroOpportunity;
-    }
-
-    if (evOpportunity) {
-      this.lastEvOpportunityAt.set(pair.marketId, nowMs);
-      return evOpportunity;
-    }
-
-    return nearZeroOpportunity;
+    return evaluateScannerPair({
+      pair,
+      yesBook,
+      noBook,
+      policy: this.policy,
+      nowMs,
+      nearZeroFeeModel: this.nearZeroFeeModel,
+      metrics: this.metrics,
+      gateRejectionEmissionState: this.gateRejectionEmissionState,
+      evSignalEmissionState: this.evSignalEmissionState,
+      lastEvOpportunityAt: this.lastEvOpportunityAt,
+      getInsight: (marketId, insightNowMs) => this.getInsight(marketId, insightNowMs)
+    });
   }
 
   private getInsight(
     marketId: string,
     nowMs: number
-  ): { market_id: string; signal: string; value: number; ttl_ms: number; confidence: number } | null {
+  ): ScannerInsight | null {
     const cached = this.insightsByMarketId.get(marketId);
     if (!cached) return null;
     if (nowMs >= cached.expiresAtMs) {
@@ -441,199 +298,4 @@ export class ScannerAgent {
     return rest;
   }
 
-  private buildEvOpportunity(
-    pair: MarketPair,
-    yesBook: OrderBookState,
-    noBook: OrderBookState,
-    nowMs: number
-  ): ArbitrageOpportunity | null {
-    const insight = this.getInsight(pair.marketId, nowMs);
-    const signalConfidence = insight?.confidence ?? 0;
-    const hasSignal = typeof insight?.value === 'number' && Number.isFinite(insight.value);
-    const signalAllowed = hasSignal && signalConfidence >= this.policy.evModelConfidenceFloor;
-    const pSignal = signalAllowed ? clamp01(insight!.value) : undefined;
-
-    if (this.policy.evModelMode === 'llm_only' && pSignal === undefined) {
-      const reason = 'ev_missing_signal';
-      if (
-        shouldEmitScopedReason(
-          this.evSignalEmissionState,
-          `${pair.marketId}:na`,
-          reason,
-          nowMs,
-          REJECTION_EMISSION_COOLDOWN_MS
-        )
-      ) {
-        this.metrics?.record({
-          type: 'ev_signal',
-          timestamp: nowMs,
-          data: { marketId: pair.marketId, reason }
-        });
-      }
-      return null;
-    }
-
-    const pMarket = computeMarketPrior(yesBook, noBook);
-    const pFinal = computeFinalProbability(pMarket, pSignal, signalConfidence, this.policy);
-
-    const yesAsk = yesBook.bestAsk?.price;
-    const noAsk = noBook.bestAsk?.price;
-    if (!Number.isFinite(yesAsk) || !Number.isFinite(noAsk)) return null;
-
-    const evYes = pFinal - yesAsk!;
-    const evNo = (1 - pFinal) - noAsk!;
-    const side: 'yes' | 'no' = evYes >= evNo ? 'yes' : 'no';
-    const evRaw = side === 'yes' ? evYes : evNo;
-    const slippageEstimate = this.policy.entrySlippageToleranceBps / 10000;
-    const feeEstimate = Math.max(this.policy.evFeeBps, 0) / 10000;
-    const evNet = evRaw - feeEstimate - slippageEstimate;
-    const modelConfidence = clamp01(signalAllowed ? signalConfidence : 0);
-
-    const lastEvAt = this.lastEvOpportunityAt.get(pair.marketId) ?? 0;
-    if (this.policy.evCooldownSeconds > 0 && nowMs - lastEvAt < this.policy.evCooldownSeconds * 1000) {
-      const reason = 'ev_cooldown';
-      if (
-        shouldEmitScopedReason(
-          this.evSignalEmissionState,
-          `${pair.marketId}:${side}`,
-          reason,
-          nowMs,
-          REJECTION_EMISSION_COOLDOWN_MS
-        )
-      ) {
-        this.metrics?.record({
-          type: 'ev_signal',
-          timestamp: nowMs,
-          data: { marketId: pair.marketId, side, evNet, confidence: modelConfidence, reason }
-        });
-      }
-      return null;
-    }
-
-    const gateDecision = evaluateEvGates({
-      yesBook,
-      noBook,
-      policy: this.policy,
-      nowMs,
-      side,
-      evEdge: evNet,
-      confidence: modelConfidence
-    });
-
-    if (!gateDecision.passed) {
-      const reasonKey = normalizeReasonKey(gateDecision.reasons);
-      if (
-        shouldEmitScopedReason(
-          this.evSignalEmissionState,
-          `${pair.marketId}:${side}`,
-          reasonKey,
-          nowMs,
-          REJECTION_EMISSION_COOLDOWN_MS
-        )
-      ) {
-        this.metrics?.record({
-          type: 'ev_signal',
-          timestamp: nowMs,
-          data: { marketId: pair.marketId, side, evNet, confidence: modelConfidence, reason: gateDecision.reasons }
-        });
-      }
-      return null;
-    }
-
-    const price = side === 'yes' ? yesAsk! : noAsk!;
-    const minOrderSize = Math.max(side === 'yes' ? yesBook.minOrderSize : noBook.minOrderSize, 0);
-    const tickSize = Math.max(yesBook.tickSize, noBook.tickSize);
-
-    this.metrics?.record({
-      type: 'ev_signal',
-      timestamp: nowMs,
-      data: { marketId: pair.marketId, side, evNet, confidence: modelConfidence, reason: 'ev_selected' }
-    });
-
-    return {
-      id: evOpportunityId(pair.marketId, side, price, pFinal, nowMs),
-      marketId: pair.marketId,
-      yesTokenId: pair.yesTokenId,
-      noTokenId: pair.noTokenId,
-      yesPrice: yesAsk!,
-      noPrice: noAsk!,
-      costPerSet: price,
-      edge: evNet,
-      tickSize,
-      maxSizeByDepth: gateDecision.maxSizeByDepth,
-      minOrderSize,
-      detectedAt: nowMs,
-      gateReasons: gateDecision.reasons,
-      pair,
-      type: 'ev',
-      side,
-      pFinal,
-      evRaw,
-      evNet,
-      modelConfidence
-    };
-  }
-
-}
-
-function computeMarketPrior(yesBook: OrderBookState, noBook: OrderBookState): number {
-  const yesAsk = yesBook.bestAsk?.price ?? 0;
-  const yesBid = yesBook.bestBid?.price ?? yesAsk;
-  const noAsk = noBook.bestAsk?.price ?? 0;
-  const noBid = noBook.bestBid?.price ?? noAsk;
-  const yesMid = yesAsk > 0 && yesBid > 0 ? (yesAsk + yesBid) / 2 : yesAsk || yesBid || 0.5;
-  const noMid = noAsk > 0 && noBid > 0 ? (noAsk + noBid) / 2 : noAsk || noBid || 0.5;
-  return clamp01((yesMid + (1 - noMid)) / 2);
-}
-
-function computeFinalProbability(
-  pMarket: number,
-  pSignal: number | undefined,
-  confidence: number,
-  policy: TradePolicy
-): number {
-  const w = clamp01(confidence);
-  let combined = pMarket;
-
-  if (policy.evModelMode === 'llm_only') {
-    combined = pSignal ?? pMarket;
-  } else if (policy.evModelMode === 'hybrid') {
-    combined = pSignal === undefined ? pMarket : (1 - w) * pMarket + w * pSignal;
-  } else {
-    combined = pMarket;
-  }
-
-  const clamped = clamp01(combined);
-  const logit = toLogit(clamped);
-
-  if (policy.evCalibrationMethod === 'temperature') {
-    return clamp01(sigmoid(logit / 1.5));
-  }
-
-  if (policy.evCalibrationMethod === 'sigmoid') {
-    return clamp01(sigmoid(logit * 0.9));
-  }
-
-  return clamped;
-}
-
-function toLogit(p: number): number {
-  const bounded = Math.min(1 - 1e-6, Math.max(1e-6, p));
-  return Math.log(bounded / (1 - bounded));
-}
-
-function sigmoid(x: number): number {
-  return 1 / (1 + Math.exp(-x));
-}
-
-function buildGateOpportunityId(
-  pair: MarketPair,
-  yesBook: OrderBookState,
-  noBook: OrderBookState,
-  nowMs: number
-): string {
-  if (yesBook.bestAsk && noBook.bestAsk) {
-    return opportunityId(pair.marketId, yesBook.bestAsk.price, noBook.bestAsk.price, nowMs);
-  }
-  return `${pair.marketId}:gate-rejection:${nowMs}`;
 }

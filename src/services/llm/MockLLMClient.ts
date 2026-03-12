@@ -1,6 +1,6 @@
 import type { LLMCallResult, LLMAgentId, LLMProviderId, LLMRequest, LLMUsage } from './types.js';
 
-export interface MockLLMClientOptions {
+interface MockLLMClientOptions {
   defaultProviderId?: LLMProviderId;
   defaultBaseUrl?: string;
   defaultLatencyMs?: number;
@@ -9,7 +9,7 @@ export interface MockLLMClientOptions {
   nowMs?: () => number;
 }
 
-export interface MockLLMResponse {
+interface MockLLMResponse {
   status: LLMCallResult['status'];
   outputText?: string | null;
   endpoint?: LLMCallResult['endpoint'];

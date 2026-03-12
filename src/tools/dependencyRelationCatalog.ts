@@ -6,7 +6,7 @@ import { buildDependencyRelationCatalogEntries } from '../agents/dependency/Depe
 import { loadEnv } from '../config/env.js';
 import { MarketCatalog } from '../services/MarketCatalog.js';
 
-export interface DependencyRelationCatalogArgs {
+interface DependencyRelationCatalogArgs {
   outPath?: string;
   marketCatalogPath?: string;
   semantic?: boolean;
@@ -70,7 +70,7 @@ Options:
 `);
 }
 
-export interface DependencyRelationCatalogBuildResult {
+interface DependencyRelationCatalogBuildResult {
   outPath: string;
   marketCatalogPath: string;
   relations: number;
@@ -79,7 +79,7 @@ export interface DependencyRelationCatalogBuildResult {
   relationTypeCounts: Record<DependencyRelation, number>;
 }
 
-export async function buildDependencyRelationCatalog(
+export function buildDependencyRelationCatalog(
   args: DependencyRelationCatalogArgs = {}
 ): Promise<DependencyRelationCatalogBuildResult> {
   const env = loadEnv();
@@ -113,14 +113,14 @@ export async function buildDependencyRelationCatalog(
   writeFileSync(tmpPath, `${JSON.stringify(relations, null, 2)}\n`, 'utf8');
   renameSync(tmpPath, outPath);
 
-  return {
+  return Promise.resolve({
     outPath,
     marketCatalogPath,
     relations: relations.length,
     deterministicRelations: built.deterministicRelations,
     semanticRelations: built.semanticRelations,
     relationTypeCounts: built.relationTypeCounts
-  };
+  });
 }
 
 export async function main(argv: string[] = process.argv): Promise<void> {

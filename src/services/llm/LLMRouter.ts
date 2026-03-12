@@ -2,7 +2,7 @@ import type { LLMConfig as AppLLMConfig, LLMProviderConfig } from '../../config/
 
 import type { LLMAgentId, LLMProviderId } from './types.js';
 
-export interface LLMProviderSelection {
+interface LLMProviderSelection {
   primaryId: LLMProviderId;
   fallbackId: LLMProviderId;
   primary: LLMProviderConfig;

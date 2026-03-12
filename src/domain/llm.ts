@@ -1,9 +1,7 @@
 import { z } from 'zod';
 
-import type { LLMAgentId, LLMProviderId, LLMEndpoint } from '../services/llm/types.js';
-
-export const LLMProviderIdSchema = z.enum(['opencode-zen', 'openrouter']);
-export const LLMAgentIdSchema = z.enum([
+const LLMProviderIdSchema = z.enum(['opencode-zen', 'openrouter']);
+const LLMAgentIdSchema = z.enum([
   'ExecutionAgent',
   'RiskAgent',
   'ScannerAgent',
@@ -13,10 +11,10 @@ export const LLMAgentIdSchema = z.enum([
   'OpsAgent'
 ]);
 
-export const LLMModeSchema = z.enum(['disabled', 'shadow', 'advisory', 'active']);
-export const LLMEndpointSchema = z.enum(['chat.completions', 'responses', 'messages']);
+const LLMModeSchema = z.enum(['disabled', 'shadow', 'advisory', 'active']);
+const LLMEndpointSchema = z.enum(['chat.completions', 'responses', 'messages']);
 
-export const LLMDecisionClampSchema = z
+const LLMDecisionClampSchema = z
   .object({
     raw: z.unknown().optional(),
     final: z.unknown().optional(),
@@ -124,6 +122,12 @@ export const LLMDecisionReasoningV1Schema = z
 
 export type LLMDecisionReasoningV1 = z.infer<typeof LLMDecisionReasoningV1Schema>;
 
+export interface LLMCallErrorInfo {
+  type: string;
+  status?: number;
+  message: string;
+}
+
 export const LearningInsightSchema = z
   .object({
     market_id: z.string().min(1),
@@ -143,8 +147,6 @@ export const LearningInsightEventSchema = z
   })
   .strict();
 
-export type LearningInsightEvent = z.infer<typeof LearningInsightEventSchema>;
-
 export const ScannerScoreSchema = z
   .object({
     priority_score: z.number().min(0).max(1),
@@ -161,7 +163,7 @@ export const RiskSizeRecommendationSchema = z
   })
   .strict();
 
-export const ExecutionHintSchema = z
+const _ExecutionHintSchema = z
   .object({
     timeout_multiplier: z.number().min(0.1).max(2),
     unwind_hint: z.enum(['aggressive', 'neutral', 'conservative']),
@@ -201,17 +203,3 @@ export interface LLMDecisionEventPayload {
   raw_text?: string;
   at_ms?: number;
 }
-
-export interface LLMErrorEventPayload {
-  agent: LLMAgentId;
-  provider_id: LLMProviderId;
-  endpoint: LLMEndpoint;
-  model: string;
-  error: { type: string; status?: number; message: string };
-  at_ms: number;
-}
-
-export type LearningUpdateEventPayload = {
-  at_ms: number;
-  markets_tracked: number;
-};

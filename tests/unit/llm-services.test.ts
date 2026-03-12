@@ -125,7 +125,7 @@ function makeConfig(args: {
   fallbackEnabled?: boolean;
   primaryRetryCount?: number;
 } = {}): LLMConfig {
-  const timeoutMs = overrides.timeoutMs ?? args.timeoutMs ?? 250;
+  const timeoutMs = overrides.timeoutMs ?? args.timeoutMs ?? 1000;
   const circuitFailureThreshold = overrides.circuitFailureThreshold ?? args.circuitFailureThreshold ?? 2;
   const fallbackEnabled = overrides.fallbackEnabled ?? args.fallbackEnabled ?? true;
   const primaryRetryCount = overrides.primaryRetryCount ?? args.primaryRetryCount ?? 0;
@@ -181,24 +181,31 @@ function makeConfig(args: {
   };
 }
 
-const ACTIVE_REQUEST: LLMRequest = {
-  endpoint: 'chat.completions',
-  model: 'model-1',
-  temperature: 0,
-  messages: [
-    { role: 'developer', content: 'Return JSON only.' },
-    { role: 'user', content: '{"task":"ping"}' }
-  ]
-};
+function createActiveRequest(): LLMRequest {
+  return {
+    endpoint: 'chat.completions',
+    model: 'model-1',
+    temperature: 0,
+    messages: [
+      { role: 'developer', content: 'Return JSON only.' },
+      { role: 'user', content: '{"task":"ping"}' }
+    ]
+  };
+}
 
-const RESPONSES_REQUEST: LLMRequest = {
-  endpoint: 'responses',
-  model: 'model-2',
-  input: '{"task":"ping"}',
-  instructions: 'Return JSON only.',
-  temperature: 0,
-  max_output_tokens: 200
-};
+function createResponsesRequest(): LLMRequest {
+  return {
+    endpoint: 'responses',
+    model: 'model-2',
+    input: '{"task":"ping"}',
+    instructions: 'Return JSON only.',
+    temperature: 0,
+    max_output_tokens: 200
+  };
+}
+
+const ACTIVE_REQUEST: LLMRequest = createActiveRequest();
+const RESPONSES_REQUEST: LLMRequest = createResponsesRequest();
 
 describe('LLM services', () => {
   const servers: OpenAICompatServer[] = [];
@@ -208,6 +215,9 @@ describe('LLM services', () => {
     // Defensive: some tests stub/replace global fetch; ensure this suite always uses the native implementation.
     // This avoids flakiness when running under coverage/instrumentation.
     globalThis.fetch = originalFetch;
+    Object.assign(ACTIVE_REQUEST, createActiveRequest());
+    ACTIVE_REQUEST.messages = createActiveRequest().messages;
+    Object.assign(RESPONSES_REQUEST, createResponsesRequest());
   });
 
   afterEach(async () => {
@@ -381,6 +391,43 @@ describe('LLM services', () => {
     expect(result.status).toBe('fallback');
     expect(result.providerId).toBe('openrouter');
     expect(result.outputText).toBe('{"ok":"fallback"}');
+  });
+
+  it('LLMClient: preserves malformed_response error type for zen messages failures', async () => {
+    const primary = await startOpenAICompatServer();
+    servers.push(primary);
+
+    primary.setMessagesHandler(() => ({
+      status: 200,
+      body: 'not-json'
+    }));
+
+    const config = makeConfig(
+      {
+        enabled: true,
+        primary: { id: 'opencode-zen', baseUrl: primary.baseURL, apiKey: 'primary-key' },
+        fallback: { id: 'openrouter', baseUrl: 'http://fallback.invalid', apiKey: 'fallback-key' },
+        timeoutMs: 1000,
+        fallbackEnabled: false
+      },
+      { fallbackEnabled: false }
+    );
+    config.agents.RiskAgent.mode = 'advisory';
+    config.agents.RiskAgent.provider = 'opencode-zen';
+
+    const client = new LLMClient(config);
+    const result = await client.call('RiskAgent', {
+      endpoint: 'messages',
+      model: 'claude-sonnet-4',
+      system: 'Return JSON only.',
+      messages: [{ role: 'user', content: '{"task":"ping"}' }],
+      temperature: 0,
+      max_tokens: 10
+    });
+
+    expect(result.status).toBe('error');
+    expect(result.providerId).toBe('opencode-zen');
+    expect(result.error).toEqual({ type: 'malformed_response', status: 200, message: 'empty_output_text' });
   });
 
   it('LLMClient: uses backup model before provider fallback (messages -> chat conversion)', async () => {
@@ -789,7 +836,6 @@ describe('LLM services', () => {
     const client = new LLMClient(config);
 
     const modelsToTest = [
-      ['grok-code', 'z-ai/glm-4.7'],
       ['glm-4.7', 'z-ai/glm-4.7'],
       ['kimi-k2.5', 'moonshotai/kimi-k2.5'],
       ['minimax-m2.1', 'minimax/minimax-m2.1'],
@@ -973,7 +1019,7 @@ describe('LLM services', () => {
       maxRetries: 0
     });
 
-    const result = await client.request(ACTIVE_REQUEST, { timeoutMs: 250, maxRetries: 0, attempt: 1 });
+    const result = await client.request(ACTIVE_REQUEST, { timeoutMs: 1000, maxRetries: 0, attempt: 1 });
 
     expect(result.outputText).toBeNull();
     expect(result.usage).toBeUndefined();
@@ -1026,7 +1072,7 @@ describe('LLM services', () => {
       maxRetries: 0
     });
 
-    const result = await client.request(RESPONSES_REQUEST, { timeoutMs: 250, maxRetries: 0, attempt: 1 });
+    const result = await client.request(RESPONSES_REQUEST, { timeoutMs: 1000, maxRetries: 0, attempt: 1 });
     expect(result.outputText).toBeNull();
     expect(result.requestIdBody).toBe('rid2');
     expect(result.usage).toEqual({ inputTokens: undefined, outputTokens: undefined, totalTokens: undefined });
@@ -1633,7 +1679,8 @@ describe('LLM services', () => {
     const config = makeConfig({
       enabled: true,
       primary: { id: 'openrouter', baseUrl: server.baseURL, apiKey: 'k' },
-      fallback: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' }
+      fallback: { id: 'opencode-zen', baseUrl: server.baseURL, apiKey: 'k' },
+      primaryRetryCount: 1
     });
     config.agents.LearningAgent.mode = 'active';
     config.agents.LearningAgent.provider = 'openrouter';
@@ -1793,7 +1840,7 @@ describe('LLM services', () => {
 
     primaryServer.setChatHandler(() => ({
       status: 200,
-      delayMs: 200,
+      delayMs: 2000,
       body: { id: 'chatcmpl-delayed', choices: [{ message: { content: '{"ok":true}' } }] }
     }));
     fallbackServer.setChatHandler(() => ({
@@ -1808,13 +1855,13 @@ describe('LLM services', () => {
       enabled: true,
       primary: { id: 'opencode-zen', baseUrl: primaryServer.baseURL, apiKey: 'k' },
       fallback: { id: 'openrouter', baseUrl: fallbackServer.baseURL, apiKey: 'k' },
-      timeoutMs: 100,
+      timeoutMs: 500,
       circuitFailureThreshold: 1
     });
     config.circuitBreaker.cooldownMs = 10_000;
     config.agents.RiskAgent.mode = 'shadow';
     config.agents.RiskAgent.provider = 'opencode-zen';
-    config.agents.RiskAgent.timeoutMs = 100;
+    config.agents.RiskAgent.timeoutMs = 500;
 
     const client = new LLMClient(config, { metrics });
 

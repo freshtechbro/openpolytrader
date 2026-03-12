@@ -1,28 +1,21 @@
 import { useEffect, useState } from 'react';
+import type { OpsPortfolioSnapshot } from '../../../src/api/contracts.js';
 import { MetricsTable } from '../components/MetricsTable';
 import { Panel } from '../components/Panel';
 import { Section } from '../components/Section';
 import { opsFetchJson } from '../lib/opsClient';
 import { PORTFOLIO_REFRESH_MS } from '../lib/dashboardConfig';
 
-interface PortfolioSnapshot {
-  totalCapital: number;
-  availableCapital: number;
-  dailyPnL: number;
-  marketExposure: Record<string, number>;
-}
-
 export function Positions() {
-  const [portfolio, setPortfolio] = useState<PortfolioSnapshot | null>(null);
+  const [portfolio, setPortfolio] = useState<OpsPortfolioSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchPortfolio = async () => {
       try {
-        const data = await opsFetchJson<PortfolioSnapshot | { error?: string }>('/portfolio');
-        if ('error' in data && data.error) throw new Error(data.error);
-        setPortfolio(data as PortfolioSnapshot);
+        const data = await opsFetchJson<OpsPortfolioSnapshot>('/portfolio');
+        setPortfolio(data);
         setError(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to fetch portfolio');

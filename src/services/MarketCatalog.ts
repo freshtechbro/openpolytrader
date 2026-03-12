@@ -3,8 +3,9 @@ import { resolve } from 'node:path';
 
 import { MARKET_PAIRS } from '../config/markets.js';
 import type { MarketPair } from '../domain/market.js';
+import { normalizeOptionalString, normalizeTags } from './MarketCatalogMetadata.js';
 
-export interface MarketCatalogOptions {
+interface MarketCatalogOptions {
   filePath?: string;
 }
 
@@ -88,23 +89,4 @@ function mergePair(previous: MarketPair | undefined, incoming: MarketPair): Mark
     ...(category ? { category } : {}),
     ...(tags ? { tags } : {})
   };
-}
-
-function normalizeOptionalString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function normalizeTags(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const deduped = Array.from(
-    new Set(
-      value
-        .filter((tag): tag is string => typeof tag === 'string')
-        .map((tag) => tag.trim())
-        .filter(Boolean)
-    )
-  );
-  return deduped.length > 0 ? deduped : undefined;
 }

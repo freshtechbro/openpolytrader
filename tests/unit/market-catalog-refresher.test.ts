@@ -73,7 +73,7 @@ describe('MarketCatalogRefresher', () => {
   describe('constructor', () => {
     it('merges config with defaults', () => {
       const r = new MarketCatalogRefresher(
-        { gammaApiBaseUrl: 'https://test.com' },
+        {},
         mockClob as unknown as PolymarketClob
       );
       expect(r.getPairs()).toEqual([]);
@@ -1582,15 +1582,15 @@ describe('MarketCatalogRefresher', () => {
     });
 
     it('treats missing asks as acceptable spread', () => {
-      const { hasAcceptableSpread } = refresher as unknown as {
-        hasAcceptableSpread: (book: {
+      const { spreadWithinLimitOrUnavailable } = refresher as unknown as {
+        spreadWithinLimitOrUnavailable: (book: {
           bids?: Array<{ price: string | number }>;
           asks?: Array<{ price: string | number }>;
         }) => boolean;
       };
 
       expect(
-        hasAcceptableSpread({
+        spreadWithinLimitOrUnavailable({
           bids: [{ price: '0.50' }],
           asks: []
         })
@@ -1598,15 +1598,15 @@ describe('MarketCatalogRefresher', () => {
     });
 
     it('uses best levels for spread checks across mixed ordering (pass)', () => {
-      const { hasAcceptableSpread } = refresher as unknown as {
-        hasAcceptableSpread: (book: {
+      const { spreadWithinLimitOrUnavailable } = refresher as unknown as {
+        spreadWithinLimitOrUnavailable: (book: {
           bids?: Array<{ price: string | number }>;
           asks?: Array<{ price: string | number }>;
         }) => boolean;
       };
 
       expect(
-        hasAcceptableSpread.call(refresher, {
+        spreadWithinLimitOrUnavailable.call(refresher, {
           bids: [{ price: '0.10' }, { price: '0.49' }],
           asks: [{ price: '0.90' }, { price: '0.50' }]
         })
@@ -1614,15 +1614,15 @@ describe('MarketCatalogRefresher', () => {
     });
 
     it('uses best levels for spread checks across mixed ordering (reject)', () => {
-      const { hasAcceptableSpread } = refresher as unknown as {
-        hasAcceptableSpread: (book: {
+      const { spreadWithinLimitOrUnavailable } = refresher as unknown as {
+        spreadWithinLimitOrUnavailable: (book: {
           bids?: Array<{ price: string | number }>;
           asks?: Array<{ price: string | number }>;
         }) => boolean;
       };
 
       expect(
-        hasAcceptableSpread.call(refresher, {
+        spreadWithinLimitOrUnavailable.call(refresher, {
           bids: [{ price: '0.15' }, { price: '0.20' }],
           asks: [{ price: '0.80' }, { price: '0.23' }]
         })
@@ -1632,7 +1632,7 @@ describe('MarketCatalogRefresher', () => {
     it('handles empty response', async () => {
       fetchMock.mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({})
+        json: () => Promise.resolve([])
       });
       
       const result = await refresher.refresh();

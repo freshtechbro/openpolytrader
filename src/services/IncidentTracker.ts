@@ -6,7 +6,7 @@ import {
 } from '../domain/incident.js';
 import type { MetricsStore } from '../telemetry/metrics.js';
 
-export interface IncidentTrackerConfig {
+interface IncidentTrackerConfig {
   cooldownMs: number;
   maxIncidents: number;
 }

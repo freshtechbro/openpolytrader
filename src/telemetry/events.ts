@@ -18,7 +18,7 @@ export interface LatencyEvent {
   cumulativeMs?: number;
 }
 
-export interface GateRejectionEvent {
+interface _GateRejectionEvent {
   opportunityId: string;
   marketId: string;
   reasons: string[];
@@ -26,7 +26,7 @@ export interface GateRejectionEvent {
   timestampMs: number;
 }
 
-export interface ExecutionLifecycleEvent {
+interface _ExecutionLifecycleEvent {
   executionId: string;
   opportunityId: string;
   marketId: string;
@@ -38,7 +38,7 @@ export interface ExecutionLifecycleEvent {
   error?: string;
 }
 
-export interface EvSignalEvent {
+interface _EvSignalEvent {
   marketId: string;
   side?: 'yes' | 'no';
   evNet?: number;
@@ -46,17 +46,24 @@ export interface EvSignalEvent {
   reason?: string | string[];
 }
 
-export interface WebSearchMetricEvent {
+interface _WebSearchMetricEvent {
   event: string;
-  provider?: 'exa' | 'firecrawl';
+  provider?: 'exa' | 'firecrawl' | 'serper' | 'gdelt';
   kind?: string;
   marketId?: string;
   confidence?: number;
   count?: number;
   error?: string;
+  route?: 'skip' | 'serper' | 'exa' | 'serper_then_exa' | 'firecrawl' | 'unknown';
+  reason?: string;
+  triggerScore?: number;
+  queryMode?: 'base_only' | 'base_plus_one' | 'base_plus_two';
+  requestedUrls?: number;
+  expandedUrls?: number;
+  providers?: string[];
 }
 
-export interface FwDependencyMetricEvent {
+interface _FwDependencyMetricEvent {
   event: string;
   mode?: 'deterministic' | 'llm' | 'hybrid';
   hybridMerge?: 'consensus' | 'union';
@@ -71,7 +78,7 @@ export interface FwDependencyMetricEvent {
   fallbackSource?: 'deterministic' | 'llm' | null;
 }
 
-export interface FwOracleMetricEvent {
+interface _FwOracleMetricEvent {
   event: string;
   status?: 'optimal' | 'feasible' | 'infeasible' | 'timeout' | 'error' | 'unknown';
   runtimeMs?: number;
@@ -80,7 +87,7 @@ export interface FwOracleMetricEvent {
   error?: string | null;
 }
 
-export interface FwProjectionMetricEvent {
+interface _FwProjectionMetricEvent {
   event: string;
   marketId: string;
   projectedEdge?: number;
@@ -89,33 +96,33 @@ export interface FwProjectionMetricEvent {
   reason?: string;
 }
 
-export interface FwIterationMetricEvent {
+interface _FwIterationMetricEvent {
   loopId: string;
   iteration: number;
   objective: number;
   runtimeMs: number;
 }
 
-export interface FwGapMetricEvent {
+interface _FwGapMetricEvent {
   loopId: string;
   iteration: number;
   abs: number;
   rel: number;
 }
 
-export interface FwContractionMetricEvent {
+interface _FwContractionMetricEvent {
   loopId: string;
   steps: number;
   terminalReason: string;
 }
 
-export interface FwActiveSetMetricEvent {
+interface _FwActiveSetMetricEvent {
   loopId: string;
   iteration: number;
   size: number;
 }
 
-export interface FwBasketMetricEvent {
+interface _FwBasketMetricEvent {
   event: string;
   basketId?: string;
   markets?: number;
@@ -123,13 +130,13 @@ export interface FwBasketMetricEvent {
   edgeLowerBound?: number;
 }
 
-export type SloName =
+type SloName =
   | 'decision_latency'
   | 'book_freshness'
   | 'delayed_ack_rate'
   | 'paired_fill_rate';
 
-export interface SloViolationEvent {
+interface _SloViolationEvent {
   sloName: SloName;
   threshold: number;
   actual: number;

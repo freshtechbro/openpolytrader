@@ -24,21 +24,21 @@ const STREAM_BADGE_META: Record<
 > = {
   connecting: {
     label: 'Connecting',
-    background: 'rgba(148, 163, 184, 0.2)',
-    color: '#64748b',
-    dot: '#64748b'
+    background: 'var(--bg-muted)',
+    color: 'var(--ink-light)',
+    dot: 'var(--ink-light)'
   },
   live: {
     label: 'Live',
-    background: 'rgba(34, 197, 94, 0.2)',
-    color: '#22c55e',
-    dot: '#22c55e'
+    background: 'var(--signal-soft)',
+    color: 'var(--signal)',
+    dot: 'var(--signal)'
   },
   offline: {
     label: 'Offline',
-    background: 'rgba(239, 68, 68, 0.2)',
-    color: '#ef4444',
-    dot: '#ef4444'
+    background: 'var(--alert-soft)',
+    color: 'var(--alert)',
+    dot: 'var(--alert)'
   }
 };
 

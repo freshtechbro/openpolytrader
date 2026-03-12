@@ -52,16 +52,26 @@ export interface DependencyResolutionResult {
   summary: DependencyResolutionSummary;
 }
 
-export interface DependencyGraphQualityStats {
+interface DependencyGraphQualityStats {
   edgeCount: number;
   componentCount: number;
   coverage: number;
   relationTypeCounts: Record<DependencyRelation, number>;
 }
 
-export interface DeterministicDependencyExtractOptions {
+interface DeterministicDependencyExtractOptions {
   source?: DependencySource;
   evidencePrefix?: string;
+}
+
+interface NormalizedCatalogFields {
+  marketA: string;
+  marketB: string;
+  relationType: DependencyRelation;
+  confidence: number;
+  evidence: string;
+  eventKey: string;
+  asOfMs: number;
 }
 
 const OPPOSITE_MARKERS: ReadonlyArray<[string, string]> = [
@@ -71,6 +81,135 @@ const OPPOSITE_MARKERS: ReadonlyArray<[string, string]> = [
   ['for', 'against'],
   ['increase', 'decrease']
 ];
+const PARTITION_PROMPT_PREFIXES = ['which ', 'who ', 'what '];
+const RELATION_TYPE_VALUES: DependencyRelation[] = [
+  'mutual_exclusive',
+  'implies',
+  'complementary',
+  'partition'
+];
+
+function normalizeCatalogFields(record: Record<string, unknown>): NormalizedCatalogFields | null {
+  if (
+    typeof record.marketA !== 'string' ||
+    typeof record.marketB !== 'string' ||
+    typeof record.relationType !== 'string' ||
+    typeof record.evidence !== 'string' ||
+    typeof record.eventKey !== 'string' ||
+    typeof record.asOfMs !== 'number' ||
+    !Number.isFinite(record.asOfMs)
+  ) {
+    return null;
+  }
+
+  const marketA = record.marketA.trim();
+  const marketB = record.marketB.trim();
+  const eventKey = record.eventKey.trim();
+  const evidence = record.evidence.trim();
+  if (!marketA || !marketB || marketA === marketB || !eventKey || !evidence) {
+    return null;
+  }
+  if (!isDependencyRelation(record.relationType)) {
+    return null;
+  }
+
+  return {
+    marketA,
+    marketB,
+    relationType: record.relationType,
+    confidence: clampDependencyConfidence(
+      typeof record.confidence === 'number' ? record.confidence : Number(record.confidence)
+    ),
+    evidence,
+    eventKey,
+    asOfMs: Math.floor(record.asOfMs)
+  };
+}
+
+function buildDeterministicDependencyEdge(
+  left: DependencyMarketInput,
+  right: DependencyMarketInput,
+  relationType: DependencyRelation,
+  confidence: number,
+  evidence: string,
+  source: DependencySource,
+  extractedAtMs: number
+): DependencyEdge {
+  return {
+    marketA: left.marketId,
+    marketB: right.marketId,
+    relationType,
+    confidence,
+    source,
+    evidence,
+    extractedAtMs
+  };
+}
+
+function resolveDeterministicRelation(
+  left: DependencyMarketInput,
+  right: DependencyMarketInput,
+  source: DependencySource,
+  evidencePrefix: string,
+  nowMs: number
+): DependencyEdge | null {
+  const leftText = normalizeText(left.question ?? left.marketId);
+  const rightText = normalizeText(right.question ?? right.marketId);
+  const leftStem = textStem(leftText);
+  const rightStem = textStem(rightText);
+
+  const hasOppositeMarkers = OPPOSITE_MARKERS.some(
+    ([a, b]) =>
+      (leftText.includes(a) && rightText.includes(b)) ||
+      (leftText.includes(b) && rightText.includes(a))
+  );
+  if (hasOppositeMarkers && leftStem === rightStem && leftStem.length > 0) {
+    return buildDeterministicDependencyEdge(
+      left,
+      right,
+      'mutual_exclusive',
+      0.9,
+      `${evidencePrefix}:opposite_markers_with_shared_stem`,
+      source,
+      nowMs
+    );
+  }
+
+  const sharedTags = countSharedTags(left.tags, right.tags);
+  if (sharedTags >= 2 && left.category && right.category && left.category === right.category) {
+    return buildDeterministicDependencyEdge(
+      left,
+      right,
+      'complementary',
+      0.7,
+      `${evidencePrefix}:shared_category_and_tags`,
+      source,
+      nowMs
+    );
+  }
+
+  if (
+    isPartitionPrompt(leftText) &&
+    isPartitionPrompt(rightText) &&
+    hasSharedDefinedCategory(left.category, right.category)
+  ) {
+    return buildDeterministicDependencyEdge(
+      left,
+      right,
+      'partition',
+      0.65,
+      `${evidencePrefix}:partition_prompt_overlap`,
+      source,
+      nowMs
+    );
+  }
+
+  return null;
+}
+
+function hasSharedDefinedCategory(left: string | undefined, right: string | undefined): boolean {
+  return typeof left === 'string' && left.length > 0 && left === right;
+}
 
 export function clampDependencyConfidence(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -81,7 +220,7 @@ export function dependencyEdgeKey(edge: Pick<DependencyEdge, 'marketA' | 'market
   if (edge.relationType === 'implies') {
     return `${edge.marketA}>${edge.marketB}:${edge.relationType}`;
   }
-  const [left, right] = [edge.marketA, edge.marketB].sort();
+  const [left, right] = [edge.marketA, edge.marketB].sort((a, b) => a.localeCompare(b));
   return `${left}|${right}:${edge.relationType}`;
 }
 
@@ -95,7 +234,7 @@ export function withSortedMarkets(edge: DependencyEdge): DependencyEdge {
   };
 }
 
-export function isDependencyRelation(value: string): value is DependencyRelation {
+function isDependencyRelation(value: string): value is DependencyRelation {
   return (
     value === 'mutual_exclusive' ||
     value === 'implies' ||
@@ -120,36 +259,7 @@ export function normalizeRelationCatalogEntry(
   value: unknown
 ): DependencyRelationCatalogEntry | null {
   if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record.marketA !== 'string' ||
-    typeof record.marketB !== 'string' ||
-    typeof record.relationType !== 'string' ||
-    typeof record.evidence !== 'string' ||
-    typeof record.eventKey !== 'string' ||
-    typeof record.asOfMs !== 'number' ||
-    !Number.isFinite(record.asOfMs)
-  ) {
-    return null;
-  }
-  const marketA = record.marketA.trim();
-  const marketB = record.marketB.trim();
-  const eventKey = record.eventKey.trim();
-  const evidence = record.evidence.trim();
-  if (!marketA || !marketB || marketA === marketB || !eventKey || !evidence) return null;
-  if (!isDependencyRelation(record.relationType)) return null;
-  const confidence = clampDependencyConfidence(
-    typeof record.confidence === 'number' ? record.confidence : Number(record.confidence)
-  );
-  return {
-    marketA,
-    marketB,
-    relationType: record.relationType,
-    confidence,
-    evidence,
-    eventKey,
-    asOfMs: Math.floor(record.asOfMs)
-  };
+  return normalizeCatalogFields(value as Record<string, unknown>);
 }
 
 export function extractDeterministicDependencyEdges(
@@ -165,56 +275,9 @@ export function extractDeterministicDependencyEdges(
     for (let j = i + 1; j < markets.length; j += 1) {
       const left = markets[i];
       const right = markets[j];
-
-      const leftText = normalizeText(left.question ?? left.marketId);
-      const rightText = normalizeText(right.question ?? right.marketId);
-      const leftStem = textStem(leftText);
-      const rightStem = textStem(rightText);
-
-      const hasOppositeMarkers = OPPOSITE_MARKERS.some(([a, b]) => {
-        return (
-          (leftText.includes(a) && rightText.includes(b)) ||
-          (leftText.includes(b) && rightText.includes(a))
-        );
-      });
-
-      if (hasOppositeMarkers && leftStem === rightStem && leftStem.length > 0) {
-        edges.push({
-          marketA: left.marketId,
-          marketB: right.marketId,
-          relationType: 'mutual_exclusive',
-          confidence: 0.9,
-          source,
-          evidence: `${evidencePrefix}:opposite_markers_with_shared_stem`,
-          extractedAtMs: nowMs
-        });
-        continue;
-      }
-
-      const sharedTags = countSharedTags(left.tags, right.tags);
-      if (sharedTags >= 2 && left.category && right.category && left.category === right.category) {
-        edges.push({
-          marketA: left.marketId,
-          marketB: right.marketId,
-          relationType: 'complementary',
-          confidence: 0.7,
-          source,
-          evidence: `${evidencePrefix}:shared_category_and_tags`,
-          extractedAtMs: nowMs
-        });
-        continue;
-      }
-
-      if (isPartitionPrompt(leftText) && isPartitionPrompt(rightText) && left.category === right.category) {
-        edges.push({
-          marketA: left.marketId,
-          marketB: right.marketId,
-          relationType: 'partition',
-          confidence: 0.65,
-          source,
-          evidence: `${evidencePrefix}:partition_prompt_overlap`,
-          extractedAtMs: nowMs
-        });
+      const edge = resolveDeterministicRelation(left, right, source, evidencePrefix, nowMs);
+      if (edge) {
+        edges.push(edge);
       }
     }
   }
@@ -279,12 +342,9 @@ export function computeDependencyGraphQualityStats(
 }
 
 function initRelationTypeCounts(): Record<DependencyRelation, number> {
-  return {
-    mutual_exclusive: 0,
-    implies: 0,
-    complementary: 0,
-    partition: 0
-  };
+  return Object.fromEntries(
+    RELATION_TYPE_VALUES.map((relationType) => [relationType, 0])
+  ) as Record<DependencyRelation, number>;
 }
 
 function normalizeText(value: string): string {
@@ -312,5 +372,5 @@ function countSharedTags(left: string[] | undefined, right: string[] | undefined
 }
 
 function isPartitionPrompt(value: string): boolean {
-  return value.startsWith('which ') || value.startsWith('who ') || value.startsWith('what ');
+  return PARTITION_PROMPT_PREFIXES.some((prefix) => value.startsWith(prefix));
 }

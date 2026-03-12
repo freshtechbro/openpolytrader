@@ -1,16 +1,21 @@
 import type { JsonRpcProvider } from 'ethers';
 
-import { getRpcProvider, type RpcProvider } from '../config/rpc.js';
+import type { Env } from '../config/env.js';
+import { createRpcProvider, RpcProvider } from '../config/rpc.js';
 
-export interface PolygonRpcOptions {
+interface PolygonRpcOptions {
   waitConfirmations: number;
   waitTimeoutMs: number;
 }
 
 export class PolygonRpc {
+  static fromEnv(env: Env, options: PolygonRpcOptions, capital?: number): PolygonRpc {
+    return new PolygonRpc(options, createRpcProvider(env, capital));
+  }
+
   constructor(
     private options: PolygonRpcOptions,
-    private rpcProvider: RpcProvider = getRpcProvider()
+    private rpcProvider: RpcProvider
   ) {}
 
   async send<T>(method: string, params?: unknown[]): Promise<T> {

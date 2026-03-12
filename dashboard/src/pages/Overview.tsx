@@ -6,6 +6,7 @@ import { Section } from '../components/Section';
 import { MetricsTable, type TableRow } from '../components/MetricsTable';
 import { Panel } from '../components/Panel';
 import { INCIDENTS_PREVIEW_LIMIT } from '../lib/dashboardConfig';
+import type { JsonRecord } from '../lib/json';
 
 export type HealthReport = {
   status: 'healthy' | 'degraded';
@@ -55,12 +56,23 @@ export interface FinalIntent {
   orderReason?: string;
 }
 
-export interface OverviewProps {
+export interface OpsIncident {
+  timestamp?: number;
+  check?: string;
+  result?: {
+    error?: string;
+    info?: string;
+    meta?: JsonRecord;
+  };
+  meta?: JsonRecord;
+}
+
+interface OverviewProps {
   health: HealthReport | null;
   metrics: MetricsSnapshot | null;
   slo: SloAggregates | null;
   intents: FinalIntent[];
-  incidents: any[];
+  incidents: OpsIncident[];
   expanded: boolean;
   onToggleExpanded: () => void;
 }

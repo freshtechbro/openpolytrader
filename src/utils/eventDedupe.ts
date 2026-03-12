@@ -1,4 +1,4 @@
-export interface ScopedReasonEmissionState {
+interface ScopedReasonEmissionState {
   reasonKey: string;
   timestampMs: number;
 }
@@ -24,7 +24,7 @@ export function normalizeReasonKey(reasons: readonly string[] | string): string 
     return reasons;
   }
 
-  const normalized = normalizeReasonList(reasons).sort();
+  const normalized = normalizeReasonList(reasons).sort((left, right) => left.localeCompare(right));
 
   return normalized.length > 0 ? normalized.join('|') : 'unknown';
 }

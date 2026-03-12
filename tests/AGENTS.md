@@ -8,17 +8,18 @@ Vitest for backend (>97% thresholds across lines/functions/statements/branches),
 
 ```
 tests/
-├── unit/           # 93 test files
-├── integration/    # reserved for dedicated integration suites (currently empty)
+├── unit/           # 144 backend + dashboard unit suites
 └── fixtures/       # shared fixture payloads
 
 dashboard/tests/
-└── e2e/            # Playwright specs (*.spec.ts, 4 files)
+└── e2e/            # Playwright specs (*.spec.ts, 5 files)
 ```
 
 ## Local Instructions
 
 Local `AGENTS.md` files refine these rules:
+- `tests/fixtures/AGENTS.md`
+- `tests/fixtures/llm/AGENTS.md`
 - `tests/unit/AGENTS.md`
 - `dashboard/tests/AGENTS.md`
 - `dashboard/tests/e2e/AGENTS.md`
@@ -33,6 +34,7 @@ Thresholds from `vitest.config.ts`:
 
 Excluded from coverage:
 - `src/main.ts` (entry point)
+- `src/boot/runtime.ts` (runtime bootstrap orchestration)
 - See `vitest.config.ts` for the full exclusion list (includes selected services, agents, and domain files)
 
 ## Naming
@@ -49,8 +51,7 @@ npm run help           # root command/tool/flag reference
 npm run test           # vitest run
 npm run test:coverage  # with >97% thresholds
 
-cd dashboard
-npm run test:e2e       # Playwright
+npm --prefix dashboard run test:e2e
 
 # Live (from repo root)
 npm run dev:live       # Docker backend + dashboard dev server
@@ -95,9 +96,11 @@ afterEach(() => {
 
 | File | Lines | Coverage |
 |------|-------|----------|
-| `execution.test.ts` | 2843 | ExecutionAgent state machine |
+| `execution.test.ts` | 3174 | ExecutionAgent state machine |
+| `execution-helper-runners.test.ts` | 2502 | Split execution runners and timeout paths |
+| `llm-services.test.ts` | 2320 | Provider routing, retry, and logging paths |
 | `portfolio.test.ts` | 1283 | PortfolioAgent reconciliation |
-| `gates.test.ts` | 775 | Risk gates |
+| `gates.test.ts` | 1025 | Risk gates |
 
 ## Anti-Patterns
 

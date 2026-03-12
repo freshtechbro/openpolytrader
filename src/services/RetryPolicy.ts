@@ -1,4 +1,4 @@
-export interface RetryPolicyOptions {
+interface RetryPolicyOptions {
   maxRetries: number;
   baseDelayMs: number;
   maxDelayMs: number;

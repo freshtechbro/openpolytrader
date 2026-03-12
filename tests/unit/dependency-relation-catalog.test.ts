@@ -54,6 +54,25 @@ describe('DependencyRelationCatalog loader', () => {
       expect(snapshot.entries).toHaveLength(2);
       expect(snapshot.malformedEntries).toBe(1);
       expect(snapshot.loadedAtMs).toBe(2000);
+      expect(snapshot.loadError).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('distinguishes parse failures from missing files', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dep-rel-catalog-'));
+    const filePath = join(dir, 'relations.json');
+    try {
+      writeFileSync(filePath, '{broken json', 'utf8');
+
+      const parsed = loadDependencyRelationCatalog(filePath, 2000);
+      const missing = loadDependencyRelationCatalog(join(dir, 'missing.json'), 3000);
+
+      expect(parsed.loadError).toBe('parse_error');
+      expect(parsed.loadedAtMs).toBe(2000);
+      expect(missing.loadError).toBe('missing_file');
+      expect(missing.loadedAtMs).toBe(3000);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

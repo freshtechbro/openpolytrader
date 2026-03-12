@@ -4,7 +4,7 @@
 Applies to `tests/fixtures/`.
 
 ## Responsibilities
-- Shared static fixture payloads used across unit tests and optional integration suites.
+- Shared static fixture payloads used across backend and dashboard unit suites.
 
 ## Rules
 - Keep fixture payloads realistic and schema-valid.

@@ -30,7 +30,7 @@ describe('.env.example coverage', () => {
   it('does not include unknown keys', () => {
     const filePath = path.resolve(process.cwd(), '.env.example');
     const example = readFileSync(filePath, 'utf8');
-    const keys = [...parseEnvExampleKeys(example)].sort();
+    const keys = [...parseEnvExampleKeys(example)].sort((left, right) => left.localeCompare(right));
 
     const known = new Set(ENV_SCHEMA_KEYS);
     const unknown = keys.filter((key) => !known.has(key));

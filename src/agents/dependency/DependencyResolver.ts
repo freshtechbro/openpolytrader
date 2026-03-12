@@ -14,7 +14,7 @@ import {
 type DependencyMode = 'deterministic' | 'llm' | 'hybrid';
 type HybridMergeMode = 'consensus' | 'union';
 
-export interface DependencyExtractorResult {
+interface DependencyExtractorResult {
   edges: DependencyEdge[];
   reason?: string;
 }
@@ -470,13 +470,17 @@ function buildMarketUniverseCacheKey(markets: DependencyMarketInput[]): string {
   return markets
     .map((market) => {
       const tags = Array.isArray(market.tags)
-        ? market.tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean).sort().join(',')
+        ? market.tags
+            .map((tag) => tag.trim().toLowerCase())
+            .filter(Boolean)
+            .sort((left, right) => left.localeCompare(right))
+            .join(',')
         : '';
       const question = normalizeText(market.question ?? '');
       const category = normalizeText(market.category ?? '');
       return `${market.marketId}|${question}|${category}|${tags}`;
     })
-    .sort()
+    .sort((left, right) => left.localeCompare(right))
     .join('||');
 }
 

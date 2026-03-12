@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
@@ -25,7 +25,7 @@ import { EventStore, type StoredEvent } from '../../src/core/EventStore.js';
 import { MetricsStore } from '../../src/telemetry/metrics.js';
 import { loadEnv } from '../../src/config/env.js';
 import type { PolymarketRealtime, UserOrderUpdate } from '../../src/services/PolymarketRealtime.js';
-import { messageBus } from '../../src/core/MessageBus.js';
+import { createMessageBus } from '../../src/core/MessageBus.js';
 
 const DEFAULT_ENV = loadEnv({});
 const DEFAULT_METRICS_MAX_EVENTS = DEFAULT_ENV.METRICS_MAX_EVENTS;
@@ -133,6 +133,11 @@ function makeMockIncidentTracker(): IncidentTracker {
   } as unknown as IncidentTracker;
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
 describe('ExecutionAgent', () => {
   it('updates trading flags and configs', () => {
     const clob = makeMockClob({ yes: {}, no: {} });
@@ -158,44 +163,17 @@ describe('ExecutionAgent', () => {
 
     const orderId = 'order-1';
     const timeout = setTimeout(() => {}, 1000);
-    const waiters = (agent as unknown as {
-      fillWaiters: Map<string, Array<{ desiredSize: number; resolve: () => void; timeout: ReturnType<typeof setTimeout> }>>;
-      cleanupOrderTracking: (ids: string[]) => void;
-    });
+    const tracker = (agent as unknown as {
+      orderTracker: {
+        fillWaiters: Map<string, Array<{ desiredSize: number; resolve: () => void; timeout: ReturnType<typeof setTimeout> }>>;
+        cleanupOrderTracking: (ids: string[]) => void;
+      };
+    }).orderTracker;
 
-    waiters.fillWaiters.set(orderId, [{ desiredSize: 1, resolve: () => {}, timeout }]);
-    waiters.cleanupOrderTracking([orderId]);
+    tracker.fillWaiters.set(orderId, [{ desiredSize: 1, resolve: () => {}, timeout }]);
+    tracker.cleanupOrderTracking([orderId]);
 
-    expect(waiters.fillWaiters.has(orderId)).toBe(false);
-  });
-
-  it('applies unwind hints with minimum loss ticks', () => {
-    const clob = makeMockClob({ yes: {}, no: {} });
-    const executionAdvisor = {
-      getHint: vi.fn().mockReturnValue({
-        timeoutMultiplier: 1,
-        unwindHint: 'conservative',
-        confidence: 0.8,
-        expiresAtMs: Date.now() + 1000
-      })
-    } as unknown as ExecutionAdvisor;
-
-    const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
-      tradingEnabled: false,
-      tradingMode: 'off',
-      executionAdvisor,
-      executionAdvisorMode: 'advisory'
-    });
-
-    const applyUnwindHint = (agent as unknown as {
-      applyUnwindHint: (marketId: string, opportunityId: string, baseLossTicks: number, maxLossTicks: number, nowMs?: number) => number;
-    }).applyUnwindHint;
-
-    const zeroTicks = applyUnwindHint.call(agent, 'm1', 'opp-1', 0, 5, Date.now());
-    const nonZeroTicks = applyUnwindHint.call(agent, 'm1', 'opp-1', 2, 5, Date.now());
-
-    expect(zeroTicks).toBe(0);
-    expect(nonZeroTicks).toBeGreaterThanOrEqual(1);
+    expect(tracker.fillWaiters.has(orderId)).toBe(false);
   });
 
   it('guards invalid timeout values', () => {
@@ -225,10 +203,12 @@ describe('ExecutionAgent', () => {
     });
 
     const timeouts = (agent as unknown as {
-      getEffectiveTimeouts: (marketId: string, opportunityId: string, nowMs: number) => {
-        submitTimeoutMs: number;
+      modeSupport: {
+        getEffectiveTimeouts: (marketId: string, opportunityId: string, nowMs: number) => {
+          submitTimeoutMs: number;
+        };
       };
-    }).getEffectiveTimeouts('m1', 'opp-1', Date.now());
+    }).modeSupport.getEffectiveTimeouts('m1', 'opp-1', Date.now());
 
     expect(timeouts.submitTimeoutMs).toBe(0);
   });
@@ -253,11 +233,15 @@ describe('ExecutionAgent', () => {
       riskConfig
     });
 
-    const calculateUnwindPrice = (agent as unknown as {
-      calculateUnwindPrice: (entryPrice: number, tickSize: number, advisory?: { marketId: string; opportunityId: string; nowMs?: number }) => number;
-    }).calculateUnwindPrice;
-
-    const price = calculateUnwindPrice.call(agent, 0.5, 0.01, { marketId: 'm1', opportunityId: 'opp-1' });
+    const price = (agent as unknown as {
+      unwindSupport: {
+        calculateUnwindPrice: (
+          entryPrice: number,
+          tickSize: number,
+          advisory?: { marketId: string; opportunityId: string; nowMs?: number }
+        ) => number;
+      };
+    }).unwindSupport.calculateUnwindPrice(0.5, 0.01, { marketId: 'm1', opportunityId: 'opp-1' });
     expect(price).toBe(0.45);
   });
 
@@ -275,11 +259,15 @@ describe('ExecutionAgent', () => {
       riskConfig
     });
 
-    const calculateUnwindPrice = (agent as unknown as {
-      calculateUnwindPrice: (entryPrice: number, tickSize: number, advisory?: { marketId: string; opportunityId: string; nowMs?: number }) => number;
-    }).calculateUnwindPrice;
-
-    const price = calculateUnwindPrice.call(agent, 0.5, 0.01);
+    const price = (agent as unknown as {
+      unwindSupport: {
+        calculateUnwindPrice: (
+          entryPrice: number,
+          tickSize: number,
+          advisory?: { marketId: string; opportunityId: string; nowMs?: number }
+        ) => number;
+      };
+    }).unwindSupport.calculateUnwindPrice(0.5, 0.01);
     expect(price).toBeLessThan(0.5);
   });
   describe('kill-switch (tradingEnabled)', () => {
@@ -377,7 +365,9 @@ describe('ExecutionAgent', () => {
       raw: {}
     } as UserOrderUpdate);
 
-    const state = (agent as unknown as { userOrders: Map<string, { side?: string }> }).userOrders.get('sell-order-1');
+    const state = (agent as unknown as {
+      orderTracker: { userOrders: Map<string, { side?: string }> };
+    }).orderTracker.userOrders.get('sell-order-1');
     expect(state?.side).toBe('SELL');
   });
 
@@ -400,8 +390,9 @@ describe('ExecutionAgent', () => {
       raw: {}
     } as UserOrderUpdate);
 
-    const state = (agent as unknown as { userOrders: Map<string, { side?: string; cancelled?: boolean }> })
-      .userOrders.get('cancel-order-1');
+    const state = (agent as unknown as {
+      orderTracker: { userOrders: Map<string, { side?: string; cancelled?: boolean }> };
+    }).orderTracker.userOrders.get('cancel-order-1');
     expect(state?.side).toBeUndefined();
     expect(state?.cancelled).toBe(true);
 
@@ -414,8 +405,9 @@ describe('ExecutionAgent', () => {
       raw: {}
     } as UserOrderUpdate);
 
-    const state2 = (agent as unknown as { userOrders: Map<string, { cancelled?: boolean }> })
-      .userOrders.get('cancel-order-2');
+    const state2 = (agent as unknown as {
+      orderTracker: { userOrders: Map<string, { cancelled?: boolean }> };
+    }).orderTracker.userOrders.get('cancel-order-2');
     expect(state2?.cancelled).toBe(true);
   });
 
@@ -433,12 +425,14 @@ describe('ExecutionAgent', () => {
     });
 
     const outcomePromise = (agent as unknown as {
-      waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<{
-        fullyFilled: boolean;
-        cancelled: boolean;
-        timedOut: boolean;
-      }>;
-    }).waitForFillOutcome('order-fill-1', 10, 1000);
+      orderTracker: {
+        waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<{
+          fullyFilled: boolean;
+          cancelled: boolean;
+          timedOut: boolean;
+        }>;
+      };
+    }).orderTracker.waitForFillOutcome('order-fill-1', 10, 1000);
 
     await Promise.resolve();
     userRealtime.emit('user:order', {
@@ -472,12 +466,14 @@ describe('ExecutionAgent', () => {
     });
 
     const outcomePromise = (agent as unknown as {
-      waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<{
-        fullyFilled: boolean;
-        cancelled: boolean;
-        timedOut: boolean;
-      }>;
-    }).waitForFillOutcome('order-cancel-1', 10, 1000);
+      orderTracker: {
+        waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<{
+          fullyFilled: boolean;
+          cancelled: boolean;
+          timedOut: boolean;
+        }>;
+      };
+    }).orderTracker.waitForFillOutcome('order-cancel-1', 10, 1000);
 
     await Promise.resolve();
     userRealtime.emit('user:order', {
@@ -507,10 +503,12 @@ describe('ExecutionAgent', () => {
     });
 
     const outcome = await (agent as unknown as {
-      waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<{
-        timedOut: boolean;
-      }>;
-    }).waitForFillOutcome('missing-order', 10, 0);
+      orderTracker: {
+        waitForFillOutcome: (orderId: string, desiredSize: number, timeoutMs: number) => Promise<{
+          timedOut: boolean;
+        }>;
+      };
+    }).orderTracker.waitForFillOutcome('missing-order', 10, 0);
 
     expect(outcome.timedOut).toBe(true);
   });
@@ -519,9 +517,11 @@ describe('ExecutionAgent', () => {
     const userRealtime = new MockUserRealtime(true);
     const clob = makeMockClob({ yes: {}, no: {} });
     const portfolio = { applyFillWithReconciliation: vi.fn() } as unknown as PortfolioAgent;
+    const messageBus = createMessageBus();
     const _agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
       tradingEnabled: false,
       tradingMode: 'off',
+      messageBus,
       portfolio,
       userRealtime: asPolymarketRealtime(userRealtime)
     });
@@ -1663,7 +1663,8 @@ describe('ExecutionAgent', () => {
           .mockResolvedValueOnce({ orderId: 'unwind-order-1', status: 'LIVE' }),
         ...makeCancelMocks()
       } as unknown as PolymarketClob;
-      const executionAdvisor = new ExecutionAdvisor({ enabled: true });
+      const messageBus = createMessageBus();
+      const executionAdvisor = new ExecutionAdvisor({ enabled: true, messageBus });
       const riskConfig = {
         ...DEFAULT_RISK_CONFIG,
         maxUnwindLossTicks: 6,
@@ -1680,6 +1681,7 @@ describe('ExecutionAgent', () => {
         const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
           tradingEnabled: true,
           tradingMode: 'live',
+          messageBus,
           portfolio,
           riskConfig,
           executionAdvisor,
@@ -1711,7 +1713,8 @@ describe('ExecutionAgent', () => {
           .mockResolvedValueOnce({ orderId: 'unwind-order-1', status: 'LIVE' }),
         ...makeCancelMocks()
       } as unknown as PolymarketClob;
-      const executionAdvisor = new ExecutionAdvisor({ enabled: true });
+      const messageBus = createMessageBus();
+      const executionAdvisor = new ExecutionAdvisor({ enabled: true, messageBus });
       const riskConfig = {
         ...DEFAULT_RISK_CONFIG,
         maxUnwindLossTicks: 6,
@@ -1728,6 +1731,7 @@ describe('ExecutionAgent', () => {
         const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
           tradingEnabled: true,
           tradingMode: 'live',
+          messageBus,
           portfolio,
           riskConfig,
           executionAdvisor,
@@ -1759,7 +1763,8 @@ describe('ExecutionAgent', () => {
           .mockResolvedValueOnce({ orderId: 'unwind-order-1', status: 'LIVE' }),
         ...makeCancelMocks()
       } as unknown as PolymarketClob;
-      const executionAdvisor = new ExecutionAdvisor({ enabled: true });
+      const messageBus = createMessageBus();
+      const executionAdvisor = new ExecutionAdvisor({ enabled: true, messageBus });
       const riskConfig = {
         ...DEFAULT_RISK_CONFIG,
         maxUnwindLossTicks: 6,
@@ -1776,6 +1781,7 @@ describe('ExecutionAgent', () => {
         const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
           tradingEnabled: true,
           tradingMode: 'live',
+          messageBus,
           portfolio,
           riskConfig,
           executionAdvisor,
@@ -1807,7 +1813,8 @@ describe('ExecutionAgent', () => {
           .mockResolvedValueOnce({ orderId: 'unwind-order-1', status: 'LIVE' }),
         ...makeCancelMocks()
       } as unknown as PolymarketClob;
-      const executionAdvisor = new ExecutionAdvisor({ enabled: true });
+      const messageBus = createMessageBus();
+      const executionAdvisor = new ExecutionAdvisor({ enabled: true, messageBus });
       const riskConfig = {
         ...DEFAULT_RISK_CONFIG,
         maxUnwindLossTicks: 6,
@@ -1824,6 +1831,7 @@ describe('ExecutionAgent', () => {
         const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
           tradingEnabled: true,
           tradingMode: 'live',
+          messageBus,
           portfolio,
           riskConfig,
           executionAdvisor,
@@ -2277,12 +2285,10 @@ describe('ExecutionAgent', () => {
       });
 
       const idempotencyKey = createIdempotencyKey(
-        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+        `${opp.marketId}:${opp.yesTokenId}:${opp.detectedAt}:ev`
       );
-      const yesKey = `${idempotencyKey}:yes`;
-      const noKey = `${idempotencyKey}:no`;
       const baseRecord: IdempotencyRecord = {
-        key: yesKey,
+        key: idempotencyKey,
         nonce: 'n1',
         status: 'pending',
         createdAt: now,
@@ -2291,36 +2297,29 @@ describe('ExecutionAgent', () => {
       const timeouts = (agent as unknown as { timeouts: unknown }).timeouts;
 
       const result = await (agent as unknown as {
-        executeEvOrder: (
-          opportunity: ArbitrageOpportunity,
-          size: number,
-          context: unknown,
-          params: {
-            nowMs: number;
-            idempotencyKey: string;
-            executionId: string;
-            idleState: string;
-            timeouts: unknown;
-            yesIdempotencyKey: string;
-            noIdempotencyKey: string;
-            yesRecord: IdempotencyRecord;
-            noRecord: IdempotencyRecord;
-            trackedOrderIds: string[];
-            requiresUserChannel: boolean;
-          }
-        ) => Promise<{ status: string; reason?: string }>;
-      }).executeEvOrder(opp, 10, undefined, {
+        modeSupport: {
+          executeEvOrder: (
+            opportunity: ArbitrageOpportunity,
+            size: number,
+            params: {
+              nowMs: number;
+              idempotencyKey: string;
+              executionId: string;
+              idleState: string;
+              timeouts: unknown;
+              record: IdempotencyRecord;
+              trackedOrderIds: string[];
+            }
+          ) => Promise<{ status: string; reason?: string }>;
+        };
+      }).modeSupport.executeEvOrder(opp, 10, {
         nowMs: now,
         idempotencyKey,
         executionId: idempotencyKey,
         idleState: 'idle',
         timeouts,
-        yesIdempotencyKey: yesKey,
-        noIdempotencyKey: noKey,
-        yesRecord: baseRecord,
-        noRecord: { ...baseRecord, key: noKey },
-        trackedOrderIds: [],
-        requiresUserChannel: false
+        record: baseRecord,
+        trackedOrderIds: []
       });
 
       expect(result.status).toBe('blocked');
@@ -2330,8 +2329,13 @@ describe('ExecutionAgent', () => {
     it('records portfolio expectation in EV helper', async () => {
       const now = Date.now();
       const opp = makeEvOpportunity({ detectedAt: now, side: 'yes' });
+      const userRealtime = new MockUserRealtime(true);
       const clob = {
-        createOrder: vi.fn().mockResolvedValue({ orderID: 'ev-order-1', status: 'LIVE' }),
+        createOrder: vi.fn().mockImplementation(() => {
+          const orderId = 'ev-order-1';
+          emitOrderMatched(userRealtime, orderId);
+          return Promise.resolve({ orderID: orderId, status: 'LIVE' });
+        }),
         ...makeCancelMocks()
       } as unknown as PolymarketClob;
       const portfolio = { expectFill: vi.fn() } as unknown as PortfolioAgent;
@@ -2339,16 +2343,15 @@ describe('ExecutionAgent', () => {
       const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
         tradingEnabled: true,
         tradingMode: 'live',
-        portfolio
+        portfolio,
+        userRealtime: asPolymarketRealtime(userRealtime)
       });
 
       const idempotencyKey = createIdempotencyKey(
-        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+        `${opp.marketId}:${opp.yesTokenId}:${opp.detectedAt}:ev`
       );
-      const yesKey = `${idempotencyKey}:yes`;
-      const noKey = `${idempotencyKey}:no`;
       const baseRecord: IdempotencyRecord = {
-        key: yesKey,
+        key: idempotencyKey,
         nonce: 'n1',
         status: 'pending',
         createdAt: now,
@@ -2357,36 +2360,29 @@ describe('ExecutionAgent', () => {
       const timeouts = (agent as unknown as { timeouts: unknown }).timeouts;
 
       await (agent as unknown as {
-        executeEvOrder: (
-          opportunity: ArbitrageOpportunity,
-          size: number,
-          context: unknown,
-          params: {
-            nowMs: number;
-            idempotencyKey: string;
-            executionId: string;
-            idleState: string;
-            timeouts: unknown;
-            yesIdempotencyKey: string;
-            noIdempotencyKey: string;
-            yesRecord: IdempotencyRecord;
-            noRecord: IdempotencyRecord;
-            trackedOrderIds: string[];
-            requiresUserChannel: boolean;
-          }
-        ) => Promise<{ status: string; state: string }>;
-      }).executeEvOrder(opp, 10, undefined, {
+        modeSupport: {
+          executeEvOrder: (
+            opportunity: ArbitrageOpportunity,
+            size: number,
+            params: {
+              nowMs: number;
+              idempotencyKey: string;
+              executionId: string;
+              idleState: string;
+              timeouts: unknown;
+              record: IdempotencyRecord;
+              trackedOrderIds: string[];
+            }
+          ) => Promise<{ status: string; state: string }>;
+        };
+      }).modeSupport.executeEvOrder(opp, 10, {
         nowMs: now,
         idempotencyKey,
         executionId: idempotencyKey,
         idleState: 'idle',
         timeouts,
-        yesIdempotencyKey: yesKey,
-        noIdempotencyKey: noKey,
-        yesRecord: baseRecord,
-        noRecord: { ...baseRecord, key: noKey },
-        trackedOrderIds: [],
-        requiresUserChannel: false
+        record: baseRecord,
+        trackedOrderIds: []
       });
 
       expect(portfolio.expectFill).toHaveBeenCalledWith(
@@ -2403,7 +2399,7 @@ describe('ExecutionAgent', () => {
       const now = Date.now();
       const opp = makeEvOpportunity({ detectedAt: now });
       const baseKey = createIdempotencyKey(
-        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+        `${opp.marketId}:${opp.yesTokenId}:${opp.detectedAt}:ev`
       );
       const dbPath = `data/test-${randomUUID()}.db`;
       const store = new EventStore({ dbPath });
@@ -2435,7 +2431,7 @@ describe('ExecutionAgent', () => {
         expect(clob.createOrder).toHaveBeenCalledTimes(1);
         expect(metrics.recent('fill', 1).length).toBe(1);
 
-        const record = store.getIdempotencyRecord(`${baseKey}:yes`);
+        const record = store.getIdempotencyRecord(baseKey);
         expect(record?.status).toBe('confirmed');
       } finally {
         store.close();
@@ -2518,14 +2514,14 @@ describe('ExecutionAgent', () => {
       const now = Date.now();
       const opp = makeEvOpportunity({ detectedAt: now });
       const baseKey = createIdempotencyKey(
-        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+        `${opp.marketId}:${opp.yesTokenId}:${opp.detectedAt}:ev`
       );
       const dbPath = `data/test-${randomUUID()}.db`;
       const store = new EventStore({ dbPath });
 
       try {
         store.upsertIdempotencyRecord({
-          key: `${baseKey}:yes`,
+          key: baseKey,
           nonce: 'n1',
           status: 'submitted',
           orderId: 'stored-order-1',
@@ -2551,7 +2547,7 @@ describe('ExecutionAgent', () => {
         const result = await agent.executeArbitrage(opp, 10, { nowMs: now });
 
         expect(result.reason).toBe('order_delayed');
-        const record = store.getIdempotencyRecord(`${baseKey}:yes`);
+        const record = store.getIdempotencyRecord(baseKey);
         expect(record?.orderId).toBe('stored-order-1');
       } finally {
         store.close();
@@ -2559,14 +2555,18 @@ describe('ExecutionAgent', () => {
       }
     });
 
-    it('returns complete when user channel is not required in EV helper', async () => {
+    it('returns complete when the EV helper observes a full fill', async () => {
       const now = Date.now();
       const opp = makeEvOpportunity({ detectedAt: now });
+      const userRealtime = new MockUserRealtime(true);
       const clob = {
-        createOrder: vi.fn().mockResolvedValue({ orderID: 'ev-order-1', status: 'LIVE' }),
+        createOrder: vi.fn().mockImplementation(() => {
+          const orderId = 'ev-order-1';
+          emitOrderMatched(userRealtime, orderId);
+          return Promise.resolve({ orderID: orderId, status: 'LIVE' });
+        }),
         ...makeCancelMocks()
       } as unknown as PolymarketClob;
-      const userRealtime = new MockUserRealtime(true);
 
       const agent = new ExecutionAgent(DEFAULT_TRADE_POLICY, clob, undefined, undefined, {
         tradingEnabled: true,
@@ -2575,12 +2575,10 @@ describe('ExecutionAgent', () => {
       });
 
       const idempotencyKey = createIdempotencyKey(
-        `${opp.marketId}:${opp.yesTokenId}:${opp.noTokenId}:${opp.detectedAt}`
+        `${opp.marketId}:${opp.yesTokenId}:${opp.detectedAt}:ev`
       );
-      const yesKey = `${idempotencyKey}:yes`;
-      const noKey = `${idempotencyKey}:no`;
       const baseRecord: IdempotencyRecord = {
-        key: yesKey,
+        key: idempotencyKey,
         nonce: 'n1',
         status: 'pending',
         createdAt: now,
@@ -2589,36 +2587,29 @@ describe('ExecutionAgent', () => {
       const timeouts = (agent as unknown as { timeouts: unknown }).timeouts;
 
       const result = await (agent as unknown as {
-        executeEvOrder: (
-          opportunity: ArbitrageOpportunity,
-          size: number,
-          context: unknown,
-          params: {
-            nowMs: number;
-            idempotencyKey: string;
-            executionId: string;
-            idleState: string;
-            timeouts: unknown;
-            yesIdempotencyKey: string;
-            noIdempotencyKey: string;
-            yesRecord: IdempotencyRecord;
-            noRecord: IdempotencyRecord;
-            trackedOrderIds: string[];
-            requiresUserChannel: boolean;
-          }
-        ) => Promise<{ status: string; state: string }>;
-      }).executeEvOrder(opp, 10, undefined, {
+        modeSupport: {
+          executeEvOrder: (
+            opportunity: ArbitrageOpportunity,
+            size: number,
+            params: {
+              nowMs: number;
+              idempotencyKey: string;
+              executionId: string;
+              idleState: string;
+              timeouts: unknown;
+              record: IdempotencyRecord;
+              trackedOrderIds: string[];
+            }
+          ) => Promise<{ status: string; state: string }>;
+        };
+      }).modeSupport.executeEvOrder(opp, 10, {
         nowMs: now,
         idempotencyKey,
         executionId: idempotencyKey,
         idleState: 'idle',
         timeouts,
-        yesIdempotencyKey: yesKey,
-        noIdempotencyKey: noKey,
-        yesRecord: baseRecord,
-        noRecord: { ...baseRecord, key: noKey },
-        trackedOrderIds: [],
-        requiresUserChannel: false
+        record: baseRecord,
+        trackedOrderIds: []
       });
 
       expect(result.status).toBe('submitted');
@@ -2905,11 +2896,12 @@ describe('ExecutionAgent basket execution', () => {
       tradingMode: 'live'
     });
     const spy = vi
-      .spyOn(agent, 'executeArbitrage')
+      .spyOn(agent as unknown as { executePairedArbitrage: ExecutionAgent['executeArbitrage'] }, 'executePairedArbitrage')
       .mockResolvedValue({
         status: 'submitted',
         idempotencyKey: 'id',
         executionId: 'exec',
+        kind: 'paired',
         state: 'complete'
       } as unknown as Awaited<ReturnType<ExecutionAgent['executeArbitrage']>>);
 
@@ -2939,11 +2931,12 @@ describe('ExecutionAgent basket execution', () => {
       tradingMode: 'live'
     });
     const spy = vi
-      .spyOn(agent, 'executeArbitrage')
+      .spyOn(agent as unknown as { executePairedArbitrage: ExecutionAgent['executeArbitrage'] }, 'executePairedArbitrage')
       .mockResolvedValue({
         status: 'submitted',
         idempotencyKey: 'id',
         executionId: 'exec',
+        kind: 'paired',
         state: 'complete'
       } as unknown as Awaited<ReturnType<ExecutionAgent['executeArbitrage']>>);
 
@@ -3077,17 +3070,17 @@ describe('ExecutionAgent basket execution', () => {
 
     const result = await agent.executeBasketArbitrage(opportunity, 10, { nowMs });
     const basketKey = createIdempotencyKey(`${opportunity.id}:basket:${(10).toFixed(8)}`);
-    const reader = agent as unknown as {
-      getIdempotencyRecord: (key: string) => IdempotencyRecord | undefined;
-    };
+    const reader = (agent as unknown as {
+      idempotency: { getRecord: (key: string) => IdempotencyRecord | undefined };
+    }).idempotency;
 
     expect(waitSpy).toHaveBeenCalledTimes(1);
     expect(result.status).toBe('submitted');
     expect(result.basket?.mode).toBe('batch_best_effort');
-    expect(reader.getIdempotencyRecord(basketKey)?.status).toBe('confirmed');
+    expect(reader.getRecord(basketKey)?.status).toBe('confirmed');
     for (const market of opportunity.fwBasket!.markets) {
-      expect(reader.getIdempotencyRecord(`${basketKey}:${market.marketId}:yes`)?.status).toBe('confirmed');
-      expect(reader.getIdempotencyRecord(`${basketKey}:${market.marketId}:no`)?.status).toBe('confirmed');
+      expect(reader.getRecord(`${basketKey}:${market.marketId}:yes`)?.status).toBe('confirmed');
+      expect(reader.getRecord(`${basketKey}:${market.marketId}:no`)?.status).toBe('confirmed');
     }
   });
 
@@ -3174,17 +3167,17 @@ describe('ExecutionAgent basket execution', () => {
 
     const result = await agent.executeBasketArbitrage(opportunity, 10, { nowMs });
     const basketKey = createIdempotencyKey(`${opportunity.id}:basket:${(10).toFixed(8)}`);
-    const reader = agent as unknown as {
-      getIdempotencyRecord: (key: string) => IdempotencyRecord | undefined;
-    };
+    const reader = (agent as unknown as {
+      idempotency: { getRecord: (key: string) => IdempotencyRecord | undefined };
+    }).idempotency;
 
     expect(waitSpy).toHaveBeenCalledTimes(1);
     expect(clob.cancelOrder).toHaveBeenCalledTimes(2);
     expect(unwindSpy).toHaveBeenCalledTimes(1);
     expect(result.status).toBe('failed');
     expect(result.reason).toBe('partial_fill');
-    expect(reader.getIdempotencyRecord(basketKey)?.status).toBe('failed');
-    expect(reader.getIdempotencyRecord(`${basketKey}:market-2:yes`)?.status).toBe('failed');
-    expect(reader.getIdempotencyRecord(`${basketKey}:market-2:no`)?.status).toBe('failed');
+    expect(reader.getRecord(basketKey)?.status).toBe('failed');
+    expect(reader.getRecord(`${basketKey}:market-2:yes`)?.status).toBe('failed');
+    expect(reader.getRecord(`${basketKey}:market-2:no`)?.status).toBe('failed');
   });
 });

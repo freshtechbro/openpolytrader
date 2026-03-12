@@ -27,6 +27,7 @@ data/market-catalog.json
 
 # Local artifacts
 tmp/
+.factory/
 data/*.bak-*
 services/ip-oracle/.venv/
 services/ip-oracle/.venv*/
