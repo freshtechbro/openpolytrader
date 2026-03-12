@@ -1,7 +1,13 @@
+import { createRequire } from 'node:module';
+
 import { describe, expect, it } from 'vitest';
-import { createElement } from '../../dashboard/node_modules/react/index.js';
-import { renderToStaticMarkup } from '../../dashboard/node_modules/react-dom/server.node.js';
-import { MemoryRouter } from '../../dashboard/node_modules/react-router-dom/dist/index.js';
+
+const requireFromDashboard = createRequire(
+  new URL('../../dashboard/src/routes/PublicLayout.tsx', import.meta.url)
+);
+const { createElement } = requireFromDashboard('react') as typeof import('react');
+const { renderToStaticMarkup } = requireFromDashboard('react-dom/server') as typeof import('react-dom/server');
+const { MemoryRouter } = requireFromDashboard('react-router-dom') as typeof import('react-router-dom');
 
 describe('dashboard layouts', () => {
   it('renders the public layout with the canonical landing navigation', async () => {
