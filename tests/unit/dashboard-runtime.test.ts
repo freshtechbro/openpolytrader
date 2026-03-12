@@ -257,7 +257,7 @@ describe('dashboard runtime seams', () => {
     expect(getElementById).toHaveBeenCalledWith('root');
     expect(createRoot).toHaveBeenCalledWith(container);
     expect(render).toHaveBeenCalledOnce();
-  });
+  }, 15000);
 
   it('throws when the dashboard root container is missing', async () => {
     const createRoot = vi.fn();

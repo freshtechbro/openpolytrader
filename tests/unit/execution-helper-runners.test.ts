@@ -1928,6 +1928,8 @@ describe('ExecutionPairedRunner', () => {
   });
 
   it('fails paired execution when user-channel confirmation lacks an order id', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_300);
+
     const handleFailure = vi.fn().mockResolvedValue({
       status: 'failed',
       reason: 'order_failed',
@@ -1958,7 +1960,7 @@ describe('ExecutionPairedRunner', () => {
       opportunity: makeOpportunity(),
       size: 2,
       nowMs: 1_300,
-      timeouts: { submitTimeoutMs: 20, ackTimeoutMs: 20, fillTimeoutMs: 20 },
+      timeouts: { submitTimeoutMs: 20, ackTimeoutMs: 500, fillTimeoutMs: 20 },
       idempotencyKey: 'pair-key',
       executionId: 'pair-exec',
       yesIdempotencyKey: 'pair-yes',

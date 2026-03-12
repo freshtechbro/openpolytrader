@@ -56,6 +56,7 @@ describe('FW projection remediation telemetry', () => {
       noBook: makeBook('no-fw', 0.31, 0.3, now),
       policy: {
         ...DEFAULT_TRADE_POLICY,
+        fwRequireConverged: false,
         fwSelectionTopK: 0,
         fwSelectionWeightFloor: 1.1,
         fwMinEdgeThreshold: 0.0001

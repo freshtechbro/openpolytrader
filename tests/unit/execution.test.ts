@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
@@ -132,6 +132,11 @@ function makeMockIncidentTracker(): IncidentTracker {
     record: vi.fn()
   } as unknown as IncidentTracker;
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe('ExecutionAgent', () => {
   it('updates trading flags and configs', () => {
